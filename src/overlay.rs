@@ -536,8 +536,10 @@ impl Render for Overlay {
             // ② Dim layer: no selection = whole screen; with a selection =
             // four strips around it (the selection "sees through")
             .children(dim_strips(sel, ws))
-            // ③ Selection border + size label (live while dragging)
-            .children(sel.map(selection_chrome))
+            // ③ Selection border + size label (live while dragging);
+            // Vec: the label is a separate window-anchored element (see
+            // selection_chrome)
+            .children(sel.map(selection_chrome).unwrap_or_default())
             // ④ Toolbar: appears only after release (no flicker while dragging)
             .children(
                 if let Selection::Selected { bounds } = self.selection {

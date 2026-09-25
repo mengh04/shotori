@@ -38,15 +38,19 @@ pub(crate) fn dim_strips(sel: Option<Bounds<Pixels>>, ws: Size<Pixels>) -> Vec<A
     els
 }
 
-/// Selection border + size label (label above the selection; below when no room)
-pub(crate) fn selection_chrome(b: Bounds<Pixels>) -> impl IntoElement {
+/// Selection border + size label (label above the selection; below when no
+/// room). Returns TWO window-anchored elements: the label must NOT live
+/// inside the border box — a narrow selection would clamp the label's width
+/// to the selection's, wrapping "W × H" into a one-character-per-line
+/// tower. As a sibling anchored to the overlay root it is content-sized.
+pub(crate) fn selection_chrome(b: Bounds<Pixels>) -> Vec<AnyElement> {
     let label_y = if b.top() >= px(34.) {
         b.top() - px(30.)
     } else {
         b.bottom() + px(6.)
     };
 
-    div()
+    let border = div()
         .absolute()
         .left(b.left())
         .top(b.top())
@@ -54,23 +58,26 @@ pub(crate) fn selection_chrome(b: Bounds<Pixels>) -> impl IntoElement {
         .h(b.size.height)
         .border_1()
         .border_color(rgba(ACCENT))
-        .child(
-            div()
-                .absolute()
-                .left(px(0.))
-                .top(label_y - b.top())
-                .px_2()
-                .py(px(2.))
-                .rounded(px(4.))
-                .bg(rgba(ACCENT))
-                .text_size(px(12.))
-                .text_color(rgba(0xFFFFFFFF))
-                .child(format!(
-                    "{} × {}",
-                    f32::from(b.size.width).round() as i32,
-                    f32::from(b.size.height).round() as i32
-                )),
-        )
+        .into_any_element();
+
+    let label = div()
+        .absolute()
+        .left(b.left())
+        .top(label_y)
+        .px_2()
+        .py(px(2.))
+        .rounded(px(4.))
+        .bg(rgba(ACCENT))
+        .text_size(px(12.))
+        .text_color(rgba(0xFFFFFFFF))
+        .child(format!(
+            "{} × {}",
+            f32::from(b.size.width).round() as i32,
+            f32::from(b.size.height).round() as i32
+        ))
+        .into_any_element();
+
+    vec![border, label]
 }
 
 /// Bottom hint bar
