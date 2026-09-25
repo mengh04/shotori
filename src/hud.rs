@@ -7,58 +7,54 @@ use gpui_kit::*;
 
 use crate::theme::{ACCENT, CHIP_BG, DIM, HINT_TEXT};
 
-/// Dim layer: one full-screen block when nothing is selected; when a
-/// selection exists, four strips around it (the selection "sees through")
-pub(crate) fn dim_strips(sel: Option<Bounds<Pixels>>, ws: Size<Pixels>) -> Vec<AnyElement> {
-    let mut els = Vec::new();
-    let mut strip = |x: Pixels, y: Pixels, w: Pixels, h: Pixels| {
-        if w > px(0.) && h > px(0.) {
-            els.push(
-                div()
-                    .absolute()
-                    .left(x)
-                    .top(y)
-                    .w(w)
-                    .h(h)
-                    .bg(rgba(DIM))
-                    .into_any_element(),
-            );
-        }
-    };
-
-    match sel {
-        None => strip(px(0.), px(0.), ws.width, ws.height),
-        Some(b) => {
-            strip(px(0.), px(0.), ws.width, b.top()); // top
-            strip(px(0.), b.bottom(), ws.width, ws.height - b.bottom()); // bottom
-            strip(px(0.), b.top(), b.left(), b.size.height); // left
-            strip(b.right(), b.top(), ws.width - b.right(), b.size.height); // right
-        }
-    }
-    els
+/// Paint the dim layer and border together. Separate positioned divs snap
+/// their origins and sizes independently during layout; at fractional DPI
+/// their edges can differ by a device pixel. Painting shared edges bypasses
+/// that layout rounding and lets GPUI snap each absolute edge consistently.
+pub(crate) fn selection_backdrop(sel: Option<Bounds<Pixels>>) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |viewport, (), window, _| {
+            let Some(mut b) = sel else {
+                window.paint_quad(fill(viewport, rgba(DIM)));
+                return;
+            };
+            b.origin += viewport.origin;
+            b = b.intersect(&viewport);
+            let strips = [
+                Bounds::from_corners(viewport.origin, point(viewport.right(), b.top())),
+                Bounds::from_corners(point(viewport.left(), b.bottom()), viewport.bottom_right()),
+                Bounds::from_corners(point(viewport.left(), b.top()), point(b.left(), b.bottom())),
+                Bounds::from_corners(
+                    point(b.right(), b.top()),
+                    point(viewport.right(), b.bottom()),
+                ),
+            ];
+            for strip in strips {
+                if strip.size.width > px(0.) && strip.size.height > px(0.) {
+                    window.paint_quad(fill(strip, rgba(DIM)));
+                }
+            }
+            window.paint_quad(outline(b, rgba(ACCENT), BorderStyle::default()));
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
 }
 
-/// Selection border + size label. The label tries above the selection,
+/// Selection size label. The label tries above the selection,
 /// then below, and when neither fits (a selection spanning the screen
 /// height) it is drawn INSIDE the selection box — overlaid beats
 /// off-screen. It must NOT live inside the border box when avoidable: a
 /// narrow selection would clamp the label's width to the selection's,
 /// wrapping "W × H" into a one-character-per-line tower. As a sibling
 /// anchored to the overlay root it stays content-sized.
-pub(crate) fn selection_chrome(b: Bounds<Pixels>, ws: Size<Pixels>) -> Vec<AnyElement> {
+pub(crate) fn selection_label(b: Bounds<Pixels>, ws: Size<Pixels>) -> AnyElement {
     let (label_x, label_y) = label_anchor(&b, ws);
 
-    let border = div()
-        .absolute()
-        .left(b.left())
-        .top(b.top())
-        .w(b.size.width)
-        .h(b.size.height)
-        .border_1()
-        .border_color(rgba(ACCENT))
-        .into_any_element();
-
-    let label = div()
+    div()
         .absolute()
         .left(px(label_x))
         .top(px(label_y))
@@ -73,9 +69,7 @@ pub(crate) fn selection_chrome(b: Bounds<Pixels>, ws: Size<Pixels>) -> Vec<AnyEl
             f32::from(b.size.width).round() as i32,
             f32::from(b.size.height).round() as i32
         ))
-        .into_any_element();
-
-    vec![border, label]
+        .into_any_element()
 }
 
 /// Label geometry, pure for tests. Rough width covers the widest
@@ -222,6 +216,76 @@ mod tests {
 
     fn ws(w: f32, h: f32) -> gpui_kit::Size<Pixels> {
         size(px(w), px(h))
+    }
+
+    struct BackdropHarness {
+        selection: Option<Bounds<Pixels>>,
+    }
+
+    impl gpui_kit::Render for BackdropHarness {
+        fn render(
+            &mut self,
+            _: &mut gpui_kit::Window,
+            _: &mut gpui_kit::Context<Self>,
+        ) -> impl gpui_kit::IntoElement {
+            use gpui_kit::{ParentElement, Styled};
+            gpui_kit::div()
+                .relative()
+                .size_full()
+                .child(super::selection_backdrop(self.selection))
+        }
+    }
+
+    // Inspect GPUI's actual device-pixel quads after layout and painting.
+    // Each pixel outside the border must have exactly one dim layer:
+    // zero produces a bright seam, two produce a dark seam.
+    #[gpui_kit::test]
+    fn backdrop_has_no_gaps_or_overlaps_at_fractional_dpi(cx: &mut gpui_kit::TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, _| BackdropHarness { selection: None });
+        cx.update(|window, _| window.resize(ws(400., 400.)));
+        for scale in [1., 1.25, 1.5, 1.75, 2.] {
+            cx.simulate_scale_factor_change(scale);
+            let selections = [
+                None,
+                Some(bounds(50., 101., 200., 230.)),
+                Some(bounds(51., 102., 201., 229.)),
+                Some(bounds(50., 103., 200., 230.)),
+                Some(bounds(50., 104., 200., 230.)),
+                Some(bounds(0., 0., 200., 230.)),
+                Some(bounds(200., 170., 200., 230.)),
+                Some(bounds(0., 0., 400., 400.)),
+            ];
+            for selection in selections {
+                view.update(cx, |view, cx| {
+                    view.selection = selection;
+                    cx.notify();
+                });
+                let quads = cx.update(|window, cx| {
+                    window.draw(cx).clear(cx);
+                    window.painted_quads()
+                });
+                let border = quads.iter().find(|q| q.border_widths.top.0 > 0.);
+                assert_eq!(border.is_some(), selection.is_some());
+                let contains = |b: &gpui_kit::Bounds<gpui_kit::ScaledPixels>, x: f32, y: f32| {
+                    x >= b.left().0 && x < b.right().0 && y >= b.top().0 && y < b.bottom().0
+                };
+                for y in 0..(400. * scale) as usize {
+                    for x in 0..(400. * scale) as usize {
+                        let (x, y) = (x as f32 + 0.5, y as f32 + 0.5);
+                        let inside = border.is_some_and(|q| contains(&q.bounds, x, y));
+                        let layers = quads
+                            .iter()
+                            .filter(|q| q.border_widths.top.0 == 0. && contains(&q.bounds, x, y))
+                            .count();
+                        assert_eq!(
+                            layers,
+                            usize::from(!inside),
+                            "scale={scale}, selection={selection:?}, pixel=({x}, {y})"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

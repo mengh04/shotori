@@ -15,7 +15,7 @@ use gpui_kit::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOpti
 use gpui_kit::*;
 
 use crate::capture::Capture;
-use crate::hud::{dim_strips, hint_bar, selection_chrome};
+use crate::hud::{hint_bar, selection_backdrop, selection_label};
 use crate::image_util;
 use crate::selection::Selection;
 use crate::toolbar::selection_toolbar;
@@ -409,13 +409,8 @@ async fn ocr_to_clipboard(
 
 impl Render for Overlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Round the selection to whole pixels ONCE and share the result
-        // between the dim strips and the selection chrome. With fractional
-        // bounds (remote mice produce them), the border div and the dim
-        // divs round independently inside gpui; for certain fractional
-        // phases they diverge and leave a 1px row covered by NEITHER →
-        // raw content bleeds through as a spurious bright line (reported
-        // as a white line under the selection on light backgrounds).
+        // Keep display geometry stable while dragging. The backdrop paints
+        // shared edges directly so fractional DPI cannot open layout seams.
         let sel = self.selection.bounds().map(round_px);
         let ws = window.bounds().size; // window logical size (= output logical size)
 
@@ -516,13 +511,10 @@ impl Render for Overlay {
             // ── Layer stack (bottom to top) ─────────────────────────────
             // ① The frozen screen image (opaque, filling the window)
             .child(img(self.frozen.clone()).size_full())
-            // ② Dim layer: no selection = whole screen; with a selection =
-            // four strips around it (the selection "sees through")
-            .children(dim_strips(sel, ws))
-            // ③ Selection border + size label (live while dragging);
-            // Vec: the label is a separate window-anchored element (see
-            // selection_chrome)
-            .children(sel.map(|b| selection_chrome(b, ws)).unwrap_or_default())
+            // ② Dim layer and selection border share painted edges.
+            .child(selection_backdrop(sel))
+            // ③ Size label stays independent so narrow selections cannot wrap it.
+            .children(sel.map(|b| selection_label(b, ws)))
             // ④ Toolbar: appears only after release (no flicker while dragging)
             .children(
                 if let Selection::Selected { bounds } = self.selection
