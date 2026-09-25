@@ -38,4 +38,17 @@
 
 ## 结论记录
 
-（spike 跑完后填）
+### 已结案件（2026-09-25）
+- **Root/CSD 毒害案**：base::Root 的 WindowState 插件（component）对 layer-shell 窗口刷主题背景
+  （白墙→灰雾 76=0.3×255）+ WindowBorder 调 set_client_inset(20)（窗口膨胀+40）+ padding 内缩。
+  覆盖层永远裸 cx.open_window；正常窗口可用 Root。
+- **240Hz 隐形案**：HDMI 在 240Hz 下 layer-shell 覆盖层渲染一帧后不再合成（60Hz 正常，
+  同一二进制）。wgpu/niri 高刷新率帧节奏问题，待深挖+上报。开发验证 UI 期间临时切 60Hz：
+  `niri msg output HDMI-A-1 mode 1920x1080@60`
+- **RenderImage 契约**：BGRA 字节（Vulkan 后端），内存直喂必须 swap(0,2)；PNG 路径是 RGBA。
+- **wl_shm format 是序号**（xrgb8888=1）不是 DRM fourcc；格式名描述"字"的位序，小端内存反序。
+- **多屏 output 选择**：上游 zed#46378（displays() 启动为空），修复 PR #61578 久未 review；
+  可 vendor 时顺手带 roundtrip 补丁。
+
+### 开发后门
+- `SACCADE_DEBUG_SELECTION=x,y,w,h`：注入现成选区（自动化验证选区 UI 用）
