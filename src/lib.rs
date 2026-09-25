@@ -11,8 +11,10 @@
 //! - [`overlay`]：覆盖层装配（layer-shell Overlay 层，每屏一个）
 //! - [`hud`]：覆盖层视觉件（变暗边带/选区边框/提示条）
 //! - [`toolbar`]：选区工具条（按钮与键盘同管线 dispatch_action）
-//! - [`pin`]：贴图窗口（layer-shell Top 层）——**挂起中**，拖动到边缘有 bug
 //! - [`theme`]：视觉常量（自绘设计系统种子）
+//!
+//! 贴图（pin）功能在 `pin` 分支保存（依赖 vendor 的 set_layer_margin 补丁，
+//! 上游合并前无法发布 crates.io）。
 
 pub mod capture;
 pub mod clipboard;
@@ -21,7 +23,6 @@ pub mod export;
 pub mod hud;
 pub mod image_util;
 pub mod overlay;
-pub mod pin;
 pub mod selection;
 pub mod theme;
 pub mod toolbar;

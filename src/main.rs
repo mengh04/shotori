@@ -7,7 +7,6 @@
 //! - `overlay`：覆盖层装配（每屏一个窗口）
 //! - `hud` / `toolbar`：覆盖层的视觉件
 //! - `selection` / `export` / `image_util`：纯逻辑
-//! - `pin`：贴图窗口（挂起中）
 //! - `theme`：视觉常量
 
 use gpui_kit::*;
@@ -15,8 +14,7 @@ use gpui_kit::*;
 use shotori::capture;
 use shotori::clipboard;
 use shotori::display;
-use shotori::overlay::{CopySelection, Overlay, PinSelection, QuitOverlay, SaveSelection};
-use shotori::pin::ClosePin;
+use shotori::overlay::{CopySelection, Overlay, QuitOverlay, SaveSelection};
 
 fn main() {
     // 剪贴板分身：复制动作的后台驻留进程（见 clipboard.rs 的驻留 offer 模型）
@@ -57,14 +55,12 @@ fn main() {
         .run(move |cx| {
             gpui_kit::base::init(cx);
 
-            // 键位按 key_context 分域：覆盖层和贴图各有自己的 Esc 语义
+            // 键位按 key_context 分域
             cx.bind_keys([
                 KeyBinding::new("escape", QuitOverlay, Some("ShotoriOverlay")),
                 KeyBinding::new("enter", CopySelection, Some("ShotoriOverlay")),
                 KeyBinding::new("ctrl-c", CopySelection, Some("ShotoriOverlay")),
                 KeyBinding::new("ctrl-s", SaveSelection, Some("ShotoriOverlay")),
-                KeyBinding::new("p", PinSelection, Some("ShotoriOverlay")),
-                KeyBinding::new("escape", ClosePin, Some("ShotoriPin")),
             ]);
             // 兜底：覆盖层焦点意外丢失时 Esc 仍能退出。
             // 注意：实测窗口内 dispatch_action 不会冒泡到这里（动作止步于焦点路径），
@@ -84,7 +80,7 @@ fn main() {
                             );
                         }
                         cx.open_window(Overlay::window_options(did), |window, cx| {
-                            cx.new(|cx| Overlay::new(cap, did, window, cx))
+                            cx.new(|cx| Overlay::new(cap, window, cx))
                         })
                         .expect("打开 layer-shell 窗口失败");
                     }

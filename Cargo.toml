@@ -1,9 +1,12 @@
 [package]
 name = "shotori"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
-publish = false
-description = "Shotori — Wayland-first screenshot & OCR suite built with gpui-kit"
+description = "Shotori — Wayland-first screenshot tool built with gpui-kit"
+license = "MIT"
+repository = "https://github.com/mengh04/shotori"
+keywords = ["screenshot", "wayland", "gpui", "screencopy", "clipboard"]
+categories = ["graphics", "multimedia::images", "command-line-utilities"]
 # 有多个 bin（shotori / screencap）时，裸 `cargo run` 默认跑主程序
 default-run = "shotori"
 
@@ -11,7 +14,7 @@ default-run = "shotori"
 gpui-kit = "0.6"
 anyhow = "1.0"
 
-# ── spike #2：裸 wayland-client 实现 screencopy 截图 ──
+# screencopy 截图 + wlr-data-control 剪贴板（裸 wayland-client）
 wayland-client = "0.31"
 wayland-protocols-wlr = "0.3"
 memmap2 = "0.9"
@@ -26,8 +29,5 @@ smallvec = "1"
 # 保存文件名的人类可读时间戳（gpui 生态已在依赖树中，零新增编译）
 chrono = "0.4"
 
-# 本地 vendor fork（上游 review 慢，先用补丁；上游合并后删除此段即可）
-# - set_layer_margin：layer-shell 表面运行时改 margin（贴图拖动原语）
-[patch.crates-io]
-gpui-pre = { path = "/home/mengh04/Workspace/vendor/gpui-pre" }
-gpui-pre-linux = { path = "/home/mengh04/Workspace/vendor/gpui-pre-linux" }
+# 贴图功能（依赖 vendor 的 set_layer_margin 补丁）在 `pin` 分支保存；
+# 上游合并补丁后可合回主干并恢复此处 [patch.crates-io] 或直接用上游版本

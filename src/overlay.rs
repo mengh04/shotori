@@ -1,7 +1,7 @@
 //! # 截图覆盖层：冻结屏幕 + 选区交互的装配层
 //!
 //! 流程：冻结画面打底（img）→ 拖拽框选（选区"透视"，四周变暗）
-//! → Enter 复制到剪贴板 / Ctrl+S 保存 PNG / P 贴图（挂起中）/ Esc 退出。
+//! → Enter 复制到剪贴板 / Ctrl+S 保存 PNG / Esc 退出。
 //!
 //! 分工：纯逻辑在 [`crate::selection`]（状态机）和 [`crate::export`]（裁剪/编码），
 //! 视觉在 [`crate::hud`] 和 [`crate::toolbar`]——本文件只做 gpui 装配：
@@ -15,11 +15,10 @@ use gpui_kit::*;
 use crate::capture::Capture;
 use crate::hud::{dim_strips, hint_bar, selection_chrome};
 use crate::image_util;
-use crate::pin::PinWindow;
 use crate::selection::Selection;
 use crate::toolbar::selection_toolbar;
 
-gpui_kit::actions!([QuitOverlay, CopySelection, SaveSelection, PinSelection]);
+gpui_kit::actions!([QuitOverlay, CopySelection, SaveSelection]);
 
 pub struct Overlay {
     focus_handle: FocusHandle,
@@ -27,15 +26,12 @@ pub struct Overlay {
     frozen: Arc<RenderImage>,
     /// 原始像素（裁剪用）
     capture: Capture,
-    /// 本覆盖层所在的屏（开贴图窗口时钉同一块屏）
-    display_id: Option<DisplayId>,
     selection: Selection,
 }
 
 impl Overlay {
     pub fn new(
         capture: Capture,
-        display_id: Option<DisplayId>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -57,7 +53,6 @@ impl Overlay {
             focus_handle,
             frozen,
             capture,
-            display_id,
             selection: debug_selection(debug_targeted),
         }
     }
@@ -176,35 +171,6 @@ impl Overlay {
         );
         cx.quit();
     }
-
-    /// P：把选区裁出来钉在屏幕上（贴图）——功能挂起中，保持原样可用
-    fn pin_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(bounds) = self.selection.bounds() else {
-            return;
-        };
-        let Some((w, h, rgba)) = self.crop(bounds, window) else {
-            println!("[shotori] 选区为空，忽略");
-            return;
-        };
-
-        let pos = point(bounds.left(), bounds.top());
-        let logical_size = size(bounds.size.width, bounds.size.height);
-
-        cx.open_window(
-            PinWindow::window_options(pos, logical_size, self.display_id),
-            |window, cx| cx.new(|cx| PinWindow::new(rgba, w, h, pos, window, cx)),
-        )
-        .expect("打开贴图窗口失败");
-
-        println!(
-            "[shotori] 已贴图 {w}x{h} @ ({}, {})——按住拖动，Esc 关闭",
-            f32::from(pos.x).round() as i32,
-            f32::from(pos.y).round() as i32
-        );
-
-        // 关闭覆盖层窗口（app 继续活着伺候贴图）
-        window.remove_window();
-    }
 }
 
 impl Render for Overlay {
@@ -223,9 +189,6 @@ impl Render for Overlay {
             }))
             .on_action(cx.listener(|this, _: &SaveSelection, window, cx| {
                 this.save_selection(window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &PinSelection, window, cx| {
-                this.pin_selection(window, cx);
             }))
             // 两段 Esc：拖拽中 = 只放弃本次拖拽（吞掉动作不冒泡）；
             // 松手后（Idle/Selected）= 不处理，冒泡到 main.rs 的全局兜底 → 退出

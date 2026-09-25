@@ -2359,6 +2359,8 @@ dependencies = [
 [[package]]
 name = "gpui-pre"
 version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0437c0b83e636a92bd1a39fa1d05fb632ae671289537497b35871ffbe231b84"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -2494,6 +2496,8 @@ dependencies = [
 [[package]]
 name = "gpui-pre-linux"
 version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aab655cda1d6dcd549ac869e8678babc84cf573ab6794a1fe1a39c6c70c60b48"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -6149,7 +6153,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "shotori"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "chrono",

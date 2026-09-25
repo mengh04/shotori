@@ -159,3 +159,11 @@ overlay 只剩装配。首批 12 个单元测试（不需要合成器）。
   App::on_action**——退出逻辑押在 app 级兜底上，从工具条诞生起就是死的。
   修复：两段 Esc 就地在覆盖层 handler 处理（拖拽中=取消拖拽，否则 quit）
 - 后门升级：SHOTORI_DEBUG_ACTION=copy|quit（quit 走真实 dispatch_action 管线，e2e 可测退出）
+
+## v0.5.0 拔 pin 解锁发布（2026-09-26）
+
+- pin（贴图）整体移到 `pin` 分支保存（含 vendor set_layer_margin 补丁依赖）
+- main 移除 [patch.crates-io]（走上游原版 gpui-pre）、publish=false、
+  补齐 crates.io 元数据（license/repository 待用户确认）
+- `cargo publish --dry-run --allow-dirty` 通过：无 path 依赖、打包合规
+- 真发布：`cargo login` → `cargo publish`
