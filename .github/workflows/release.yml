@@ -85,6 +85,15 @@ jobs:
           install -dm700 /root/.ssh
           printf '%s\n' "$AUR_SSH_KEY" > /root/.ssh/aur
           chmod 600 /root/.ssh/aur
+          # Point ssh AT the key (locally ~/.ssh/config does this; the
+          # container has neither default keys nor a config — without it
+          # auth falls through to "publickey denied")
+          cat > /root/.ssh/config <<'EOF'
+          Host aur.archlinux.org
+              User aur
+              IdentityFile /root/.ssh/aur
+              IdentitiesOnly yes
+          EOF
           ssh-keyscan -t ed25519 aur.archlinux.org >> /root/.ssh/known_hosts
           git config --global user.name "shotori-release-bot"
           git config --global user.email "mengh04@users.noreply.github.com"
