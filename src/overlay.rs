@@ -32,6 +32,9 @@ pub struct Overlay {
     /// First-run OCR setup (confirm → download progress), open while active
     #[cfg(feature = "ocr")]
     ocr_setup: Option<Box<crate::ocr_setup::OcrSetup>>,
+    /// OCR inference in flight → show the busy badge (spinner)
+    #[cfg(feature = "ocr")]
+    ocr_busy: bool,
 }
 
 impl Overlay {
@@ -70,6 +73,8 @@ impl Overlay {
             selection: debug_selection(debug_targeted),
             #[cfg(feature = "ocr")]
             ocr_setup: None,
+            #[cfg(feature = "ocr")]
+            ocr_busy: false,
         }
     }
 
@@ -214,8 +219,8 @@ impl Overlay {
     /// cancel) instead — [`crate::ocr_setup`].
     #[cfg(feature = "ocr")]
     fn ocr_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.ocr_setup.is_some() {
-            return; // dialog already open
+        if self.ocr_setup.is_some() || self.ocr_busy {
+            return; // dialog open or an OCR already running
         }
         let Some((w, h, rgba)) = self.crop(self.selection_or_full(window), window) else {
             println!("[shotori] empty selection, ignoring");
@@ -247,8 +252,9 @@ impl Overlay {
     ) {
         let crate::ocr_setup::Snapshot { w, h, rgba } = snapshot;
         let window_handle = window.window_handle();
+        let entity = cx.entity();
         cx.spawn(async move |_, cx| {
-            ocr_to_clipboard(w, h, rgba, window_handle, cx).await;
+            ocr_to_clipboard(w, h, rgba, window_handle, entity, cx).await;
         })
         .detach();
     }
@@ -310,7 +316,7 @@ impl Overlay {
                     this.ocr_setup.take().map(|s| s.snapshot)
                 });
                 if let Some(crate::ocr_setup::Snapshot { w, h, rgba }) = snap {
-                    ocr_to_clipboard(w, h, rgba, window_handle, cx).await;
+                    ocr_to_clipboard(w, h, rgba, window_handle, entity, cx).await;
                 }
             } else {
                 let err = progress.error();
@@ -341,15 +347,21 @@ impl Overlay {
 }
 
 /// Background OCR → text to clipboard → quit. Shared by the Ctrl+O action
-/// path and the post-download handover.
+/// path and the post-download handover. Flips `ocr_busy` on the view for the
+/// duration (spinner badge).
 #[cfg(feature = "ocr")]
 async fn ocr_to_clipboard(
     w: u32,
     h: u32,
     rgba: Vec<u8>,
     window_handle: gpui_kit::AnyWindowHandle,
+    entity: gpui_kit::Entity<Overlay>,
     cx: &mut gpui_kit::AsyncApp,
 ) {
+    entity.update(cx, |this, cx| {
+        this.ocr_busy = true;
+        cx.notify();
+    });
     let result: anyhow::Result<String> = cx
         .background_executor()
         .spawn(async move { crate::ocr::run_ocr(&rgba, w, h) })
@@ -391,11 +403,24 @@ async fn ocr_to_clipboard(
             crate::notify::send("Shotori OCR failed", &msg);
         }
     });
+    // Clear the busy flag on both paths (failure stays on-screen; a stuck
+    // spinner would spin forever otherwise)
+    entity.update(cx, |this, cx| {
+        this.ocr_busy = false;
+        cx.notify();
+    });
 }
 
 impl Render for Overlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let sel = self.selection.bounds();
+        // Round the selection to whole pixels ONCE and share the result
+        // between the dim strips and the selection chrome. With fractional
+        // bounds (remote mice produce them), the border div and the dim
+        // divs round independently inside gpui; for certain fractional
+        // phases they diverge and leave a 1px row covered by NEITHER →
+        // raw content bleeds through as a spurious bright line (reported
+        // as a white line under the selection on light backgrounds).
+        let sel = self.selection.bounds().map(round_px);
         let ws = window.bounds().size; // window logical size (= output logical size)
 
         // Bind the base chain, then attach feature-gated handlers via
@@ -451,6 +476,14 @@ impl Render for Overlay {
             .map(|s| crate::ocr_setup::setup_card(s).into_any_element());
         #[cfg(not(feature = "ocr"))]
         let setup_el: Option<AnyElement> = None;
+
+        // OCR-in-flight spinner badge, centered on the selection
+        #[cfg(feature = "ocr")]
+        let busy_el: Option<AnyElement> = self
+            .ocr_busy
+            .then(|| crate::hud::ocr_busy_badge(sel, ws).into_any_element());
+        #[cfg(not(feature = "ocr"))]
+        let busy_el: Option<AnyElement> = None;
 
         base
             // Two-stage Esc (handled in place, no reliance on bubbling):
@@ -508,20 +541,37 @@ impl Render for Overlay {
             // ④ Toolbar: appears only after release (no flicker while dragging)
             .children(
                 if let Selection::Selected { bounds } = self.selection {
-                    Some(selection_toolbar(bounds, ws))
+                    Some(selection_toolbar(round_px(bounds), ws))
                 } else {
                     None
                 },
             )
             // ⑤ Bottom hint bar
             .child(hint_bar())
-            // ⑥ First-run OCR setup dialog (confirm / progress), topmost
+            // ⑥ OCR busy badge (spinner on the selection)
+            .children(busy_el)
+            // ⑦ First-run OCR setup dialog (confirm / progress), topmost
             .children(setup_el)
     }
 }
 
 // ── Debug backdoors (entry points for automated e2e; normal launches are
 // unaffected) ─────────────────────────────────────────────────────────
+
+/// Snap a bounds to whole pixels for DISPLAY (dim strips, chrome,
+/// toolbar). Edges are rounded independently (round(origin)+round(size)
+/// can drift by 1px from round(origin+size)). Cropping keeps its own
+/// physical-pixel rounding — this is purely a rendering concern.
+fn round_px(b: Bounds<Pixels>) -> Bounds<Pixels> {
+    let l = f32::from(b.left()).round();
+    let t = f32::from(b.top()).round();
+    let r = f32::from(b.right()).round();
+    let btm = f32::from(b.bottom()).round();
+    Bounds {
+        origin: point(px(l), px(t)),
+        size: size(px(r - l), px(btm - t)),
+    }
+}
 
 /// Does the backdoor target this overlay? SHOTORI_DEBUG_TARGET=<output name>
 /// (with multiple overlays all running this code, enabling all of them makes
