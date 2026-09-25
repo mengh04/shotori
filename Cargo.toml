@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 description = "Saccade — Wayland-first screenshot & OCR suite built with gpui-kit"
+# 有多个 bin（saccade / screencap）时，裸 `cargo run` 默认跑主程序
+default-run = "saccade"
 
 [dependencies]
 gpui-kit = "0.6"
