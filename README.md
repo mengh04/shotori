@@ -74,7 +74,9 @@ A toolbar with equivalent buttons appears below the selection after release.
   running locally through ONNX Runtime.
 - First use opens a confirmation card, then a progress bar with a cancel
   button. Models (~31 MB, fetched from ModelScope) are verified with sha256
-  and installed atomically — a cancelled download leaves nothing behind.
+  and installed atomically. Cancel closes the dialog immediately; the worker
+  removes its temporary file when the current network operation returns or
+  reaches its 10-second timeout. Already verified models are kept for retry.
   They live in `~/.local/share/shotori/ocr-models/` and are reused from
   then on.
 - The engine prewarms while you draw the selection, so recognition

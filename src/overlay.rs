@@ -217,10 +217,7 @@ impl Overlay {
         };
         let snapshot = crate::ocr_setup::Snapshot { w, h, rgba };
 
-        // SHOTORI_DEBUG_ACTION=ocr keeps the old headless inline path for
-        // e2e (no clicking available); real users get the dialog
-        let headless = std::env::var("SHOTORI_DEBUG_ACTION").as_deref() == Ok("ocr");
-        if crate::ocr::models_missing() && !headless {
+        if crate::ocr::models_missing() {
             self.ocr_setup = Some(Box::new(crate::ocr_setup::OcrSetup::new(snapshot)));
             cx.notify();
         } else {
@@ -264,7 +261,6 @@ impl Overlay {
                 return; // already downloading
             }
             setup.progress = fresh;
-            setup.shown = (0, 0, 0);
             setup.stage = crate::ocr_setup::Stage::Downloading;
         } else {
             return; // nothing to confirm (no dialog open)
@@ -274,6 +270,7 @@ impl Overlay {
         };
         let progress = setup.progress.clone();
         crate::ocr::spawn_download(progress.clone());
+        cx.notify();
 
         let entity = cx.entity();
         let window_handle = _window.window_handle();
@@ -284,6 +281,13 @@ impl Overlay {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(80))
                     .await;
+                if !entity.update(cx, |this, _| {
+                    this.ocr_setup
+                        .as_ref()
+                        .is_some_and(|s| s.owns_download(&progress))
+                }) {
+                    return; // cancelled, closed, or replaced by a newer attempt
+                }
                 if !progress.is_running() {
                     break;
                 }
@@ -301,14 +305,26 @@ impl Overlay {
             if progress.finished_ok() {
                 println!("[shotori] model download complete");
                 // hand the frozen snapshot over to OCR
-                let snap = entity.update(cx, |this, _| this.ocr_setup.take().map(|s| s.snapshot));
+                let snap = entity.update(cx, |this, _| {
+                    if this
+                        .ocr_setup
+                        .as_ref()
+                        .is_some_and(|s| s.owns_download(&progress))
+                    {
+                        this.ocr_setup.take().map(|s| s.snapshot)
+                    } else {
+                        None
+                    }
+                });
                 if let Some(crate::ocr_setup::Snapshot { w, h, rgba }) = snap {
                     ocr_to_clipboard(w, h, rgba, window_handle, entity, cx).await;
                 }
             } else {
                 let err = progress.error();
                 entity.update(cx, |this, cx| {
-                    if let Some(setup) = this.ocr_setup.as_mut() {
+                    if let Some(setup) = this.ocr_setup.as_mut()
+                        && setup.owns_download(&progress)
+                    {
                         setup.stage = crate::ocr_setup::Stage::Failed(err);
                         cx.notify();
                     }

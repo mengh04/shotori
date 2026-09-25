@@ -1,28 +1,20 @@
 //! # OCR: selection → PP-OCRv6 (rapidocr-core + ONNX Runtime) → text
 //!
-//! Engine loading: the overlay pre-warms on open ([`warmup`]) so the ~1s
-//! init hides behind the user drawing their selection; the first-ever use
-//! downloads the models (~31MB, ModelScope) inline. Models are cached in
-//! `~/.local/share/shotori/ocr-models/`; when all files exist we skip the
-//! sha256 re-verification entirely (corruption is caught by engine init
-//! failing, which also cleans the cache).
-//!
-//! Failure policy: **initialization failures neither panic nor get cached** —
-//! a clean Err is returned (the overlay prints the error and stays usable),
-//! the next Ctrl+O retries automatically; a half-finished model cache is
-//! wiped first (rapidocr-core writes straight to the target file, and a
-//! truncated file never passes the sha256 check — without cleanup that
-//! would brick OCR forever).
+//! Engine loading pre-warms cached models in the background. Missing models
+//! are downloaded only through the setup workflow, with progress and cancellation.
+//! Downloads and cache repair share a cross-process lock; verified files are
+//! installed atomically, and initialization failures are never cached.
 //!
 //! Compiled under the `ocr` feature (on by default; `--no-default-features`
 //! trims it).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::time::Duration;
 
 use anyhow::Context as _;
-use rapidocr_core::model::PPOCRV6_SMALL;
+use rapidocr_core::model::{ModelAssetSpec, PPOCRV6_SMALL};
 
 /// Model cache directory (XDG-aware)
 fn model_dir() -> anyhow::Result<PathBuf> {
@@ -35,52 +27,37 @@ fn model_dir() -> anyhow::Result<PathBuf> {
     Ok(base.join("shotori/ocr-models"))
 }
 
-/// Download missing models + build the engine. Err = a recoverable failure
-/// (retry next time); never panics.
-///
-/// Perf note: when all model files exist we skip `ensure_*` entirely — it
-/// re-hashes all 31MB on every call, which is pure waste in the common
-/// path (corruption is instead caught by engine init failing, which also
-/// cleans the cache).
+/// Initialize cached models without starting an unconfirmed download.
 fn init_engine() -> anyhow::Result<Mutex<rapidocr_core::RapidOcr>> {
     let dir = model_dir()?;
-    if assets_missing(&dir) > 0 {
-        println!(
-            "[shotori] first OCR use: downloading PP-OCRv6 small models (~31MB from ModelScope)…"
-        );
-
-        // The download runs on its own thread: reqwest::blocking cannot run
-        // inside an async context (gpui's background executor is one, tokio
-        // or not), so full isolation is the safest bet; the 8MB stack leaves
-        // head room for ort's model loading
-        let dl_dir = dir.clone();
-        let dl = std::thread::Builder::new()
-            .name("shotori-ocr-model-dl".into())
-            .stack_size(8 * 1024 * 1024)
-            .spawn(move || rapidocr_core::model::ensure_ppocrv6_small_models(&dl_dir))
-            .context("failed to spawn model download thread")?;
-        if let Err(e) = dl
-            .join()
-            .map_err(|_| anyhow::anyhow!("model download thread panicked"))?
-        {
-            // Wipe half-finished downloads: a truncated/corrupt model file
-            // fails the sha256 check every single time — without this
-            // cleanup OCR is dead permanently (rapidocr-core's downloader
-            // has no temp+rename)
-            let _ = std::fs::remove_dir_all(&dir);
-            return Err(e.context("model download failed (cache cleaned, safe to retry)"));
-        }
-    }
+    anyhow::ensure!(
+        assets_missing(&dir) == 0,
+        "OCR models are missing; reopen OCR setup to download them"
+    );
+    let progress = DownloadProgress::default();
+    let _lock = cache_lock(&dir, &progress)?;
+    anyhow::ensure!(
+        assets_missing(&dir) == 0,
+        "OCR models are missing; reopen OCR setup to download them"
+    );
 
     let cfg = PPOCRV6_SMALL.config(&dir);
     match rapidocr_core::RapidOcr::new(cfg) {
         Ok(eng) => Ok(Mutex::new(eng)),
         Err(e) => {
-            // Session creation failing usually means a corrupt model file
-            // (the sha256 path is skipped in the common path above) — clean
-            // the cache so the next attempt re-downloads instead of bricking
-            let _ = std::fs::remove_dir_all(&dir);
-            Err(e.context("OCR engine init failed (model cache cleaned, safe to retry)"))
+            // A runtime/session error is not proof that every model is corrupt.
+            // Remove only files with a confirmed checksum mismatch, under the
+            // same lock used by installers. The next OCR action offers setup.
+            for asset in PPOCRV6_SMALL.assets() {
+                let path = dir.join(asset.filename);
+                if let Some(expected) = asset.sha256
+                    && sha256_file(&path).is_ok_and(|actual| actual != expected)
+                {
+                    std::fs::remove_file(&path)
+                        .with_context(|| format!("removing corrupt model {}", path.display()))?;
+                }
+            }
+            Err(e.context("OCR engine init failed; retry OCR to repair missing models"))
         }
     }
 }
@@ -107,11 +84,15 @@ pub fn model_dir_display() -> String {
         .unwrap_or_else(|_| "?".into())
 }
 
-/// Filename of the 1-based asset `idx` (progress readout)
+/// Filename of the 1-based asset `idx` (progress readout).
+/// Zero means the download has not started; invalid indices return `?`.
 pub fn asset_name(idx: u8) -> &'static str {
+    let Some(index) = usize::from(idx).checked_sub(1) else {
+        return "?";
+    };
     PPOCRV6_SMALL
         .assets()
-        .get(idx as usize - 1)
+        .get(index)
         .map(|a| a.filename)
         .unwrap_or("?")
 }
@@ -123,9 +104,9 @@ pub fn asset_name(idx: u8) -> &'static str {
 pub struct DownloadProgress {
     /// Set by the UI to abort; checked between chunks
     pub cancel: AtomicBool,
-    /// Bytes written so far (across all files this session)
+    /// Bytes written for the current file
     pub bytes: AtomicU64,
-    /// Total bytes (Σ content-length; grows as each file starts)
+    /// Content length of the current file (zero when unknown)
     pub total: AtomicU64,
     /// 1-based index of the file currently downloading
     pub file_idx: AtomicU8,
@@ -162,9 +143,8 @@ impl DownloadProgress {
 }
 
 /// Spawn the model download on its own thread (reqwest::blocking cannot run
-/// in async contexts). Downloads to `*.part` temp files and renames on
-/// success (atomic — a cancelled or crashed download never leaves a
-/// half-written model behind), verifying sha256 after each file.
+/// in async contexts). Unique temporary files are removed on cancellation or
+/// error; only complete, checksum-verified files become installed models.
 pub fn spawn_download(progress: std::sync::Arc<DownloadProgress>) {
     // The thread gets its own Arc; the caller's (and the UI's) stays valid
     // for cancellation even if the thread fails to spawn
@@ -193,64 +173,119 @@ pub fn spawn_download(progress: std::sync::Arc<DownloadProgress>) {
     }
 }
 
-fn download_models(progress: &DownloadProgress) -> anyhow::Result<()> {
-    use std::io::{Read as _, Write as _};
+fn check_cancelled(progress: &DownloadProgress) -> anyhow::Result<()> {
+    anyhow::ensure!(!progress.cancel.load(Ordering::Relaxed), "cancelled");
+    Ok(())
+}
 
-    let dir = model_dir()?;
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+/// Keep the lock file in place: unlinking it would let another process lock a
+/// different inode. Dropping the handle releases the OS lock, including on exit.
+fn cache_lock(dir: &Path, progress: &DownloadProgress) -> anyhow::Result<std::fs::File> {
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(dir.join(".download.lock"))?;
+    loop {
+        check_cancelled(progress)?;
+        match lock.try_lock() {
+            Ok(()) => return Ok(lock),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
+        }
+    }
+}
+
+fn download_models(progress: &DownloadProgress) -> anyhow::Result<()> {
     let client = reqwest::blocking::Client::builder()
         .user_agent("shotori")
+        .connect_timeout(Duration::from_secs(10))
+        // Bound blocking network operations so a cancelled worker also exits
+        // when a server stops sending data. The UI dismisses immediately.
+        .timeout(Duration::from_secs(10))
         .build()
         .context("building HTTP client")?;
+    download_models_in(&model_dir()?, &PPOCRV6_SMALL.assets(), progress, &client)
+}
 
-    for (i, asset) in PPOCRV6_SMALL.assets().iter().enumerate() {
-        if progress.cancel.load(Ordering::Relaxed) {
-            anyhow::bail!("cancelled");
-        }
+fn download_models_in(
+    dir: &Path,
+    assets: &[ModelAssetSpec],
+    progress: &DownloadProgress,
+    client: &reqwest::blocking::Client,
+) -> anyhow::Result<()> {
+    let _lock = cache_lock(dir, progress)?;
+    for (i, asset) in assets.iter().enumerate() {
+        check_cancelled(progress)?;
         let dest = dir.join(asset.filename);
-        if dest.exists() {
-            continue; // already have this one (e.g. after a partial retry)
+        if dest.is_file()
+            && asset.sha256.map_or(Ok(true), |expected| {
+                sha256_file(&dest).map(|actual| actual == expected)
+            })?
+        {
+            continue;
         }
+        progress.bytes.store(0, Ordering::Relaxed);
+        progress.total.store(0, Ordering::Relaxed);
         progress.file_idx.store(i as u8 + 1, Ordering::Relaxed);
-
-        let resp = client
+        let mut resp = client
             .get(asset.url)
             .send()
             .with_context(|| format!("fetching {}", asset.url))?
             .error_for_status()
             .with_context(|| format!("bad status for {}", asset.url))?;
+        check_cancelled(progress)?;
         if let Some(len) = resp.content_length() {
-            progress.total.fetch_add(len, Ordering::Relaxed);
+            progress.total.store(len, Ordering::Relaxed);
         }
-
-        let tmp = dir.join(format!("{}.part", asset.filename));
-        let mut file =
-            std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
-        let mut reader = resp;
-        let mut buf = [0u8; 64 * 1024];
-        loop {
-            if progress.cancel.load(Ordering::Relaxed) {
-                let _ = std::fs::remove_file(&tmp);
-                anyhow::bail!("cancelled");
-            }
-            let n = reader.read(&mut buf).context("reading download chunk")?;
-            if n == 0 {
-                break;
-            }
-            file.write_all(&buf[..n])
-                .context("writing download chunk")?;
-            progress.bytes.fetch_add(n as u64, Ordering::Relaxed);
-        }
-        drop(file);
-
-        if let Some(expected) = asset.sha256
-            && sha256_file(&tmp)? != expected
-        {
-            let _ = std::fs::remove_file(&tmp);
-            anyhow::bail!("sha256 mismatch for {}", asset.filename);
-        }
-        std::fs::rename(&tmp, &dest).with_context(|| format!("finalizing {}", dest.display()))?;
+        install_download(&mut resp, &dest, asset.sha256, progress)?;
     }
+    check_cancelled(progress)
+}
+
+/// RAII cleanup covers read/write/hash/install errors as well as cancellation.
+fn install_download(
+    reader: &mut impl std::io::Read,
+    dest: &Path,
+    expected_sha256: Option<&str>,
+    progress: &DownloadProgress,
+) -> anyhow::Result<()> {
+    use std::io::Write as _;
+
+    check_cancelled(progress)?;
+    let mut temp = tempfile::Builder::new()
+        .prefix(".shotori-model-")
+        .suffix(".part")
+        .tempfile_in(dest.parent().context("model path has no parent")?)?;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        check_cancelled(progress)?;
+        let n = reader.read(&mut buf).context("reading download chunk")?;
+        // Cancellation may happen while read is blocked, including its EOF.
+        check_cancelled(progress)?;
+        if n == 0 {
+            break;
+        }
+        temp.write_all(&buf[..n])
+            .context("writing download chunk")?;
+        progress.bytes.fetch_add(n as u64, Ordering::Relaxed);
+    }
+    temp.flush().context("flushing model download")?;
+    if let Some(expected) = expected_sha256 {
+        anyhow::ensure!(
+            sha256_file(temp.path())? == expected,
+            "sha256 mismatch for {}",
+            dest.display()
+        );
+    }
+    check_cancelled(progress)?;
+    temp.persist(dest)
+        .map_err(|error| error.error)
+        .with_context(|| format!("finalizing {}", dest.display()))?;
     Ok(())
 }
 
@@ -276,7 +311,7 @@ fn sha256_file(path: &std::path::Path) -> anyhow::Result<String> {
 }
 
 static ENG: OnceLock<Mutex<rapidocr_core::RapidOcr>> = OnceLock::new();
-/// Initialization mutex: concurrent Ctrl+O triggers only one download
+/// Initialization mutex: concurrent callers initialize the engine only once
 static INIT_LOCK: Mutex<()> = Mutex::new(());
 
 /// Acquire the engine (lock-guarded). OCR is inherently serial: inference
@@ -342,4 +377,223 @@ pub fn run_ocr(rgba: &[u8], w: u32, h: u32) -> anyhow::Result<String> {
         .collect::<Vec<_>>()
         .join("\n");
     Ok(text.trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DownloadProgress, PPOCRV6_SMALL, asset_name, cache_lock, download_models_in,
+        install_download,
+    };
+    use std::io::{self, Read};
+    use std::sync::atomic::Ordering;
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
+
+    const ABC_SHA256: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    fn assert_no_partial_files(dir: &std::path::Path) {
+        assert!(std::fs::read_dir(dir).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".part")
+        }));
+    }
+
+    #[test]
+    fn initial_download_progress_has_no_asset_name() {
+        let progress = DownloadProgress::default();
+        assert_eq!(asset_name(progress.file_idx.load(Ordering::Relaxed)), "?");
+    }
+
+    #[test]
+    fn asset_names_use_one_based_indices() {
+        for (index, asset) in PPOCRV6_SMALL.assets().iter().enumerate() {
+            assert_eq!(asset_name((index + 1) as u8), asset.filename);
+        }
+    }
+
+    #[test]
+    fn out_of_range_asset_index_has_no_name() {
+        let index = u8::try_from(PPOCRV6_SMALL.assets().len() + 1).unwrap();
+        assert_eq!(asset_name(index), "?");
+    }
+
+    #[test]
+    fn verified_download_replaces_corrupt_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("model");
+        std::fs::write(&dest, b"corrupt").unwrap();
+        install_download(
+            &mut &b"abc"[..],
+            &dest,
+            Some(ABC_SHA256),
+            &DownloadProgress::default(),
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"abc");
+        assert_no_partial_files(dir.path());
+    }
+
+    #[test]
+    fn checksum_failure_preserves_existing_file_and_cleans_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("model");
+        std::fs::write(&dest, b"existing").unwrap();
+        let result = install_download(
+            &mut &b"bad"[..],
+            &dest,
+            Some(ABC_SHA256),
+            &DownloadProgress::default(),
+        );
+
+        assert!(result.unwrap_err().to_string().contains("sha256 mismatch"));
+        assert_eq!(std::fs::read(&dest).unwrap(), b"existing");
+        assert_no_partial_files(dir.path());
+    }
+
+    #[test]
+    fn interrupted_read_cleans_temp_and_retry_succeeds() {
+        struct Interrupted(bool);
+
+        impl Read for Interrupted {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "connection lost",
+                    ));
+                }
+                self.0 = true;
+                buf[0] = b'a';
+
+                Ok(1)
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("model");
+
+        assert!(
+            install_download(
+                &mut Interrupted(false),
+                &dest,
+                Some(ABC_SHA256),
+                &DownloadProgress::default()
+            )
+            .is_err()
+        );
+        assert!(!dest.exists());
+        assert_no_partial_files(dir.path());
+
+        install_download(
+            &mut &b"abc"[..],
+            &dest,
+            Some(ABC_SHA256),
+            &DownloadProgress::default(),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"abc");
+    }
+
+    #[test]
+    fn cancellation_at_eof_does_not_install_model() {
+        struct CancelAtEof<'a>(&'a DownloadProgress);
+
+        impl Read for CancelAtEof<'_> {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                self.0.cancel.store(true, Ordering::Relaxed);
+                Ok(0)
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("model");
+        let progress = DownloadProgress::default();
+        let result = install_download(&mut CancelAtEof(&progress), &dest, None, &progress);
+
+        assert_eq!(result.unwrap_err().to_string(), "cancelled");
+        assert!(!dest.exists());
+        assert_no_partial_files(dir.path());
+    }
+
+    #[test]
+    fn failed_install_cleans_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("model");
+        std::fs::create_dir(&dest).unwrap();
+        let error = install_download(
+            &mut &b"abc"[..],
+            &dest,
+            Some(ABC_SHA256),
+            &DownloadProgress::default(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("finalizing"));
+        // Cleanup must happen even while the caller retains the error.
+        assert_no_partial_files(dir.path());
+    }
+
+    #[test]
+    fn cache_lock_serializes_handles_and_wait_is_cancellable() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = cache_lock(dir.path(), &DownloadProgress::default()).unwrap();
+        let other = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .open(dir.path().join(".download.lock"))
+            .unwrap();
+
+        assert!(matches!(
+            other.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+
+        let progress = Arc::new(DownloadProgress::default());
+        let worker_progress = progress.clone();
+        let path = dir.path().to_path_buf();
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            tx.send(cache_lock(&path, &worker_progress).map(|_| ()))
+                .unwrap();
+        });
+        progress.cancel.store(true, Ordering::Relaxed);
+
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap_err()
+                .to_string(),
+            "cancelled"
+        );
+
+        worker.join().unwrap();
+        drop(first);
+
+        assert!(other.try_lock().is_ok());
+    }
+
+    #[test]
+    fn verified_cached_model_needs_no_network() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut asset = PPOCRV6_SMALL.assets()[0];
+
+        asset.filename = "model";
+        asset.url = "http://127.0.0.1:1/must-not-be-requested";
+        asset.sha256 = Some(ABC_SHA256);
+        std::fs::write(dir.path().join(asset.filename), b"abc").unwrap();
+
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap();
+        let progress = DownloadProgress::default();
+
+        download_models_in(dir.path(), &[asset], &progress, &client).unwrap();
+        assert_eq!(progress.bytes.load(Ordering::Relaxed), 0);
+    }
 }

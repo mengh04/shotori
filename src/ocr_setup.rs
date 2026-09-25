@@ -37,8 +37,6 @@ pub(crate) struct OcrSetup {
     pub stage: Stage,
     pub snapshot: Snapshot,
     pub progress: Arc<DownloadProgress>,
-    /// Last readouts pushed to the render (to skip redundant notifies)
-    pub shown: (u64, u64, u8),
 }
 
 impl OcrSetup {
@@ -47,8 +45,14 @@ impl OcrSetup {
             stage: Stage::Confirm,
             snapshot,
             progress: Arc::new(DownloadProgress::default()),
-            shown: (0, 0, 0),
         }
+    }
+
+    /// Only the active download may update this dialog or consume its snapshot.
+    pub fn owns_download(&self, progress: &Arc<DownloadProgress>) -> bool {
+        Arc::ptr_eq(&self.progress, progress)
+            && !progress.cancel.load(Ordering::Relaxed)
+            && matches!(self.stage, Stage::Downloading)
     }
 }
 
@@ -204,5 +208,49 @@ fn truncate(s: &str, max: usize) -> String {
     } else {
         let cut: String = s.chars().take(max).collect();
         format!("{cut}…")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OcrSetup, Snapshot, Stage};
+    use crate::ocr::DownloadProgress;
+    use std::sync::{Arc, atomic::Ordering};
+
+    fn setup() -> OcrSetup {
+        OcrSetup::new(Snapshot {
+            w: 1,
+            h: 1,
+            rgba: vec![0; 4],
+        })
+    }
+
+    #[test]
+    fn cancelled_download_cannot_update_reopened_dialog() {
+        let mut old_setup = setup();
+        old_setup.stage = Stage::Downloading;
+        let old = old_setup.progress.clone();
+        assert!(old_setup.owns_download(&old));
+        old.cancel.store(true, Ordering::Relaxed);
+        assert!(!old_setup.owns_download(&old));
+
+        let mut reopened = setup();
+        assert!(!reopened.owns_download(&old));
+        reopened.stage = Stage::Downloading;
+        assert!(!reopened.owns_download(&old));
+        assert!(reopened.owns_download(&reopened.progress));
+    }
+
+    #[test]
+    fn retry_rejects_previous_attempt_even_without_cancellation() {
+        let mut setup = setup();
+        setup.stage = Stage::Downloading;
+        let old = setup.progress.clone();
+        setup.stage = Stage::Failed("network error".into());
+        assert!(!setup.owns_download(&old));
+        setup.progress = Arc::new(DownloadProgress::default());
+        setup.stage = Stage::Downloading;
+        assert!(!setup.owns_download(&old));
+        assert!(setup.owns_download(&setup.progress));
     }
 }
