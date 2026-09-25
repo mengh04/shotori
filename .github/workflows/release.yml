@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package (strip + tarball)
+        run: |
+          strip target/release/shotori
+          mkdir dist
+          cp target/release/shotori LICENSE dist/
+          VERSION="${GITHUB_REF_NAME#v}"
+          tar -C dist -czf "shotori-${VERSION}-x86_64.tar.gz" shotori LICENSE
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-tarball
+          path: shotori-*-x86_64.tar.gz
+
+  github-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-tarball
+
+      - name: Create release with artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ARTIFACT=$(ls shotori-*-x86_64.tar.gz)
+          gh release create "${GITHUB_REF_NAME}" "$ARTIFACT" \
+            --title "shotori ${GITHUB_REF_NAME}" \
+            --generate-notes
+
+  aur:
+    # Bump the AUR package (pkgver + sha256) and push via the release key.
+    # Requires the AUR_SSH_KEY secret (private key registered on AUR).
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-tarball
+          path: artifact
+
+      - name: Push PKGBUILD update to AUR
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          pacman -Sy --noconfirm git openssh >/dev/null
+          install -dm700 /root/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" > /root/.ssh/aur
+          chmod 600 /root/.ssh/aur
+          ssh-keyscan -t ed25519 aur.archlinux.org >> /root/.ssh/known_hosts
+          git config --global user.name "shotori-release-bot"
+          git config --global user.email "mengh04@users.noreply.github.com"
+          git clone ssh://aur@aur.archlinux.org/shotori.git aur
+          cd aur
+          SHA=$(sha256sum "../artifact/shotori-${VERSION}-x86_64.tar.gz" | cut -d' ' -f1)
+          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          sed -i "s/^sha256sums=.*/sha256sums=('${SHA}')/" PKGBUILD
+          makepkg --printsrcinfo > .SRCINFO
+          git add PKGBUILD .SRCINFO
+          git commit -m "shotori ${VERSION}-1"
+          git push
+
+  crates-io:
+    # Publishes to crates.io. Skipped unless CARGO_REGISTRY_TOKEN is set
+    # (crates.io/settings/tokens, publish-new + publish-update scopes).
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish
+        env:
+          TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "CARGO_REGISTRY_TOKEN not set — skipping crates.io publish"
+            exit 0
+          fi
+          cargo publish --token "$TOKEN"
