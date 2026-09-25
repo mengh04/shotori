@@ -46,6 +46,15 @@ impl Overlay {
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
 
+        // Pre-warm the OCR engine while the user is still drawing their
+        // selection: the init cost hides behind interaction time.
+        // warmup() skips first-ever runs (no surprise 31MB download).
+        #[cfg(feature = "ocr")]
+        std::thread::Builder::new()
+            .name("shotori-ocr-warmup".into())
+            .spawn(crate::ocr::warmup)
+            .ok();
+
         let debug_targeted = debug_targeted(&capture.output_name);
         if debug_targeted {
             spawn_debug_action(window, cx);

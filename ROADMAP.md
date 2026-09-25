@@ -250,3 +250,30 @@ overlay 只剩装配。首批 12 个单元测试（不需要合成器）。
   Option 天然是）
 - gpui-kit 没给 Option<impl IntoElement> 实现 IntoElement（上游 gpui 有），
   Infallible 也没有——非 ocr 桩返回 Option<&'static str> 最省事
+
+## v0.6.3 OCR 提速：预热 + 跳过重复哈希（2026-09-26）
+
+### 问题
+- 一次性进程 × 进程内引擎缓存 = 每次 Ctrl+O 都全量冷启动
+  （读盘 31MB + 建 3 个 ort session + sha256 哈希 31MB），实测 OCR 净耗时
+  1464ms（release，800x400 选区 34 行）
+- 诊断方法论：debug 构建的纯 Rust 前后处理慢 10-100 倍（10.8s），
+  测速必须用 release 安装版（3.36s 全链路）
+
+### 修复
+- **A. 预热**：overlay 打开即后台 warmup（独立线程，仅当模型已缓存——
+  首次使用不在用户只要截图时惊喜下载 31MB）。init 藏进用户框选的
+  2-5 秒里
+- **B. 跳过重复 sha256**：模型齐全时完全跳过 ensure（它每次调用全量
+  哈希）；损坏检测改由"engine init 失败 → 清缓存"兜底
+- 效果：后门最坏情况 OCR 净耗时 1464ms → 890ms；真实使用（框选 2-5s）
+  Ctrl+O 只剩纯推理 ~300-500ms
+
+### 自愈行为升级（意外收获）
+- 损坏模型文件现在被 warmup 线程静默消化：warmup 撞上损坏 → init 失败
+  → 清缓存；随后正式 OCR 发现缓存空 → 自动重新下载 → 用户无感修复
+  （v0.6.1 是显式报错后手动重试）
+
+### 备注
+- `let _ = engine()` 触发 let_underscore_lock lint（故意放锁也不行），
+  显式 `drop(engine())` 表达意图

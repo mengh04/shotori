@@ -1,8 +1,11 @@
 //! # OCR: selection → PP-OCRv6 (rapidocr-core + ONNX Runtime) → text
 //!
-//! Lazy engine loading: the first Ctrl+O downloads the models (~31MB,
-//! ModelScope) and initializes (~1-2s); afterwards the engine stays resident
-//! (<200ms per call). Models are cached in `~/.local/share/shotori/ocr-models/`.
+//! Engine loading: the overlay pre-warms on open ([`warmup`]) so the ~1s
+//! init hides behind the user drawing their selection; the first-ever use
+//! downloads the models (~31MB, ModelScope) inline. Models are cached in
+//! `~/.local/share/shotori/ocr-models/`; when all files exist we skip the
+//! sha256 re-verification entirely (corruption is caught by engine init
+//! failing, which also cleans the cache).
 //!
 //! Failure policy: **initialization failures neither panic nor get cached** —
 //! a clean Err is returned (the overlay prints the error and stays usable),
@@ -33,41 +36,59 @@ fn model_dir() -> anyhow::Result<PathBuf> {
 
 /// Download missing models + build the engine. Err = a recoverable failure
 /// (retry next time); never panics.
+///
+/// Perf note: when all model files exist we skip `ensure_*` entirely — it
+/// re-hashes all 31MB on every call, which is pure waste in the common
+/// path (corruption is instead caught by engine init failing, which also
+/// cleans the cache).
 fn init_engine() -> anyhow::Result<Mutex<rapidocr_core::RapidOcr>> {
     let dir = model_dir()?;
-    let missing = PPOCRV6_SMALL
-        .assets()
-        .iter()
-        .filter(|a| !dir.join(a.filename).exists())
-        .count();
-    if missing > 0 {
+    if assets_missing(&dir) > 0 {
         println!("[shotori] first OCR use: downloading PP-OCRv6 small models (~31MB from ModelScope)…");
-    }
 
-    // The download runs on its own thread: reqwest::blocking cannot run
-    // inside an async context (gpui's background executor is one, tokio or
-    // not), so full isolation is the safest bet; the 8MB stack leaves head
-    // room for ort's model loading
-    let dl_dir = dir.clone();
-    let dl = std::thread::Builder::new()
-        .name("shotori-ocr-model-dl".into())
-        .stack_size(8 * 1024 * 1024)
-        .spawn(move || rapidocr_core::model::ensure_ppocrv6_small_models(&dl_dir))
-        .context("failed to spawn model download thread")?;
-    if let Err(e) = dl
-        .join()
-        .map_err(|_| anyhow::anyhow!("model download thread panicked"))?
-    {
-        // Wipe half-finished downloads: a truncated/corrupt model file fails
-        // the sha256 check every single time — without this cleanup OCR is
-        // dead permanently (rapidocr-core's downloader has no temp+rename)
-        let _ = std::fs::remove_dir_all(&dir);
-        return Err(e.context("model download failed (cache cleaned, safe to retry)"));
+        // The download runs on its own thread: reqwest::blocking cannot run
+        // inside an async context (gpui's background executor is one, tokio
+        // or not), so full isolation is the safest bet; the 8MB stack leaves
+        // head room for ort's model loading
+        let dl_dir = dir.clone();
+        let dl = std::thread::Builder::new()
+            .name("shotori-ocr-model-dl".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || rapidocr_core::model::ensure_ppocrv6_small_models(&dl_dir))
+            .context("failed to spawn model download thread")?;
+        if let Err(e) = dl
+            .join()
+            .map_err(|_| anyhow::anyhow!("model download thread panicked"))?
+        {
+            // Wipe half-finished downloads: a truncated/corrupt model file
+            // fails the sha256 check every single time — without this
+            // cleanup OCR is dead permanently (rapidocr-core's downloader
+            // has no temp+rename)
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(e.context("model download failed (cache cleaned, safe to retry)"));
+        }
     }
 
     let cfg = PPOCRV6_SMALL.config(&dir);
-    let eng = rapidocr_core::RapidOcr::new(cfg).context("OCR engine init failed")?;
-    Ok(Mutex::new(eng))
+    match rapidocr_core::RapidOcr::new(cfg) {
+        Ok(eng) => Ok(Mutex::new(eng)),
+        Err(e) => {
+            // Session creation failing usually means a corrupt model file
+            // (the sha256 path is skipped in the common path above) — clean
+            // the cache so the next attempt re-downloads instead of bricking
+            let _ = std::fs::remove_dir_all(&dir);
+            Err(e.context("OCR engine init failed (model cache cleaned, safe to retry)"))
+        }
+    }
+}
+
+/// How many of the model-set files are absent from `dir`
+fn assets_missing(dir: &std::path::Path) -> usize {
+    PPOCRV6_SMALL
+        .assets()
+        .iter()
+        .filter(|a| !dir.join(a.filename).exists())
+        .count()
 }
 
 static ENG: OnceLock<Mutex<rapidocr_core::RapidOcr>> = OnceLock::new();
@@ -99,6 +120,20 @@ fn engine() -> anyhow::Result<MutexGuard<'static, rapidocr_core::RapidOcr>> {
         .context("OCR engine vanished after init")?
         .lock()
         .map_err(|_| anyhow::anyhow!("OCR engine lock poisoned"))
+}
+
+/// Pre-initialize the engine in the background (no inference). The overlay
+/// calls this on open so the ~1s init hides behind the user drawing their
+/// selection. Only runs when models are already cached — a first-ever run
+/// must not surprise the user with a 31MB download during a plain screenshot.
+pub fn warmup() {
+    if let Ok(dir) = model_dir()
+        && assets_missing(&dir) == 0
+    {
+        // We only want the init side effect; the guard is released
+        // immediately (that's the point of a warmup)
+        drop(engine());
+    }
 }
 
 /// RGBA pixels → OCR text.
