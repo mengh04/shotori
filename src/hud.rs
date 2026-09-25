@@ -89,6 +89,6 @@ pub(crate) fn hint_bar() -> impl IntoElement {
                 .bg(rgba(CHIP_BG))
                 .text_size(px(13.))
                 .text_color(rgba(HINT_TEXT))
-                .child("拖拽框选 · Enter 复制 · Ctrl+S 保存 · Esc 退出"),
+                .child("拖拽框选 · Enter 复制 · Ctrl+S 保存 · Ctrl+O OCR · Esc 退出"),
         )
 }

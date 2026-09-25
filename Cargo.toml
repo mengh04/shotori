@@ -1,8 +1,8 @@
 [package]
 name = "shotori"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
-description = "Shotori — Wayland-first screenshot tool built with gpui-kit"
+description = "Shotori — Wayland-first screenshot tool with optional OCR (gpui-kit)"
 license = "MIT"
 repository = "https://github.com/mengh04/shotori"
 keywords = ["screenshot", "wayland", "gpui", "screencopy", "clipboard"]
@@ -31,3 +31,15 @@ chrono = "0.4"
 
 # 贴图功能（依赖 vendor 的 set_layer_margin 补丁）在 `pin` 分支保存；
 # 上游合并补丁后可合回主干并恢复此处 [patch.crates-io] 或直接用上游版本
+#
+# ── 可选功能（默认关闭，保持二进制瘦）─────────────────────────────
+[features]
+default = []
+# Ctrl+O 选区 OCR：PP-OCRv6 small 模型（首次使用自动下载到 ~/.local/share/shotori/ocr-models/）
+ocr = ["dep:rapidocr-core"]
+
+[dependencies.rapidocr-core]
+version = "0.2"
+default-features = false
+features = ["model-download"]
+optional = true

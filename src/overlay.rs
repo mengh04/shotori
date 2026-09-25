@@ -18,7 +18,7 @@ use crate::image_util;
 use crate::selection::Selection;
 use crate::toolbar::selection_toolbar;
 
-gpui_kit::actions!([QuitOverlay, CopySelection, SaveSelection]);
+gpui_kit::actions!([QuitOverlay, CopySelection, SaveSelection, OcrSelection]);
 
 pub struct Overlay {
     focus_handle: FocusHandle,
@@ -171,6 +171,55 @@ impl Overlay {
         );
         cx.quit();
     }
+
+    /// Ctrl+O：裁剪选区 → OCR 识别 → 文本进剪贴板。
+    #[cfg(feature = "ocr")]
+    fn ocr_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (w, h, rgba) = match self.crop(self.selection_or_full(window), window) {
+            Some(x) => x,
+            None => {
+                println!("[shotori] 选区为空，忽略");
+                return;
+            }
+        };
+        let window_handle = window.window_handle();
+        cx.spawn(async move |_, cx| {
+            let result: anyhow::Result<String> = cx
+                .background_executor()
+                .spawn(async move { crate::ocr::run_ocr(&rgba, w, h) })
+                .await;
+            let text = result.and_then(|t| {
+                if t.is_empty() {
+                    Err(anyhow::anyhow!("OCR 未识别到文字"))
+                } else {
+                    Ok(t)
+                }
+            });
+            let _ = window_handle.update(cx, |_, window, cx| match &text {
+                Ok(t) => {
+                    if let Err(e) = crate::clipboard::copy_text(t.clone()) {
+                        eprintln!("[shotori] OCR 复制失败：{e:#}");
+                        let _ = window;
+                        return;
+                    }
+                    let lines = t.lines().count();
+                    let preview: String = t
+                        .chars()
+                        .filter(|c| !c.is_control())
+                        .take(60)
+                        .collect();
+                    println!(
+                        "[shotori] OCR 完成 {w}x{h} → {lines} 行 → 剪贴板（预览：{preview}）"
+                    );
+                    cx.quit();
+                }
+                Err(e) => {
+                    eprintln!("[shotori] OCR 识别失败：{e:#}");
+                }
+            });
+        })
+        .detach();
+    }
 }
 
 impl Render for Overlay {
@@ -189,6 +238,14 @@ impl Render for Overlay {
             }))
             .on_action(cx.listener(|this, _: &SaveSelection, window, cx| {
                 this.save_selection(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &OcrSelection, window, cx| {
+                #[cfg(feature = "ocr")]
+                this.ocr_selection(window, cx);
+                #[cfg(not(feature = "ocr"))]
+                {
+                    let _ = (this, window, cx);
+                }
             }))
             // 两段 Esc：拖拽中 = 只放弃本次拖拽（吞掉动作不冒泡）；
             // 松手后（Idle/Selected）= 不处理，冒泡到 main.rs 的全局兜底 → 退出
@@ -273,12 +330,12 @@ fn debug_selection(targeted: bool) -> Selection {
         .unwrap_or(Selection::Idle)
 }
 
-/// SHOTORI_DEBUG_ACTION=copy|quit：1.5s 后自动触发对应动作——无头 e2e 的唯一入口
-/// （虚拟指针在 niri 上不可用，见 ROADMAP）。quit 走 dispatch_action 真实管线
+/// SHOTORI_DEBUG_ACTION=copy|quit|ocr：1.5s 后自动触发对应动作——无头 e2e 的唯一入口
+/// （虚拟指针在 niri 上不可用，见 ROADMAP）。quit/ocr 走 dispatch_action 真实管线
 fn spawn_debug_action(window: &mut Window, cx: &mut Context<Overlay>) {
     let Some(action) = std::env::var("SHOTORI_DEBUG_ACTION")
         .ok()
-        .filter(|a| a == "copy" || a == "quit")
+        .filter(|a| a == "copy" || a == "quit" || (a == "ocr" && cfg!(feature = "ocr")))
     else {
         return;
     };
@@ -290,6 +347,8 @@ fn spawn_debug_action(window: &mut Window, cx: &mut Context<Overlay>) {
         let _ = win.update(cx, |_, window, cx| {
             let action: Box<dyn gpui_kit::Action> = match action.as_str() {
                 "copy" => Box::new(CopySelection),
+                #[cfg(feature = "ocr")]
+                "ocr" => Box::new(OcrSelection),
                 _ => Box::new(QuitOverlay),
             };
             window.dispatch_action(action, cx);

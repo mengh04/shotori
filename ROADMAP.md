@@ -167,3 +167,34 @@ overlay 只剩装配。首批 12 个单元测试（不需要合成器）。
   补齐 crates.io 元数据（license/repository 待用户确认）
 - `cargo publish --dry-run --allow-dirty` 通过：无 path 依赖、打包合规
 - 真发布：`cargo login` → `cargo publish`
+
+## v0.6.0 选区 OCR（2026-09-26）
+
+### 功能
+- Ctrl+O：选区 → PP-OCRv6 small（rapidocr-core + ort/ONNX Runtime）→ 文本进剪贴板
+- 首次使用自动从 ModelScope 下载模型（4 文件 ~31MB）到
+  `~/.local/share/shotori/ocr-models/`，二次调用秒开（引擎 OnceLock<Mutex> 常驻）
+- feature gate：`--features ocr`；默认构建零增量（crates.io 发布不受重依赖拖累）
+- 剪贴板 daemon 通用化：`--clipboard-daemon <MIME>`，copy_image/copy_text 共用
+  分身框架；文本 offer `text/plain;charset=utf-8` + 降级 `text/plain`
+
+### 选型记录（为什么是 rapidocr-core）
+- 候选：rapidocr-core（ONNX/ort）vs rusto-rs（MNN）vs paddle-ocr-rs
+- rusto-rs 的 mnn-sys 构建链三策略（vendor/prebuilt/源码）+ bindgen/cmake 偏脆
+- rapidocr-core：`run_image(&RgbImage)` 直接吃内存像素；模型缓存体系完善
+  （ModelCache + SHA256 校验）；ort 构建时自动下载预编译 libonnxruntime 静态链接
+- 准确率：PP-OCRv6 small 中英混排可用；1080p 屏 <16px 小字会吃力
+  （HiDPI 屏反而好，物理像素多）
+
+### e2e 验证记录
+- 首次：模型自动下载 ✓ → 全屏 OCR → 剪贴板文本读回（终端内容中英混排转录）✓
+- 二次：秒开，日志完整 ✓
+- 精确选区 1500x800 → 32 行 612 字符 ✓（行结构保留）
+- 图片复制回归 600x400 ✓（daemon 改造无破坏）
+- 真实用户 Ctrl+O 验收：文件侧边栏 631x328 → 14 行 ✓
+- 已知小坑：stdout 重定向到文件时全缓冲，SIGTERM 杀进程丢最后几行日志
+  （前台使用无影响）；行首缺字多为选区边缘切字，非模型问题
+
+### 备注
+- `opencode run` 会话里 SHOTORI_DEBUG_* 环境变量不残留（每 shell 独立）
+- OCR 结果无 GUI 预览（v1 直接进剪贴板）；浮窗预览/编辑候补

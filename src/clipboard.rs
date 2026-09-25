@@ -3,9 +3,9 @@
 //! **Wayland 剪贴板是"驻留 offer"模型**：数据源进程活着，剪贴板才有内容；
 //! 截图工具复制完就退出 = 剪贴板瞬间清空。解法（wl-copy 同款）：
 //!
-//! - 复制 = 把 PNG 字节经 stdin 交给一个**后台分身**（re-exec 自身
+//! - 复制 = 把数据经 stdin 交给一个**后台分身**（re-exec 自身
 //!   [`DAEMON_ARG`]，避开多线程进程里裸 fork 的坑）
-//! - 分身连接 compositor，挂 `image/png` 源；谁粘贴就写数据给谁
+//! - 分身连接 compositor，挂数据源；谁粘贴就写数据给谁
 //! - 剪贴板被别人覆盖时分身收到 `cancelled`，功成身退退出
 //!
 //! 于是可以连拍 N 张：每只新分身上岗，前一只自动退场，不堆积。
@@ -28,12 +28,26 @@ use wayland_protocols_wlr::data_control::v1::client::{
 
 /// 分身模式的命令行参数（main.rs 据此分流）
 pub const DAEMON_ARG: &str = "--clipboard-daemon";
-/// 我们唯一提供的 MIME 类型（GTK/Qt/浏览器都认）
-pub const MIME: &str = "image/png";
+/// 图片 MIME（GTK/Qt/浏览器都认）
+pub const IMAGE_MIME: &str = "image/png";
+/// 文本 MIME（带 charset 后缀，GTK/Qt 都能正确粘贴）
+pub const TEXT_MIME: &str = "text/plain;charset=utf-8";
 
 /// 把 PNG 字节放上剪贴板：spawn 后台分身驻留服务，立即返回。
 /// 分身的生死由 compositor 的 cancelled 事件管理，调用方无需关心。
 pub fn copy_image(png: Vec<u8>) -> anyhow::Result<()> {
+    spawn_daemon(IMAGE_MIME, &png)
+}
+
+/// 把纯文本放上剪贴板（OCR 结果出口）。
+pub fn copy_text(text: String) -> anyhow::Result<()> {
+    spawn_daemon(TEXT_MIME, text.as_bytes())
+}
+
+fn spawn_daemon(mime: &str, data: &[u8]) -> anyhow::Result<()> {
+    if data.is_empty() {
+        anyhow::bail!("空数据，不复制");
+    }
     if !manager_available() {
         anyhow::bail!("compositor 不支持 zwlr_data_control_manager_v1，无法复制到剪贴板");
     }
@@ -41,6 +55,7 @@ pub fn copy_image(png: Vec<u8>) -> anyhow::Result<()> {
     let exe = std::env::current_exe().context("找不到自身可执行文件")?;
     let mut child = Command::new(exe)
         .arg(DAEMON_ARG)
+        .arg(mime) // 分身入口由此决定 offer 什么
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -48,12 +63,12 @@ pub fn copy_image(png: Vec<u8>) -> anyhow::Result<()> {
         .context("启动剪贴板分身失败")?;
 
     // 写完即关（drop）——分身读到 EOF 就去挂 offer。
-    // 截图几 MB > 管道缓冲没关系：分身第一时间在读，不会死锁。
+    // 几 MB > 管道缓冲没关系：分身第一时间在读，不会死锁。
     child
         .stdin
         .take()
         .expect("刚指定的 piped stdin")
-        .write_all(&png)
+        .write_all(data)
         .context("向剪贴板分身传数据失败")?;
     Ok(())
 }
@@ -95,13 +110,18 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Probe {
 
 // ── 分身本体 ──────────────────────────────────────────────────────────
 
-/// 分身入口：读 stdin 全量 → 连 compositor 挂 offer → 服务粘贴请求直到被覆盖
+/// 分身入口：`shotori --clipboard-daemon <MIME>`
+/// stdin 读全量 → 连 compositor 挂 offer → 服务粘贴请求直到被覆盖
 pub fn daemon_main() -> anyhow::Result<()> {
-    let mut png = Vec::new();
+    let mime = std::env::args()
+        .nth(2)
+        .unwrap_or_else(|| IMAGE_MIME.to_string());
+
+    let mut payload = Vec::new();
     std::io::stdin()
-        .read_to_end(&mut png)
+        .read_to_end(&mut payload)
         .context("分身读 stdin 失败")?;
-    if png.is_empty() {
+    if payload.is_empty() {
         anyhow::bail!("分身收到空数据，不上岗");
     }
 
@@ -110,8 +130,16 @@ pub fn daemon_main() -> anyhow::Result<()> {
     let qh = queue.handle();
     conn.display().get_registry(&qh, ());
 
+    // 文本模式也 offer 一个降级 text/plain（某些应用只认不带 charset 后缀的）
+    let fallback = if mime.starts_with("text/") {
+        Some("text/plain".to_string())
+    } else {
+        None
+    };
+
     let mut app = Daemon {
-        png,
+        payload,
+        mime: mime.clone(),
         ..Daemon::default()
     };
     queue.roundtrip(&mut app)?;
@@ -127,7 +155,10 @@ pub fn daemon_main() -> anyhow::Result<()> {
 
     let device = manager.get_data_device(&seat, &qh, ());
     let source = manager.create_data_source(&qh, ());
-    source.offer(MIME.to_string());
+    source.offer(mime.to_string());
+    if let Some(fb) = &fallback {
+        source.offer(fb.clone());
+    }
     device.set_selection(Some(&source));
     app.device = Some(device);
     app.source = Some(source);
@@ -149,7 +180,8 @@ pub fn daemon_main() -> anyhow::Result<()> {
 
 #[derive(Default)]
 struct Daemon {
-    png: Vec<u8>,
+    payload: Vec<u8>,
+    mime: String,
     seat: Option<wl_seat::WlSeat>,
     manager: Option<ZwlrDataControlManagerV1>,
     device: Option<ZwlrDataControlDeviceV1>,
@@ -259,9 +291,11 @@ impl Dispatch<ZwlrDataControlSourceV1, ()> for Daemon {
         match event {
             // 有人粘贴：往对方给的 fd 里写数据（fd 由 compositor 转手，写完关闭）
             zwlr_data_control_source_v1::Event::Send { mime_type, fd } => {
-                if mime_type == MIME {
+                if mime_type == state.mime
+                    || mime_type == "text/plain"
+                {
                     let mut file = std::fs::File::from(fd); // File drop 时关闭 fd
-                    let _ = file.write_all(&state.png); // 对方管道断裂等：忽略即可
+                    let _ = file.write_all(&state.payload); // 对方管道断裂等：忽略即可
                 }
                 // mime 不匹配：fd（OwnedFd）在本分支末尾 drop，自动关闭
                 let _ = source;
