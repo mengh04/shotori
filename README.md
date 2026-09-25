@@ -1,37 +1,105 @@
-# Saccade
+# Shotori
 
-**Linux（Wayland 优先）截图套件** —— 区域截图、窗口识别截图、滚动长截图、OCR、贴图钉屏。
-目标是做出 PixPin 级别的功能完整度，原生 Wayland，不将就 X11。
+**A Wayland-first screenshot tool with built-in OCR, drawn entirely by hand with [gpui-kit](https://crates.io/crates/gpui-kit).**
 
-名字来自 **saccade（眼跳）**：你阅读这行字时，眼球正以每秒 3–4 次的频率快速跳动——
-滚动长截图与 OCR 阅读扫描，在神经科学里是同一个动作。
+[English](README.md) · [简体中文](README.zh-CN.md)
 
-## 技术栈
+Freeze the screen, drag a selection, then copy it, save it, or read the text
+out of it — all without leaving the keyboard.
 
-- **UI**：[gpui-kit](https://github.com/longbridge/gpui-kit)（Zed GPUI 的应用框架封装）
-- **平台**：Wayland（`zwlr_layer_shell_v1` 覆盖层 / `zwlr_screencopy` 与
-  `ext-image-copy-capture` 捕获 / portal 兜底）
-- 语言：Rust
+![workflow](https://img.shields.io/badge/platform-Linux%20%2F%20Wayland-8892bf) ![license](https://img.shields.io/badge/license-MIT-blue)
 
-## 当前状态：spike 阶段
+## Features
 
-- [x] spike #1 — gpui `WindowKind::LayerShell` 覆盖层链路验证（本仓库第一个可运行目标）
-- [ ] spike #2 — 手写 `wayland-client` 裸连 screencopy，60 行最小截图（自制迷你 grim）
-- [ ] 选区交互（拖框、十字线、尺寸提示）
-- [ ] `CaptureBackend` trait + wlr-screencopy 后端
-- [ ] 窗口识别（foreign-toplevel × 双协议）
-- [ ] 工具条（gpui-kit 组件，长在覆盖层内部）
-- [ ] OCR / 长截图 / 贴图（Top 层 layer-shell 窗口）
+- **Region screenshot** — drag to select; the rest of the screen dims and the
+  selection "sees through". A size label follows the selection live.
+- **Multi-monitor done right** — one overlay per output, pinned to the screen
+  it captured. Mixed scales (1.0 / 1.5 / 2.0) and rotated outputs (portrait
+  panels) are handled; tested on a three-monitor niri setup.
+- **Copy** (`Enter` / `Ctrl+C`) — PNG to the Wayland clipboard via a resident
+  background daemon (the wl-copy model), so the clipboard outlives the tool.
+- **Save** (`Ctrl+S`) — timestamped PNG into `~/Pictures/Shotori/`, automatic
+  suffixes on name collisions.
+- **OCR** (`Ctrl+O`) — on-device text recognition (PP-OCRv6 small via ONNX
+  Runtime), text straight to the clipboard. Chinese/English mixed content
+  works. The engine prewarms while you draw the selection; a spinner badge
+  shows while inferring.
+  - First use shows a confirm card, a byte-accurate progress bar, and a
+    cancel button. Models (~31 MB, from ModelScope) are verified by sha256
+    and written atomically — a cancelled download never leaves garbage.
+    Cached in `~/.local/share/shotori/ocr-models/`.
+- **Desktop notifications** — every exit (copy / save / OCR) reports back
+  with a thumbnail of the screenshot, via `org.freedesktop.Notifications`.
+- No selection + `Enter` = full-screen capture. Everything works from a
+  keybinding; notifications mean you never needed a terminal.
 
-## 运行
+## Requirements
+
+- Linux + a wlroots-adjacent Wayland compositor (niri, sway, Hyprland, …)
+  exposing `zwlr_screencopy-unstable-v1` and `zwlr-data-control-v1`.
+- A notification daemon is optional (copy/save/OCR work fine without one).
+- OCR adds ONNX Runtime at build time (a prebuilt library is downloaded
+  automatically by the build script).
+
+## Install
 
 ```bash
-cargo run   # 需要在 Wayland 图形会话中（niri/sway/Hyprland 等）
+cargo install shotori
 ```
 
-spike #1 的预期表现：全屏盖上半透明黑暗幕、中央提示卡片、Esc 退出。
-背景不透明 / Esc 无效 / 尺寸不对 → 都是有效发现，记进 ROADMAP 的"spike 结论"。
+Then bind it, e.g. in niri's `binds.kdl`:
 
-## 架构决策记录
+```kdl
+Mod+Shift+S { spawn "shotori"; }
+```
 
-见 [ROADMAP.md](./ROADMAP.md) —— 含 Wayland 三条捕获通道的选型矩阵（源自开发前的原理调研）。
+## Usage
+
+```
+shotori            # freeze all screens, select, act
+```
+
+| Key | Action |
+|-----|--------|
+| drag | select a region (press again to re-select) |
+| `Enter` / `Ctrl+C` | copy selection (or full screen) to clipboard |
+| `Ctrl+S` | save selection as PNG |
+| `Ctrl+O` | OCR selection → text to clipboard |
+| `Esc` (while dragging) | abandon this drag |
+| `Esc` (otherwise) | exit |
+
+A toolbar with the same actions appears under the selection after release.
+
+### OCR notes
+
+- The engine is PP-OCRv6 small (detection + orientation + recognition),
+  running fully offline once the one-time model download is done.
+- Small text (< ~16 px on a 1080p screen) struggles; HiDPI screens do
+  better (more physical pixels).
+- OCR is a default feature. For a slimmer binary without it:
+  `cargo install shotori --no-default-features`.
+
+## Building from source
+
+```bash
+cargo build --release
+cargo test                        # 21 unit tests, no compositor needed
+cargo build --no-default-features # slim build without OCR
+```
+
+Also ships `screencap`, a small debugging front end for the capture code:
+
+```bash
+cargo run --bin screencap -- --all
+```
+
+## Design notes
+
+The interesting bits — the resident-offer clipboard model, display matching
+under mixed scales, transform semantics that contradict the protocol
+wording, pixel-forensics on a 1 px seam bug — are written up in
+[ROADMAP.md](ROADMAP.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
