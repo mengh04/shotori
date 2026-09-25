@@ -6,26 +6,12 @@ publish = false
 description = "Saccade — Wayland-first screenshot & OCR suite built with gpui-kit"
 
 [dependencies]
-# 本地路径依赖：方便随手翻源码、打补丁、给上游提 PR。
-# （若想锁定发布版，可换成 crates.io 的 "0.6.5"）
-gpui-kit = { path = "/home/mengh04/Workspace/gpui-kit/crates/kit" }
+gpui-kit = "0.6"
+anyhow = "1.0"
 
-# 与 gpui-kit workspace 的 [profile.dev] 保持对齐：
-# 它对这些重依赖开了 opt-level 3，否则 debug 构建里渲染/排版会慢到怀疑人生
-[profile.dev]
-codegen-units = 16
-debug = "limited"
-split-debuginfo = "unpacked"
-
-[profile.dev.package]
-resvg = { opt-level = 3 }
-rustybuzz = { opt-level = 3 }
-taffy = { opt-level = 3 }
-ttf-parser = { opt-level = 3 }
-smol = { opt-level = 3 }
-gpui-pre = { opt-level = 3 }
-gpui-pre-platform = { opt-level = 3 }
-gpui-pre-macros = { opt-level = 3 }
-gpui-pre-sum-tree = { opt-level = 3 }
-ropey = { opt-level = 3 }
-lsp-types = { opt-level = 3 }
+# ── spike #2：裸 wayland-client 实现 screencopy 截图 ──
+wayland-client = "0.31"
+wayland-protocols-wlr = "0.3"
+memmap2 = "0.9"
+tempfile = "3"
+png = "0.17"
