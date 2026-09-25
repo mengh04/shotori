@@ -38,37 +38,9 @@ pub fn crop(
     Some((w, h, out))
 }
 
-/// Generate a collision-free save path:
-/// `~/Pictures/Shotori/Shotori_<date>_<time>.png`
-/// (repeated saves within the same second get `_2`, `_3` suffixes; no overwrites)
-pub fn next_path() -> anyhow::Result<PathBuf> {
-    let dir = save_dir()?;
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let stamp = chrono::Local::now()
-        .format("Shotori_%Y-%m-%d_%H-%M-%S")
-        .to_string();
-    Ok(next_path_in(&dir, &stamp))
-}
-
 fn save_dir() -> anyhow::Result<PathBuf> {
     let home = std::env::var("HOME").context("HOME environment variable is not set")?;
     Ok(PathBuf::from(home).join("Pictures/Shotori"))
-}
-
-/// Collision-avoidance pure logic (testable): tries `stem.png`, then
-/// `stem_2.png`, `stem_3.png`…
-pub fn next_path_in(dir: &Path, stem: &str) -> PathBuf {
-    let plain = dir.join(format!("{stem}.png"));
-    if !plain.exists() {
-        return plain;
-    }
-    for n in 2.. {
-        let p = dir.join(format!("{stem}_{n}.png"));
-        if !p.exists() {
-            return p;
-        }
-    }
-    unreachable!()
 }
 
 /// Encode RGBA8 pixels as PNG (in memory; shared by clipboard and disk)
@@ -83,20 +55,53 @@ pub fn encode_png(w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Encode RGBA8 pixels as PNG and write to path. Errors are returned with
-/// context (the caller decides whether to stay open).
-pub fn save_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<()> {
+/// Save a PNG named with local date and time, including milliseconds.
+/// Returns the actual path; concurrent saves never overwrite an existing file.
+pub fn save_png(w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<PathBuf> {
+    let stamp = chrono::Local::now()
+        .format("Shotori_%Y-%m-%d_%H-%M-%S_%3f")
+        .to_string();
+    save_png_in(&save_dir()?, &stamp, w, h, rgba)
+}
+
+fn save_png_in(dir: &Path, stem: &str, w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<PathBuf> {
+    use std::io::{ErrorKind, Write as _};
+
     let bytes = encode_png(w, h, rgba)?;
-    std::fs::write(path, &bytes)
-        .with_context(|| format!("writing {} ({} KB)", path.display(), bytes.len() / 1024))?;
-    Ok(())
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    for n in 1u64.. {
+        let name = if n == 1 {
+            format!("{stem}.png")
+        } else {
+            format!("{stem}_{n}.png")
+        };
+        let path = dir.join(name);
+        // Reserve and open in one operation. An existence check followed by
+        // std::fs::write would race with another Shotori process.
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e).with_context(|| format!("creating {}", path.display())),
+        };
+        if let Err(e) = file.write_all(&bytes) {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return Err(e).with_context(|| format!("writing {}", path.display()));
+        }
+        return Ok(path);
+    }
+    anyhow::bail!("no available screenshot filename for {stem}")
 }
 
 #[cfg(test)]
 mod tests {
     // Explicit imports (same reason as selection.rs: avoid gpui's test macro
     // shadowing the built-in #[test])
-    use super::{crop, next_path_in, save_png};
+    use super::{crop, save_png_in};
     use gpui_kit::{Bounds, Pixels, point, px, size};
 
     /// 4×3 synthetic image: pixel value = (x, y, 0, 255) for easy
@@ -159,26 +164,53 @@ mod tests {
     }
 
     #[test]
-    fn filename_collision_gets_suffix() {
+    fn existing_screenshot_is_preserved_on_timestamp_collision() {
         let dir = tempfile::tempdir().unwrap();
-        let p1 = next_path_in(dir.path(), "Shotori_t");
-        assert_eq!(p1, dir.path().join("Shotori_t.png"));
-        std::fs::write(&p1, b"x").unwrap();
+        let stem = "Shotori_2026-09-26_12-34-56_789";
+        let existing = dir.path().join(format!("{stem}.png"));
+        std::fs::write(&existing, b"existing screenshot").unwrap();
+        let (w, h, rgba) = gradient_4x3();
+        let saved = save_png_in(dir.path(), stem, w, h, &rgba).unwrap();
+        assert_eq!(saved, dir.path().join(format!("{stem}_2.png")));
+        assert_eq!(std::fs::read(existing).unwrap(), b"existing screenshot");
+        assert_eq!(image::open(saved).unwrap().to_rgba8().into_raw(), rgba);
+    }
 
-        let p2 = next_path_in(dir.path(), "Shotori_t");
-        assert_eq!(p2, dir.path().join("Shotori_t_2.png"));
-        std::fs::write(&p2, b"x").unwrap();
+    #[test]
+    fn concurrent_saves_with_the_same_timestamp_keep_every_image() {
+        use std::sync::{Arc, Barrier};
 
-        let p3 = next_path_in(dir.path(), "Shotori_t");
-        assert_eq!(p3, dir.path().join("Shotori_t_3.png"));
+        let dir = tempfile::tempdir().unwrap();
+        let barrier = Arc::new(Barrier::new(8));
+        let workers: Vec<_> = (0..8u8)
+            .map(|i| {
+                let dir = dir.path().to_path_buf();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let pixel = [i, 0, 0, 255];
+                    barrier.wait();
+                    let path =
+                        save_png_in(&dir, "Shotori_2026-09-26_12-34-56_789", 1, 1, &pixel).unwrap();
+                    (path, pixel)
+                })
+            })
+            .collect();
+        let saved: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+        let unique: std::collections::HashSet<_> = saved.iter().map(|(p, _)| p).collect();
+        assert_eq!(unique.len(), 8);
+        for (path, pixel) in saved {
+            assert_eq!(
+                image::open(path).unwrap().to_rgba8().get_pixel(0, 0).0,
+                pixel
+            );
+        }
     }
 
     #[test]
     fn png_encodes_and_reads_back() {
         let (w, h, rgba) = gradient_4x3();
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("roundtrip.png");
-        save_png(&path, w, h, &rgba).unwrap();
+        let path = save_png_in(dir.path(), "roundtrip", w, h, &rgba).unwrap();
 
         let img = image::open(&path).unwrap().to_rgba8();
         assert_eq!(img.dimensions(), (w, h));

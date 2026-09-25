@@ -169,17 +169,13 @@ impl Overlay {
             }
         };
 
-        let path = match crate::export::next_path() {
-            Ok(p) => p,
+        let path = match crate::export::save_png(w, h, &out) {
+            Ok(path) => path,
             Err(e) => {
-                eprintln!("[shotori] save path failed: {e:#}");
+                eprintln!("[shotori] save failed: {e:#}");
                 return;
             }
         };
-        if let Err(e) = crate::export::save_png(&path, w, h, &out) {
-            eprintln!("[shotori] save failed: {e:#}");
-            return;
-        }
 
         println!(
             "[shotori] saved {w}x{h} (from {}) → {}",

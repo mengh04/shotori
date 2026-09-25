@@ -22,8 +22,10 @@ out of it — all without leaving the keyboard.
 - **Copy to clipboard** (`Enter` / `Ctrl+C`) — PNG served by a resident
   background daemon (the `wl-copy` model), so the clipboard outlives the
   process that filled it.
-- **Save to disk** (`Ctrl+S`) — timestamped PNGs in `~/Pictures/Shotori/`,
-  with automatic suffixes on name collisions.
+- **Save to disk** (`Ctrl+S`) — PNGs named like
+  `Shotori_2026-09-26_12-34-56_789.png` (local time, milliseconds) in
+  `~/Pictures/Shotori/`. Concurrent saves use automatic suffixes on name
+  collisions and never overwrite existing files.
 - **OCR** (`Ctrl+O`) — on-device text recognition (PP-OCRv6 via ONNX
   Runtime) straight to the clipboard. Works on mixed Chinese/English
   content, runs fully offline after a one-time model download.
