@@ -198,3 +198,34 @@ overlay 只剩装配。首批 12 个单元测试（不需要合成器）。
 ### 备注
 - `opencode run` 会话里 SHOTORI_DEBUG_* 环境变量不残留（每 shell 独立）
 - OCR 结果无 GUI 预览（v1 直接进剪贴板）；浮窗预览/编辑候补
+
+## v0.6.1 OCR 实现审查（2026-09-26）
+
+### 审查发现并修复
+- **🔴 损坏模型永久堵死**：rapidocr-core 的 download_asset 直接写目标文件（无
+  temp+rename），下载中断留截断文件 → 之后每次 sha256 校验失败 → 永久报错。
+  修复：初始化失败时清掉模型缓存目录，下次重试从零下载（已实测：塞垃圾文件
+  → 报 sha mismatch → 目录被清 → 重跑自动重新下载成功）
+- **🔴 init 走 panic 行为不可控**：get_or_init + expect 的失败路径（断网首跑、
+  目录不可写）会 panic 穿 gpui 后台执行器。修复：init_engine 改返 Result，
+  失败不缓存（OnceLock 不 set）→ 覆盖层打错误后保持可用，下次 Ctrl+O 重试。
+  实测：XDG_DATA_HOME 指向不可写路径 → 干净报错、进程存活可 Esc
+- **自埋 bug**：重构时漏了 ENG.set()——下载+建引擎全成功然后把引擎扔了，
+  报"初始化后丢失"。e2e 抓到（重跑第二次成功路径），已修
+- **🟡 提示条/键位 feature 门控**：非 ocr 构建不再宣传/绑定 Ctrl+O
+  （随后 OCR 转为默认 feature，门控变成轻构建出口）
+- **🟡 文本粘贴兼容**：文本模式 offer 补齐 UTF8_STRING/STRING（xwayland
+  老应用）；Send 处理改为"命中 offer 列表任意项"
+- **🟢 首次下载反馈**：模型缺失时终端先打"下载 PP-OCRv6 small 模型…"
+- **🟢 下载独立线程的真实理由**：reqwest::blocking 不能在异步上下文跑
+  （gpui 后台执行器就是异步上下文），注释已纠正
+
+### 设计变更：OCR 转为默认 feature
+- `default = ["ocr"]`：crates.io/AUR 用户裸装即得完整功能，OCR 不再是暗桩
+- 轻构建出口：`--no-default-features`
+- 理由：产品身份=截图+OCR；gpui 依赖树面前 ort+reqwest 的增量是零头
+
+### 审查方法论记录
+- 失败路径（断网/坏文件/重试）是懒加载设计的必修课，成功路径 e2e 不够
+- "wl-paste -l 突然少了 MIME"→ 先怀疑自己，再怀疑 compositor，最后想起
+  用户也在用电脑（他们的复制会顶掉测试态）

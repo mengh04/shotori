@@ -12,7 +12,7 @@
 //! - [`hud`]：覆盖层视觉件（变暗边带/选区边框/提示条）
 //! - [`toolbar`]：选区工具条（按钮与键盘同管线 dispatch_action）
 //! - [`theme`]：视觉常量（自绘设计系统种子）
-//! - [`ocr`]：选区 OCR（rapidocr-core + PP-OCRv6 模型，`--features ocr`）
+//! - [`ocr`]：选区 OCR（rapidocr-core + PP-OCRv6 模型，默认 feature）
 //!
 //! 贴图（pin）功能在 `pin` 分支保存（依赖 vendor 的 set_layer_margin 补丁，
 //! 上游合并前无法发布 crates.io）。

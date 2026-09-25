@@ -130,16 +130,17 @@ pub fn daemon_main() -> anyhow::Result<()> {
     let qh = queue.handle();
     conn.display().get_registry(&qh, ());
 
-    // 文本模式也 offer 一个降级 text/plain（某些应用只认不带 charset 后缀的）
-    let fallback = if mime.starts_with("text/") {
-        Some("text/plain".to_string())
-    } else {
-        None
-    };
+    // offer 列表：主 MIME 打头；文本模式加降级 MIME——
+    // xwayland 老应用只认 UTF8_STRING/STRING（不带 charset 的 text/plain
+    // 也照顾那些不解析后缀的客户端）。粘贴请求命中列表任意一项都写数据。
+    let mut mimes = vec![mime.clone()];
+    if mime.starts_with("text/") {
+        mimes.extend(["text/plain", "UTF8_STRING", "STRING"].map(String::from));
+    }
 
     let mut app = Daemon {
         payload,
-        mime: mime.clone(),
+        mimes: mimes.clone(),
         ..Daemon::default()
     };
     queue.roundtrip(&mut app)?;
@@ -155,9 +156,8 @@ pub fn daemon_main() -> anyhow::Result<()> {
 
     let device = manager.get_data_device(&seat, &qh, ());
     let source = manager.create_data_source(&qh, ());
-    source.offer(mime.to_string());
-    if let Some(fb) = &fallback {
-        source.offer(fb.clone());
+    for m in &mimes {
+        source.offer(m.clone());
     }
     device.set_selection(Some(&source));
     app.device = Some(device);
@@ -181,7 +181,8 @@ pub fn daemon_main() -> anyhow::Result<()> {
 #[derive(Default)]
 struct Daemon {
     payload: Vec<u8>,
-    mime: String,
+    /// 本分身 offer 的全部 MIME（粘贴请求命中任意一项都写数据）
+    mimes: Vec<String>,
     seat: Option<wl_seat::WlSeat>,
     manager: Option<ZwlrDataControlManagerV1>,
     device: Option<ZwlrDataControlDeviceV1>,
@@ -289,11 +290,10 @@ impl Dispatch<ZwlrDataControlSourceV1, ()> for Daemon {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            // 有人粘贴：往对方给的 fd 里写数据（fd 由 compositor 转手，写完关闭）
+            // 有人粘贴：往对方给的 fd 里写数据（fd 由 compositor 转手，写完关闭）。
+            // 只响应我们 offer 过的 MIME——没 offer 的类型不会收到 Send
             zwlr_data_control_source_v1::Event::Send { mime_type, fd } => {
-                if mime_type == state.mime
-                    || mime_type == "text/plain"
-                {
+                if state.mimes.contains(&mime_type) {
                     let mut file = std::fs::File::from(fd); // File drop 时关闭 fd
                     let _ = file.write_all(&state.payload); // 对方管道断裂等：忽略即可
                 }

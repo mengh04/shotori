@@ -32,10 +32,11 @@ chrono = "0.4"
 # 贴图功能（依赖 vendor 的 set_layer_margin 补丁）在 `pin` 分支保存；
 # 上游合并补丁后可合回主干并恢复此处 [patch.crates-io] 或直接用上游版本
 #
-# ── 可选功能（默认关闭，保持二进制瘦）─────────────────────────────
+# ── 可选功能 ────────────────────────────────────────────────────────
 [features]
-default = []
-# Ctrl+O 选区 OCR：PP-OCRv6 small 模型（首次使用自动下载到 ~/.local/share/shotori/ocr-models/）
+# OCR 默认开启（产品核心功能之一；首次使用自动下载模型 ~31MB 到
+# ~/.local/share/shotori/ocr-models/）。想要轻构建：--no-default-features
+default = ["ocr"]
 ocr = ["dep:rapidocr-core"]
 
 [dependencies.rapidocr-core]

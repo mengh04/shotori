@@ -89,6 +89,16 @@ pub(crate) fn hint_bar() -> impl IntoElement {
                 .bg(rgba(CHIP_BG))
                 .text_size(px(13.))
                 .text_color(rgba(HINT_TEXT))
-                .child("拖拽框选 · Enter 复制 · Ctrl+S 保存 · Ctrl+O OCR · Esc 退出"),
+                .child(hint_text()),
         )
+}
+
+/// 提示文案按 feature 裁剪：非 ocr 构建不宣传不存在的快捷键
+#[cfg(feature = "ocr")]
+fn hint_text() -> &'static str {
+    "拖拽框选 · Enter 复制 · Ctrl+S 保存 · Ctrl+O OCR · Esc 退出"
+}
+#[cfg(not(feature = "ocr"))]
+fn hint_text() -> &'static str {
+    "拖拽框选 · Enter 复制 · Ctrl+S 保存 · Esc 退出"
 }

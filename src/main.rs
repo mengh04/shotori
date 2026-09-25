@@ -7,7 +7,7 @@
 //! - `overlay`：覆盖层装配（每屏一个窗口）
 //! - `hud` / `toolbar`：覆盖层的视觉件
 //! - `selection` / `export` / `image_util`：纯逻辑
-//! - `ocr`：选区 OCR（rapidocr-core + PP-OCRv6 模型，`--features ocr`）
+//! - `ocr`：选区 OCR（rapidocr-core + PP-OCRv6 模型，默认 feature）
 //! - `theme`：视觉常量
 
 use gpui_kit::*;
@@ -15,7 +15,9 @@ use gpui_kit::*;
 use shotori::capture;
 use shotori::clipboard;
 use shotori::display;
-use shotori::overlay::{CopySelection, OcrSelection, Overlay, QuitOverlay, SaveSelection};
+use shotori::overlay::{CopySelection, Overlay, QuitOverlay, SaveSelection};
+#[cfg(feature = "ocr")]
+use shotori::overlay::OcrSelection;
 
 fn main() {
     // 剪贴板分身：复制动作的后台驻留进程（见 clipboard.rs 的驻留 offer 模型）
@@ -62,6 +64,8 @@ fn main() {
                 KeyBinding::new("enter", CopySelection, Some("ShotoriOverlay")),
                 KeyBinding::new("ctrl-c", CopySelection, Some("ShotoriOverlay")),
                 KeyBinding::new("ctrl-s", SaveSelection, Some("ShotoriOverlay")),
+                // OCR feature 默认开启；轻构建（--no-default-features）不绑
+                #[cfg(feature = "ocr")]
                 KeyBinding::new("ctrl-o", OcrSelection, Some("ShotoriOverlay")),
             ]);
             // 兜底：覆盖层焦点意外丢失时 Esc 仍能退出。
