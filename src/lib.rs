@@ -35,3 +35,5 @@ pub mod toolbar;
 
 #[cfg(feature = "ocr")]
 pub mod ocr;
+#[cfg(feature = "ocr")]
+pub mod ocr_setup;

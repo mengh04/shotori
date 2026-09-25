@@ -6480,6 +6480,8 @@ dependencies = [
  "memmap2",
  "png 0.17.16",
  "rapidocr-core",
+ "reqwest",
+ "sha2 0.10.9",
  "smallvec",
  "tempfile",
  "wayland-client",

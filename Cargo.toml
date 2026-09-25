@@ -34,13 +34,27 @@ chrono = "0.4"
 #
 # ── 可选功能 ────────────────────────────────────────────────────────
 [features]
-# OCR 默认开启（产品核心功能之一；首次使用自动下载模型 ~31MB 到
-# ~/.local/share/shotori/ocr-models/）。想要轻构建：--no-default-features
+# OCR is on by default (a core product feature; models auto-download to
+# ~/.local/share/shotori/ocr-models on first use, with a confirm dialog,
+# progress bar and cancellation). Slim build: --no-default-features
 default = ["ocr"]
-ocr = ["dep:rapidocr-core"]
+ocr = ["dep:rapidocr-core", "dep:reqwest", "dep:sha2"]
 
 [dependencies.rapidocr-core]
 version = "0.2"
 default-features = false
 features = ["model-download"]
+optional = true
+
+# First-run model download with progress + cancel (same reqwest version as
+# rapidocr-core's, features unify)
+[dependencies.reqwest]
+version = "0.12"
+features = ["blocking", "rustls-tls"]
+default-features = false
+optional = true
+
+# Post-download integrity check (expected hashes ship in the model spec)
+[dependencies.sha2]
+version = "0.10"
 optional = true

@@ -18,6 +18,7 @@
 //! trims it).
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use anyhow::Context as _;
@@ -89,6 +90,185 @@ fn assets_missing(dir: &std::path::Path) -> usize {
         .iter()
         .filter(|a| !dir.join(a.filename).exists())
         .count()
+}
+
+/// Whether any model files are missing (cheap existence check; used to
+/// decide between "run OCR" and "show the setup dialog")
+pub fn models_missing() -> bool {
+    model_dir().map(|d| assets_missing(&d) > 0).unwrap_or(true)
+}
+
+/// Human-readable model cache path (shown in the setup dialog)
+pub fn model_dir_display() -> String {
+    model_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "?".into())
+}
+
+/// Filename of the 1-based asset `idx` (progress readout)
+pub fn asset_name(idx: u8) -> &'static str {
+    PPOCRV6_SMALL
+        .assets()
+        .get(idx as usize - 1)
+        .map(|a| a.filename)
+        .unwrap_or("?")
+}
+
+// ── First-run download with progress + cancellation ───────────────────
+
+/// Shared state between the download thread and the setup UI.
+/// All fields are lock-free; the UI polls at ~80ms.
+pub struct DownloadProgress {
+    /// Set by the UI to abort; checked between chunks
+    pub cancel: AtomicBool,
+    /// Bytes written so far (across all files this session)
+    pub bytes: AtomicU64,
+    /// Total bytes (Σ content-length; grows as each file starts)
+    pub total: AtomicU64,
+    /// 1-based index of the file currently downloading
+    pub file_idx: AtomicU8,
+    /// Number of files in the set
+    pub file_count: u8,
+    status: AtomicU8, // 0 running, 1 ok, 2 failed
+    error: Mutex<String>,
+}
+
+impl Default for DownloadProgress {
+    fn default() -> Self {
+        Self {
+            cancel: AtomicBool::new(false),
+            bytes: AtomicU64::new(0),
+            total: AtomicU64::new(0),
+            file_idx: AtomicU8::new(0),
+            file_count: PPOCRV6_SMALL.assets().len() as u8,
+            status: AtomicU8::new(0),
+            error: Mutex::new(String::new()),
+        }
+    }
+}
+
+impl DownloadProgress {
+    pub fn is_running(&self) -> bool {
+        self.status.load(Ordering::Relaxed) == 0
+    }
+    pub fn finished_ok(&self) -> bool {
+        self.status.load(Ordering::Relaxed) == 1
+    }
+    pub fn error(&self) -> String {
+        self.error
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+}
+
+/// Spawn the model download on its own thread (reqwest::blocking cannot run
+/// in async contexts). Downloads to `*.part` temp files and renames on
+/// success (atomic — a cancelled or crashed download never leaves a
+/// half-written model behind), verifying sha256 after each file.
+pub fn spawn_download(progress: std::sync::Arc<DownloadProgress>) {
+    // The thread gets its own Arc; the caller's (and the UI's) stays valid
+    // for cancellation even if the thread fails to spawn
+    let thread_progress = std::sync::Arc::clone(&progress);
+    let spawn = std::thread::Builder::new()
+        .name("shotori-ocr-download".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            let result = download_models(&thread_progress);
+            match result {
+                Ok(()) => thread_progress.status.store(1, Ordering::Relaxed),
+                Err(e) => {
+                    if let Ok(mut err) = thread_progress.error.lock() {
+                        *err = format!("{e:#}");
+                    }
+                    thread_progress.status.store(2, Ordering::Relaxed);
+                }
+            }
+        });
+    if let Err(e) = spawn {
+        // Thread spawn failure must not leave the UI waiting forever
+        if let Ok(mut err) = progress.error.lock() {
+            *err = format!("failed to spawn download thread: {e:#}");
+        }
+        progress.status.store(2, Ordering::Relaxed);
+    }
+}
+
+fn download_models(progress: &DownloadProgress) -> anyhow::Result<()> {
+    use std::io::{Read as _, Write as _};
+
+    let dir = model_dir()?;
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("creating {}", dir.display()))?;
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("shotori")
+        .build()
+        .context("building HTTP client")?;
+
+    for (i, asset) in PPOCRV6_SMALL.assets().iter().enumerate() {
+        if progress.cancel.load(Ordering::Relaxed) {
+            anyhow::bail!("cancelled");
+        }
+        let dest = dir.join(asset.filename);
+        if dest.exists() {
+            continue; // already have this one (e.g. after a partial retry)
+        }
+        progress.file_idx.store(i as u8 + 1, Ordering::Relaxed);
+
+        let resp = client
+            .get(asset.url)
+            .send()
+            .with_context(|| format!("fetching {}", asset.url))?
+            .error_for_status()
+            .with_context(|| format!("bad status for {}", asset.url))?;
+        if let Some(len) = resp.content_length() {
+            progress.total.fetch_add(len, Ordering::Relaxed);
+        }
+
+        let tmp = dir.join(format!("{}.part", asset.filename));
+        let mut file = std::fs::File::create(&tmp)
+            .with_context(|| format!("creating {}", tmp.display()))?;
+        let mut reader = resp;
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            if progress.cancel.load(Ordering::Relaxed) {
+                let _ = std::fs::remove_file(&tmp);
+                anyhow::bail!("cancelled");
+            }
+            let n = reader.read(&mut buf).context("reading download chunk")?;
+            if n == 0 {
+                break;
+            }
+            file.write_all(&buf[..n]).context("writing download chunk")?;
+            progress.bytes.fetch_add(n as u64, Ordering::Relaxed);
+        }
+        drop(file);
+
+        if let Some(expected) = asset.sha256
+            && sha256_file(&tmp)? != expected
+        {
+            let _ = std::fs::remove_file(&tmp);
+            anyhow::bail!("sha256 mismatch for {}", asset.filename);
+        }
+        std::fs::rename(&tmp, &dest)
+            .with_context(|| format!("finalizing {}", dest.display()))?;
+    }
+    Ok(())
+}
+
+fn sha256_file(path: &std::path::Path) -> anyhow::Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut f = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = std::io::Read::read(&mut f, &mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 static ENG: OnceLock<Mutex<rapidocr_core::RapidOcr>> = OnceLock::new();

@@ -277,3 +277,37 @@ overlay 只剩装配。首批 12 个单元测试（不需要合成器）。
 ### 备注
 - `let _ = engine()` 触发 let_underscore_lock lint（故意放锁也不行），
   显式 `drop(engine())` 表达意图
+
+## v0.6.4 首次下载的确认对话框 + 进度条 + 取消（2026-09-26）
+
+### 功能
+- Ctrl+O 且无模型时：居中确认卡片（"OCR needs models"，显示 ~31MB、
+  来源 ModelScope、存储路径）→ [Download] / [Cancel]
+- 下载中：字节级进度条（总进度 = Σ content-length，随文件开始增长）、
+  当前文件名 + (2/4) + MB 读数；Esc/[Cancel] 随时中止
+- 失败卡片 [Retry]/[Close]；成功后自动用 Ctrl+O 时刻冻结的选区快照跑 OCR
+- 模型位置：~/.local/share/shotori/ocr-models/（XDG_DATA_HOME 优先）
+  重置测试：rm -rf ~/.local/share/shotori/ocr-models
+
+### 实现
+- src/ocr_setup.rs（新）：Stage 状态机（Confirm/Downloading/Failed）+
+  卡片渲染；动作 OcrSetupConfirm/OcrSetupCancel 与键盘同管线
+- ocr.rs：自研下载器替代 ensure（progress/cancel 钩子），**temp + 原子
+  rename** 落盘（根治半成品文件）+ 下载后 sha256 校验（sha2）
+- overlay：对话框模态（Enter/Ctrl+S/复制/新选区全被拦），Esc=取消；
+  poll 循环 80ms 用 Entity 句柄 notify，完成交接经 entity.update
+- warmup 预热不受影响（models_missing 时本来就跳过）
+- reqwest/sha2 都在 ocr feature 下；轻构建零增量
+
+### 坑记录
+- window_handle.update 的闭包拿到 AnyView（访问不了具体 View 字段）——
+  异步里要动 View 状态必须走 Entity 句柄的 entity.update
+- gpui-kit 的 Entity::update 返回值 = 闭包返回值透传（不是 zed 的
+  Result 包装）；返回 () 时 clippy 报 let_unit_value
+- 又一次差点把 #[cfg] 插进方法链（render ⑥ 层）——提前算好
+  Option<AnyElement> 再无条件 .children() 是惯用解
+
+### e2e
+- ocrsetup 后门：1.5s 开对话框 → 6s 自动 [Download] → 下载 → OCR → 剪贴板
+  （删模型后实测通过；无 .part 残留）
+- 旧 headless 路径（DEBUG_ACTION=ocr）保留：仍然内联下载，回归通过
