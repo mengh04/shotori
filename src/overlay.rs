@@ -50,7 +50,7 @@ impl Overlay {
 
         let debug_targeted = debug_targeted(&capture.output_name);
         if debug_targeted {
-            spawn_debug_copy(window, cx);
+            spawn_debug_action(window, cx);
         }
 
         Self {
@@ -71,7 +71,7 @@ impl Overlay {
             focus: true,
             display_id,
             kind: WindowKind::LayerShell(LayerShellOptions {
-                namespace: "saccade-overlay".into(),
+                namespace: "shotori-overlay".into(),
                 layer: Layer::Overlay,
                 anchor: Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
                 exclusive_zone: Some(px(-1.)),
@@ -124,24 +124,24 @@ impl Overlay {
         let (w, h, rgba) = match self.crop(self.selection_or_full(window), window) {
             Some(x) => x,
             None => {
-                println!("[saccade] 选区为空，忽略");
+                println!("[shotori] 选区为空，忽略");
                 return;
             }
         };
         let png = match crate::export::encode_png(w, h, &rgba) {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("[saccade] PNG 编码失败：{e:#}");
+                eprintln!("[shotori] PNG 编码失败：{e:#}");
                 return;
             }
         };
         if let Err(e) = crate::clipboard::copy_image(png) {
             // 失败留在覆盖层：用户还能 Ctrl+S 保存文件
-            eprintln!("[saccade] 复制失败：{e:#}");
+            eprintln!("[shotori] 复制失败：{e:#}");
             return;
         }
         println!(
-            "[saccade] 已复制 {w}x{h}（来自 {}）到剪贴板",
+            "[shotori] 已复制 {w}x{h}（来自 {}）到剪贴板",
             self.capture.output_name
         );
         cx.quit();
@@ -152,7 +152,7 @@ impl Overlay {
         let (w, h, out) = match self.crop(self.selection_or_full(window), window) {
             Some(x) => x,
             None => {
-                println!("[saccade] 选区为空，忽略");
+                println!("[shotori] 选区为空，忽略");
                 return;
             }
         };
@@ -160,17 +160,17 @@ impl Overlay {
         let path = match crate::export::next_path() {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("[saccade] 保存路径失败：{e:#}");
+                eprintln!("[shotori] 保存路径失败：{e:#}");
                 return;
             }
         };
         if let Err(e) = crate::export::save_png(&path, w, h, &out) {
-            eprintln!("[saccade] 保存失败：{e:#}");
+            eprintln!("[shotori] 保存失败：{e:#}");
             return;
         }
 
         println!(
-            "[saccade] 已保存 {w}x{h}（来自 {}）→ {}",
+            "[shotori] 已保存 {w}x{h}（来自 {}）→ {}",
             self.capture.output_name,
             path.display()
         );
@@ -183,7 +183,7 @@ impl Overlay {
             return;
         };
         let Some((w, h, rgba)) = self.crop(bounds, window) else {
-            println!("[saccade] 选区为空，忽略");
+            println!("[shotori] 选区为空，忽略");
             return;
         };
 
@@ -197,7 +197,7 @@ impl Overlay {
         .expect("打开贴图窗口失败");
 
         println!(
-            "[saccade] 已贴图 {w}x{h} @ ({}, {})——按住拖动，Esc 关闭",
+            "[shotori] 已贴图 {w}x{h} @ ({}, {})——按住拖动，Esc 关闭",
             f32::from(pos.x).round() as i32,
             f32::from(pos.y).round() as i32
         );
@@ -213,8 +213,8 @@ impl Render for Overlay {
         let ws = window.bounds().size; // 窗口逻辑尺寸（= 输出逻辑尺寸）
 
         div()
-            .id("saccade-overlay")
-            .key_context("SaccadeOverlay")
+            .id("shotori-overlay")
+            .key_context("ShotoriOverlay")
             .size_full()
             .relative()
             .track_focus(&self.focus_handle)
@@ -229,12 +229,17 @@ impl Render for Overlay {
             }))
             // 两段 Esc：拖拽中 = 只放弃本次拖拽（吞掉动作不冒泡）；
             // 松手后（Idle/Selected）= 不处理，冒泡到 main.rs 的全局兜底 → 退出
+            // 两段 Esc（就地处理，不指望冒泡）：
+            // 实测 gpui 窗口内 dispatch_action 的动作沿焦点路径走完就停，
+            // 不会到达 App::on_action——退出必须在这里做
             .on_action(cx.listener(|this, _: &QuitOverlay, _, cx| {
                 if this.selection.is_dragging() {
-                    this.selection.cancel_drag();
-                    cx.stop_propagation();
-                    cx.notify();
+                    this.selection.cancel_drag(); // 第一段：放弃本次拖拽
+                } else {
+                    cx.quit(); // 第二段：退出
                 }
+                cx.stop_propagation();
+                cx.notify();
             }))
             // ── 选区交互（事件 → 状态机）─────────────────────
             .on_mouse_down(
@@ -278,20 +283,20 @@ impl Render for Overlay {
 
 // ── 开发后门（自动化 e2e 的入口，正常启动不受影响）───────────────────
 
-/// 后门是否作用于本覆盖层：SACCADE_DEBUG_TARGET=<输出名> 限定
+/// 后门是否作用于本覆盖层：SHOTORI_DEBUG_TARGET=<输出名> 限定
 /// （多屏下每个覆盖层都会跑到这里，全开会互相打架）；不设 = 全部生效
 fn debug_targeted(output_name: &str) -> bool {
-    std::env::var("SACCADE_DEBUG_TARGET")
+    std::env::var("SHOTORI_DEBUG_TARGET")
         .map(|t| t == output_name)
         .unwrap_or(true)
 }
 
-/// SACCADE_DEBUG_SELECTION=x,y,w,h：注入现成选区
+/// SHOTORI_DEBUG_SELECTION=x,y,w,h：注入现成选区
 fn debug_selection(targeted: bool) -> Selection {
     if !targeted {
         return Selection::Idle;
     }
-    std::env::var("SACCADE_DEBUG_SELECTION")
+    std::env::var("SHOTORI_DEBUG_SELECTION")
         .ok()
         .and_then(|s| {
             let v: Vec<f32> = s.split(',').filter_map(|n| n.trim().parse().ok()).collect();
@@ -305,19 +310,26 @@ fn debug_selection(targeted: bool) -> Selection {
         .unwrap_or(Selection::Idle)
 }
 
-/// SACCADE_DEBUG_ACTION=copy：1.5s 后自动触发复制——无头 e2e 的唯一入口
-/// （虚拟指针在 niri 上不可用，见 ROADMAP）
-fn spawn_debug_copy(window: &mut Window, cx: &mut Context<Overlay>) {
-    if std::env::var("SACCADE_DEBUG_ACTION").ok().as_deref() != Some("copy") {
+/// SHOTORI_DEBUG_ACTION=copy|quit：1.5s 后自动触发对应动作——无头 e2e 的唯一入口
+/// （虚拟指针在 niri 上不可用，见 ROADMAP）。quit 走 dispatch_action 真实管线
+fn spawn_debug_action(window: &mut Window, cx: &mut Context<Overlay>) {
+    let Some(action) = std::env::var("SHOTORI_DEBUG_ACTION")
+        .ok()
+        .filter(|a| a == "copy" || a == "quit")
+    else {
         return;
-    }
+    };
     let win = window.window_handle();
-    cx.spawn(async move |this, cx| {
+    cx.spawn(async move |_, cx| {
         cx.background_executor()
             .timer(std::time::Duration::from_millis(1500))
             .await;
         let _ = win.update(cx, |_, window, cx| {
-            let _ = this.update(cx, |overlay, cx| overlay.copy_selection(window, cx));
+            let action: Box<dyn gpui_kit::Action> = match action.as_str() {
+                "copy" => Box::new(CopySelection),
+                _ => Box::new(QuitOverlay),
+            };
+            window.dispatch_action(action, cx);
         });
     })
     .detach();

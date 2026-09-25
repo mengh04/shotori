@@ -1,4 +1,4 @@
-//! screencap CLI：捕获库的调试前端（与库共用 saccade::capture）
+//! screencap CLI：捕获库的调试前端（与库共用 shotori::capture）
 //! 用法：screencap [输出路径前缀] [--all]
 //!   默认存第一块屏；--all 时每屏一张 <前缀>_<输出名>.png
 
@@ -12,14 +12,14 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| "/tmp/screencap".into());
     let t0 = std::time::Instant::now();
 
-    let caps = saccade::capture::capture_all_outputs()?;
+    let caps = shotori::capture::capture_all_outputs()?;
     println!(
         "[screencap] {} 块屏，耗时 {:?}",
         caps.len(),
         t0.elapsed()
     );
 
-    let save = |cap: &saccade::capture::Capture, path: String| -> anyhow::Result<()> {
+    let save = |cap: &shotori::capture::Capture, path: String| -> anyhow::Result<()> {
         let mut f = std::io::BufWriter::new(std::fs::File::create(&path)?);
         let mut enc = png::Encoder::new(&mut f, cap.width, cap.height);
         enc.set_color(png::ColorType::Rgba);

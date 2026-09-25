@@ -5834,22 +5834,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
-name = "saccade"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "gpui-kit",
- "image",
- "memmap2",
- "png 0.17.16",
- "smallvec",
- "tempfile",
- "wayland-client",
- "wayland-protocols-wlr",
-]
-
-[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6162,6 +6146,22 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
+
+[[package]]
+name = "shotori"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "gpui-kit",
+ "image",
+ "memmap2",
+ "png 0.17.16",
+ "smallvec",
+ "tempfile",
+ "wayland-client",
+ "wayland-protocols-wlr",
+]
 
 [[package]]
 name = "signal-hook-registry"

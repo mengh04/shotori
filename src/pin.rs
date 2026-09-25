@@ -64,7 +64,7 @@ impl PinWindow {
                 size: logical_size,
             })),
             kind: WindowKind::LayerShell(LayerShellOptions {
-                namespace: "saccade-pin".into(),
+                namespace: "shotori-pin".into(),
                 layer: Layer::Top, // 普通窗口之上、覆盖层之下
                 anchor: Anchor::TOP | Anchor::LEFT,
                 // CSS 顺序 top,right,bottom,left → 表面出现在 (pos.x, pos.y)
@@ -87,8 +87,8 @@ impl Render for PinWindow {
         let focused = self.focus_handle.is_focused(window);
 
         div()
-            .id("saccade-pin")
-            .key_context("SaccadePin")
+            .id("shotori-pin")
+            .key_context("ShotoriPin")
             .size_full()
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|_, _: &ClosePin, window, cx| {

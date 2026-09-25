@@ -1,4 +1,4 @@
-//! Saccade：Wayland 优先的截图套件（区域截图 / 贴图 / OCR / 长截图）
+//! Shotori：Wayland 优先的截图套件（区域截图 / 贴图 / OCR / 长截图）
 //!
 //! 模块地图（装配在 `main.rs`：键位分域绑定 + 开窗）：
 //! - [`capture`]：wlr-screencopy 捕获（多输出；子模块 pixels 纯像素处理 + 测试、

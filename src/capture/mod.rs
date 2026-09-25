@@ -87,7 +87,7 @@ pub fn capture_all_outputs() -> anyhow::Result<Vec<Capture>> {
     for o in &mut app.outputs {
         let Some(f) = o.frame.as_mut() else { continue };
         if f.failed {
-            eprintln!("[saccade] {} 捕获失败，跳过", o.name);
+            eprintln!("[shotori] {} 捕获失败，跳过", o.name);
             continue;
         }
         let (format, w, h, stride, y_invert) =

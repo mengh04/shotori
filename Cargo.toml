@@ -1,11 +1,11 @@
 [package]
-name = "saccade"
-version = "0.3.1"
+name = "shotori"
+version = "0.4.0"
 edition = "2024"
 publish = false
-description = "Saccade — Wayland-first screenshot & OCR suite built with gpui-kit"
-# 有多个 bin（saccade / screencap）时，裸 `cargo run` 默认跑主程序
-default-run = "saccade"
+description = "Shotori — Wayland-first screenshot & OCR suite built with gpui-kit"
+# 有多个 bin（shotori / screencap）时，裸 `cargo run` 默认跑主程序
+default-run = "shotori"
 
 [dependencies]
 gpui-kit = "0.6"

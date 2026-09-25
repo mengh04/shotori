@@ -36,18 +36,18 @@ pub fn crop(
     Some((w, h, out))
 }
 
-/// 生成不冲突的保存路径：`~/Pictures/Saccade/Saccade_年-月-日_时-分-秒.png`
+/// 生成不冲突的保存路径：`~/Pictures/Shotori/Shotori_年-月-日_时-分-秒.png`
 /// （同一秒内多次保存自动加 `_2`、`_3` 后缀，不覆盖）
 pub fn next_path() -> anyhow::Result<PathBuf> {
     let dir = save_dir()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("创建目录 {}", dir.display()))?;
-    let stamp = chrono::Local::now().format("Saccade_%Y-%m-%d_%H-%M-%S").to_string();
+    let stamp = chrono::Local::now().format("Shotori_%Y-%m-%d_%H-%M-%S").to_string();
     Ok(next_path_in(&dir, &stamp))
 }
 
 fn save_dir() -> anyhow::Result<PathBuf> {
     let home = std::env::var("HOME").context("没有 HOME 环境变量")?;
-    Ok(PathBuf::from(home).join("Pictures/Saccade"))
+    Ok(PathBuf::from(home).join("Pictures/Shotori"))
 }
 
 /// 冲突规避的纯逻辑（可测试）：`stem.png` 占用时依次尝试 `stem_2.png`、`stem_3.png`…
@@ -152,16 +152,16 @@ mod tests {
     #[test]
     fn 文件名_冲突时加后缀() {
         let dir = tempfile::tempdir().unwrap();
-        let p1 = next_path_in(dir.path(), "Saccade_t");
-        assert_eq!(p1, dir.path().join("Saccade_t.png"));
+        let p1 = next_path_in(dir.path(), "Shotori_t");
+        assert_eq!(p1, dir.path().join("Shotori_t.png"));
         std::fs::write(&p1, b"x").unwrap();
 
-        let p2 = next_path_in(dir.path(), "Saccade_t");
-        assert_eq!(p2, dir.path().join("Saccade_t_2.png"));
+        let p2 = next_path_in(dir.path(), "Shotori_t");
+        assert_eq!(p2, dir.path().join("Shotori_t_2.png"));
         std::fs::write(&p2, b"x").unwrap();
 
-        let p3 = next_path_in(dir.path(), "Saccade_t");
-        assert_eq!(p3, dir.path().join("Saccade_t_3.png"));
+        let p3 = next_path_in(dir.path(), "Shotori_t");
+        assert_eq!(p3, dir.path().join("Shotori_t_3.png"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! # Saccade 入口：装配、键位、开窗
+//! # Shotori 入口：装配、键位、开窗
 //!
 //! 模块结构（避免 god file）：
 //! - `capture`：screencopy 捕获（多输出，独立 wayland 连接）
@@ -12,17 +12,17 @@
 
 use gpui_kit::*;
 
-use saccade::capture;
-use saccade::clipboard;
-use saccade::display;
-use saccade::overlay::{CopySelection, Overlay, PinSelection, QuitOverlay, SaveSelection};
-use saccade::pin::ClosePin;
+use shotori::capture;
+use shotori::clipboard;
+use shotori::display;
+use shotori::overlay::{CopySelection, Overlay, PinSelection, QuitOverlay, SaveSelection};
+use shotori::pin::ClosePin;
 
 fn main() {
     // 剪贴板分身：复制动作的后台驻留进程（见 clipboard.rs 的驻留 offer 模型）
     if std::env::args().nth(1).as_deref() == Some(clipboard::DAEMON_ARG) {
         if let Err(e) = clipboard::daemon_main() {
-            eprintln!("[saccade] 剪贴板分身退场：{e:#}");
+            eprintln!("[shotori] 剪贴板分身退场：{e:#}");
             std::process::exit(1);
         }
         return;
@@ -32,12 +32,12 @@ fn main() {
     let caps = match capture::capture_all_outputs() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[saccade] 捕获失败：{e:#}");
+            eprintln!("[shotori] 捕获失败：{e:#}");
             std::process::exit(1);
         }
     };
     println!(
-        "[saccade] 已冻结 {} 块屏：{}",
+        "[shotori] 已冻结 {} 块屏：{}",
         caps.len(),
         caps.iter()
             .map(|c| format!(
@@ -59,14 +59,16 @@ fn main() {
 
             // 键位按 key_context 分域：覆盖层和贴图各有自己的 Esc 语义
             cx.bind_keys([
-                KeyBinding::new("escape", QuitOverlay, Some("SaccadeOverlay")),
-                KeyBinding::new("enter", CopySelection, Some("SaccadeOverlay")),
-                KeyBinding::new("ctrl-c", CopySelection, Some("SaccadeOverlay")),
-                KeyBinding::new("ctrl-s", SaveSelection, Some("SaccadeOverlay")),
-                KeyBinding::new("p", PinSelection, Some("SaccadeOverlay")),
-                KeyBinding::new("escape", ClosePin, Some("SaccadePin")),
+                KeyBinding::new("escape", QuitOverlay, Some("ShotoriOverlay")),
+                KeyBinding::new("enter", CopySelection, Some("ShotoriOverlay")),
+                KeyBinding::new("ctrl-c", CopySelection, Some("ShotoriOverlay")),
+                KeyBinding::new("ctrl-s", SaveSelection, Some("ShotoriOverlay")),
+                KeyBinding::new("p", PinSelection, Some("ShotoriOverlay")),
+                KeyBinding::new("escape", ClosePin, Some("ShotoriPin")),
             ]);
-            // 兜底：覆盖层焦点意外丢失时 Esc 仍能退出
+            // 兜底：覆盖层焦点意外丢失时 Esc 仍能退出。
+            // 注意：实测窗口内 dispatch_action 不会冒泡到这里（动作止步于焦点路径），
+            // 覆盖层的 QuitOverlay 处理器才是真正的退出实现；这行只防焦点丢失的极端情况
             cx.on_action(|_: &QuitOverlay, cx| cx.quit());
 
             // 开窗放进异步任务：displays() 在同步启动阶段恒为空（上游 zed#46378），
@@ -77,7 +79,7 @@ fn main() {
                     for (cap, did) in targets {
                         if did.is_none() {
                             eprintln!(
-                                "[saccade] 警告：{} 没匹配到 display，落点交给 compositor",
+                                "[shotori] 警告：{} 没匹配到 display，落点交给 compositor",
                                 cap.output_name
                             );
                         }

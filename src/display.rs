@@ -69,7 +69,7 @@ fn match_all(cx: &App, targets: &mut [(Capture, Option<DisplayId>)], final_round
     }
     if final_round {
         for d in &diag {
-            eprintln!("[saccade] 未匹配：{d}");
+            eprintln!("[shotori] 未匹配：{d}");
         }
     }
     targets.iter().all(|(_, d)| d.is_some())

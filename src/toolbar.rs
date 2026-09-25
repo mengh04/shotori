@@ -24,7 +24,7 @@ pub fn selection_toolbar(b: Bounds<Pixels>, ws: Size<Pixels>) -> impl IntoElemen
     let x = f32::from(b.left()).clamp(8., f32::from(ws.width) - TB_W - 8.);
 
     div()
-        .id("saccade-toolbar")
+        .id("shotori-toolbar")
         .absolute()
         .left(px(x))
         .top(y)

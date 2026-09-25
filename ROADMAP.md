@@ -148,3 +148,14 @@ overlay 只剩装配。首批 12 个单元测试（不需要合成器）。
   ③ set_layer_margin 上游未合并。路线：pin 做 feature gate → 无 pin 构建去掉 patch → 可发
 - **AUR / GitHub Release**：对 Arch 用户更现实；PKGBUILD 里可以打 vendor 补丁
 - 用户现状：niri `Mod+Shift+S` 原绑 shotori，saccade 接班中
+
+## v0.4.0 改名 shotori + 取消/Esc 修复（2026-09-26）
+
+- 项目更名 saccade → shotori（用户沿用旧工具名；旧 ~/Projects/shotori 源码不动，
+  cargo bin 直接覆盖）
+- **修复：取消按钮/Esc 全部无反应**——真实用户鼠标+探针日志定位：
+  按钮点击链路全通（容器拦截→on_click→dispatch_action→覆盖层 handler），
+  但 gpui 窗口内 dispatch_action 的动作**沿焦点路径走完就停，不会冒泡到
+  App::on_action**——退出逻辑押在 app 级兜底上，从工具条诞生起就是死的。
+  修复：两段 Esc 就地在覆盖层 handler 处理（拖拽中=取消拖拽，否则 quit）
+- 后门升级：SHOTORI_DEBUG_ACTION=copy|quit（quit 走真实 dispatch_action 管线，e2e 可测退出）
