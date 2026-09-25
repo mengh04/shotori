@@ -226,8 +226,12 @@ mod tests {
         }
     }
 
-    fn ws() -> gpui_kit::Size<Pixels> {
-        size(px(1920.), px(1080.))
+    fn ws(w: f32, h: f32) -> gpui_kit::Size<Pixels> {
+        size(px(w), px(h))
+    }
+
+    fn screen() -> gpui_kit::Size<Pixels> {
+        ws(1920., 1080.)
     }
 
     struct BackdropHarness {
@@ -302,13 +306,13 @@ mod tests {
 
     #[test]
     fn label_sits_above_by_default() {
-        let (x, y) = label_anchor(&bounds(50., 100., 300., 200.), ws());
+        let (x, y) = label_anchor(&bounds(50., 100., 300., 200.), screen());
         assert_eq!((x, y), (50., 70.));
     }
 
     #[test]
     fn label_goes_inside_top_left_when_hugging_the_top() {
-        let (x, y) = label_anchor(&bounds(50., 0., 300., 200.), ws());
+        let (x, y) = label_anchor(&bounds(50., 0., 300., 200.), screen());
         assert_eq!((x, y), (50. + 12., 8.));
     }
 
@@ -316,25 +320,25 @@ mod tests {
     fn label_stays_put_while_dragging_near_the_bottom() {
         // The label must not depend on the toolbar (which only exists after
         // release): a drag reaching the screen bottom keeps the label above
-        let (_, y) = label_anchor(&bounds(50., 300., 300., 779.), ws());
+        let (_, y) = label_anchor(&bounds(50., 300., 300., 779.), screen());
         assert_eq!(y, 270.);
     }
 
     #[test]
     fn label_clamps_near_the_right_edge() {
-        let (x, _) = label_anchor(&bounds(1900., 100., 20., 200.), ws());
+        let (x, _) = label_anchor(&bounds(1900., 100., 20., 200.), screen());
         assert_eq!(x, 1920. - 110. - 4.);
     }
 
     #[test]
     fn toolbar_sits_below_by_default() {
-        let (x, y) = toolbar_anchor(&bounds(50., 100., 300., 200.), ws());
+        let (x, y) = toolbar_anchor(&bounds(50., 100., 300., 200.), screen());
         assert_eq!((x, y), (50., 308.));
     }
 
     #[test]
     fn toolbar_goes_inside_bottom_left_when_reaching_the_bottom() {
-        let (x, y) = toolbar_anchor(&bounds(50., 300., 300., 780.), ws());
+        let (x, y) = toolbar_anchor(&bounds(50., 300., 300., 780.), screen());
         assert_eq!((x, y), (50. + 12., 1080. - 40. - 8.));
     }
 
@@ -349,8 +353,8 @@ mod tests {
                     continue;
                 }
                 let b = bounds(50., top, 300., bottom - top);
-                let (_, ly) = label_anchor(&b, ws());
-                let (_, ty) = toolbar_anchor(&b, ws());
+                let (_, ly) = label_anchor(&b, screen());
+                let (_, ty) = toolbar_anchor(&b, screen());
                 assert!(ly >= 0., "label off-screen for {b:?}");
                 assert!(
                     ty >= 0. && ty + TB_H <= 1080.,
