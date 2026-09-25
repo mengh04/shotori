@@ -268,7 +268,9 @@ fn sha256_file(path: &std::path::Path) -> anyhow::Result<String> {
         }
         hasher.update(&buf[..n]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    // Manual hex: sha2's output type lost its LowerHex impl in newer
+    // patch releases (hybrid-array migration) — don't depend on it
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
 static ENG: OnceLock<Mutex<rapidocr_core::RapidOcr>> = OnceLock::new();

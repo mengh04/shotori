@@ -395,3 +395,11 @@ overlay 只剩装配。首批 12 个单元测试（不需要合成器）。
   白线/竖排标签修复 + 转圈徽章；相对 0.5.x 是一次大版本）
 - cargo publish --dry-run 通过；发布由用户本人执行（仪式感保留）
 - 发布前遗留确认：repository 链接指向未建的 GitHub 仓库（要么建仓要么删行）
+
+## 发布前小坑：reqwest 0.13 / sha2 patch（2026-09-26）
+
+- 手滑把 reqwest 升 0.13 → `rustls-tls` feature 在 0.13 改名 `rustls`，
+  直接报错。**决定留在 0.12**：rapidocr-core 也用 0.12，升级会双份
+  hyper/tokio/rustls 树，而我们只用一个 GET
+- 连锁反应：lock 重解析把 sha2 升到 hybrid-array 版，finalize() 输出
+  不再实现 LowerHex——手写 hex 格式化，版本无关
