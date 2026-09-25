@@ -8,9 +8,9 @@
 use gpui_kit::base::Button;
 use gpui_kit::*;
 
-use crate::overlay::{CopySelection, QuitOverlay, SaveSelection};
 #[cfg(feature = "ocr")]
 use crate::overlay::OcrSelection;
+use crate::overlay::{CopySelection, QuitOverlay, SaveSelection};
 use crate::theme;
 
 /// Toolbar: placed 8px below the selection's bottom-left corner (above the

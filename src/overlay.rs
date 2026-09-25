@@ -38,16 +38,9 @@ pub struct Overlay {
 }
 
 impl Overlay {
-    pub fn new(
-        capture: Capture,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let frozen = image_util::rgba_to_render_image(
-            capture.rgba.clone(),
-            capture.width,
-            capture.height,
-        );
+    pub fn new(capture: Capture, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let frozen =
+            image_util::rgba_to_render_image(capture.rgba.clone(), capture.width, capture.height);
 
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
@@ -115,11 +108,7 @@ impl Overlay {
     }
 
     /// Logical selection → physical-pixel crop; None for an empty selection
-    fn crop(
-        &self,
-        bounds: Bounds<Pixels>,
-        window: &mut Window,
-    ) -> Option<(u32, u32, Vec<u8>)> {
+    fn crop(&self, bounds: Bounds<Pixels>, window: &mut Window) -> Option<(u32, u32, Vec<u8>)> {
         crate::export::crop(
             &self.capture.rgba,
             self.capture.width,
@@ -312,9 +301,7 @@ impl Overlay {
             if progress.finished_ok() {
                 println!("[shotori] model download complete");
                 // hand the frozen snapshot over to OCR
-                let snap = entity.update(cx, |this, _| {
-                    this.ocr_setup.take().map(|s| s.snapshot)
-                });
+                let snap = entity.update(cx, |this, _| this.ocr_setup.take().map(|s| s.snapshot));
                 if let Some(crate::ocr_setup::Snapshot { w, h, rgba }) = snap {
                     ocr_to_clipboard(w, h, rgba, window_handle, entity, cx).await;
                 }
@@ -461,11 +448,11 @@ impl Render for Overlay {
                     this.ocr_setup_confirm(window, cx);
                 }),
             )
-            .on_action(cx.listener(
-                |this, _: &crate::ocr_setup::OcrSetupCancel, _, cx| {
+            .on_action(
+                cx.listener(|this, _: &crate::ocr_setup::OcrSetupCancel, _, cx| {
                     this.ocr_setup_cancel(cx);
-                },
-            ));
+                }),
+            );
 
         // ⑥ First-run OCR setup dialog (confirm / progress), topmost.
         // Computed before the chain — cfg attrs are illegal mid-chain
@@ -541,13 +528,11 @@ impl Render for Overlay {
             // selection_chrome)
             .children(sel.map(selection_chrome).unwrap_or_default())
             // ④ Toolbar: appears only after release (no flicker while dragging)
-            .children(
-                if let Selection::Selected { bounds } = self.selection {
-                    Some(selection_toolbar(round_px(bounds), ws))
-                } else {
-                    None
-                },
-            )
+            .children(if let Selection::Selected { bounds } = self.selection {
+                Some(selection_toolbar(round_px(bounds), ws))
+            } else {
+                None
+            })
             // ⑤ Bottom hint bar
             .child(hint_bar())
             // ⑥ OCR busy badge (spinner on the selection)
@@ -610,14 +595,13 @@ fn debug_selection(targeted: bool) -> Selection {
 /// OcrSelection at 1.5s (opens the dialog since models are missing), then
 /// OcrSetupConfirm at 6s (starts the download) — exercise the whole UI path.
 fn spawn_debug_action(window: &mut Window, cx: &mut Context<Overlay>) {
-    let Some(action) = std::env::var("SHOTORI_DEBUG_ACTION")
-        .ok()
-        .filter(|a| {
-            a == "copy" || a == "quit" || a == "save"
-                || (a == "ocr" && cfg!(feature = "ocr"))
-                || (a == "ocrsetup" && cfg!(feature = "ocr"))
-        })
-    else {
+    let Some(action) = std::env::var("SHOTORI_DEBUG_ACTION").ok().filter(|a| {
+        a == "copy"
+            || a == "quit"
+            || a == "save"
+            || (a == "ocr" && cfg!(feature = "ocr"))
+            || (a == "ocrsetup" && cfg!(feature = "ocr"))
+    }) else {
         return;
     };
     let win = window.window_handle();
@@ -631,19 +615,13 @@ fn spawn_debug_action(window: &mut Window, cx: &mut Context<Overlay>) {
             {
                 // phase 1: open the setup dialog (models must be missing)
                 let _ = win.update(cx, |_, window, cx| {
-                    window.dispatch_action(
-                        Box::new(crate::overlay::OcrSelection),
-                        cx,
-                    );
+                    window.dispatch_action(Box::new(crate::overlay::OcrSelection), cx);
                 });
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(4500))
                     .await;
                 let _ = win.update(cx, |_, window, cx| {
-                    window.dispatch_action(
-                        Box::new(crate::ocr_setup::OcrSetupConfirm),
-                        cx,
-                    );
+                    window.dispatch_action(Box::new(crate::ocr_setup::OcrSetupConfirm), cx);
                 });
             }
             return;

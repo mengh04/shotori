@@ -8,8 +8,8 @@ use std::fs::File;
 use std::os::fd::AsFd;
 
 use wayland_client::{
-    protocol::{wl_buffer, wl_output, wl_registry, wl_shm, wl_shm_pool},
     Connection, Dispatch, QueueHandle,
+    protocol::{wl_buffer, wl_output, wl_registry, wl_shm, wl_shm_pool},
 };
 use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},

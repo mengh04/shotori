@@ -117,10 +117,7 @@ fn hint_text() -> &'static str {
 /// The busy badge: a spinner + label, centered on the selection (or the
 /// window when nothing is selected), clamped on-screen.
 #[cfg(feature = "ocr")]
-pub(crate) fn ocr_busy_badge(
-    sel: Option<Bounds<Pixels>>,
-    ws: Size<Pixels>,
-) -> AnyElement {
+pub(crate) fn ocr_busy_badge(sel: Option<Bounds<Pixels>>, ws: Size<Pixels>) -> AnyElement {
     const BADGE_W: f32 = 118.;
     const BADGE_H: f32 = 40.;
     let (cx, cy) = match sel {
@@ -192,8 +189,7 @@ fn spinner() -> impl IntoElement {
                         .repeat()
                         .with_max_fps(15.),
                     move |dot, delta| {
-                        let a = delta * std::f32::consts::TAU
-                            - std::f32::consts::FRAC_PI_2;
+                        let a = delta * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
                         let (dx, dy) = (a.cos() * R, a.sin() * R);
                         dot.left(px(CENTER + dx - DOT / 2.))
                             .top(px(CENTER + dy - DOT / 2.))

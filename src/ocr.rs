@@ -18,7 +18,7 @@
 //! trims it).
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use anyhow::Context as _;
@@ -45,7 +45,9 @@ fn model_dir() -> anyhow::Result<PathBuf> {
 fn init_engine() -> anyhow::Result<Mutex<rapidocr_core::RapidOcr>> {
     let dir = model_dir()?;
     if assets_missing(&dir) > 0 {
-        println!("[shotori] first OCR use: downloading PP-OCRv6 small models (~31MB from ModelScope)…");
+        println!(
+            "[shotori] first OCR use: downloading PP-OCRv6 small models (~31MB from ModelScope)…"
+        );
 
         // The download runs on its own thread: reqwest::blocking cannot run
         // inside an async context (gpui's background executor is one, tokio
@@ -155,10 +157,7 @@ impl DownloadProgress {
         self.status.load(Ordering::Relaxed) == 1
     }
     pub fn error(&self) -> String {
-        self.error
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_default()
+        self.error.lock().map(|g| g.clone()).unwrap_or_default()
     }
 }
 
@@ -198,8 +197,7 @@ fn download_models(progress: &DownloadProgress) -> anyhow::Result<()> {
     use std::io::{Read as _, Write as _};
 
     let dir = model_dir()?;
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("creating {}", dir.display()))?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let client = reqwest::blocking::Client::builder()
         .user_agent("shotori")
         .build()
@@ -226,8 +224,8 @@ fn download_models(progress: &DownloadProgress) -> anyhow::Result<()> {
         }
 
         let tmp = dir.join(format!("{}.part", asset.filename));
-        let mut file = std::fs::File::create(&tmp)
-            .with_context(|| format!("creating {}", tmp.display()))?;
+        let mut file =
+            std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
         let mut reader = resp;
         let mut buf = [0u8; 64 * 1024];
         loop {
@@ -239,7 +237,8 @@ fn download_models(progress: &DownloadProgress) -> anyhow::Result<()> {
             if n == 0 {
                 break;
             }
-            file.write_all(&buf[..n]).context("writing download chunk")?;
+            file.write_all(&buf[..n])
+                .context("writing download chunk")?;
             progress.bytes.fetch_add(n as u64, Ordering::Relaxed);
         }
         drop(file);
@@ -250,8 +249,7 @@ fn download_models(progress: &DownloadProgress) -> anyhow::Result<()> {
             let _ = std::fs::remove_file(&tmp);
             anyhow::bail!("sha256 mismatch for {}", asset.filename);
         }
-        std::fs::rename(&tmp, &dest)
-            .with_context(|| format!("finalizing {}", dest.display()))?;
+        std::fs::rename(&tmp, &dest).with_context(|| format!("finalizing {}", dest.display()))?;
     }
     Ok(())
 }
@@ -270,7 +268,11 @@ fn sha256_file(path: &std::path::Path) -> anyhow::Result<String> {
     }
     // Manual hex: sha2's output type lost its LowerHex impl in newer
     // patch releases (hybrid-array migration) — don't depend on it
-    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
 }
 
 static ENG: OnceLock<Mutex<rapidocr_core::RapidOcr>> = OnceLock::new();
@@ -285,14 +287,18 @@ static INIT_LOCK: Mutex<()> = Mutex::new(());
 fn engine() -> anyhow::Result<MutexGuard<'static, rapidocr_core::RapidOcr>> {
     // Fast path: already initialized
     if let Some(m) = ENG.get() {
-        return m.lock().map_err(|_| anyhow::anyhow!("OCR engine lock poisoned"));
+        return m
+            .lock()
+            .map_err(|_| anyhow::anyhow!("OCR engine lock poisoned"));
     }
     // Slow path: hold the init lock → double-check → initialize
     let _g = INIT_LOCK
         .lock()
         .map_err(|_| anyhow::anyhow!("OCR init lock poisoned"))?;
     if let Some(m) = ENG.get() {
-        return m.lock().map_err(|_| anyhow::anyhow!("OCR engine lock poisoned"));
+        return m
+            .lock()
+            .map_err(|_| anyhow::anyhow!("OCR engine lock poisoned"));
     }
     let eng = init_engine()?;
     // Race backstop: a concurrent initializer may have set ENG first — ours

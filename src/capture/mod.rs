@@ -67,9 +67,10 @@ pub fn capture_all_outputs() -> anyhow::Result<Vec<Capture>> {
     let mut app = App::default();
     queue.roundtrip(&mut app)?; // globals in hand (including all wl_outputs)
 
-    let manager = app.manager.take().ok_or_else(|| {
-        anyhow::anyhow!("compositor does not support zwlr_screencopy_manager_v1")
-    })?;
+    let manager = app
+        .manager
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("compositor does not support zwlr_screencopy_manager_v1"))?;
     if app.outputs.is_empty() {
         anyhow::bail!("no wl_output available");
     }
@@ -95,8 +96,9 @@ pub fn capture_all_outputs() -> anyhow::Result<Vec<Capture>> {
             eprintln!("[shotori] capture failed for {}, skipping", o.name);
             continue;
         }
-        let (format, w, h, stride, y_invert) =
-            f.take_frame_info().expect("a ready frame always has buffer info");
+        let (format, w, h, stride, y_invert) = f
+            .take_frame_info()
+            .expect("a ready frame always has buffer info");
         let mmap = f.mmap.take().expect("no mmap");
         // The physical buffer "lies flat"; rotate it per the output transform
         // into the orientation the screen shows

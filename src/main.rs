@@ -15,9 +15,9 @@ use gpui_kit::*;
 use shotori::capture;
 use shotori::clipboard;
 use shotori::display;
-use shotori::overlay::{CopySelection, Overlay, QuitOverlay, SaveSelection};
 #[cfg(feature = "ocr")]
 use shotori::overlay::OcrSelection;
+use shotori::overlay::{CopySelection, Overlay, QuitOverlay, SaveSelection};
 
 fn main() {
     // Notification child: `shotori --notify <summary> <body>` (see notify.rs)

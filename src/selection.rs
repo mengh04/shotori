@@ -31,7 +31,10 @@ pub enum Selection {
 impl Selection {
     /// Press: start a new selection (also used to re-select while Selected)
     pub fn begin(&mut self, p: Point<Pixels>) {
-        *self = Self::Dragging { start: p, current: p };
+        *self = Self::Dragging {
+            start: p,
+            current: p,
+        };
     }
 
     /// Drag to p; returns whether anything actually changed (callers decide
@@ -107,7 +110,7 @@ mod tests {
     // pulls in gpui's own `test` attribute macro which shadows the built-in
     // #[test] (macro expansion hits the recursion limit)
     use super::Selection;
-    use gpui_kit::{point, px, Point, Pixels};
+    use gpui_kit::{Pixels, Point, point, px};
 
     fn pt(x: f32, y: f32) -> Point<Pixels> {
         point(px(x), px(y))

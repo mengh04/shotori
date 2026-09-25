@@ -21,9 +21,8 @@ use std::process::{Command, Stdio};
 
 use anyhow::Context as _;
 use wayland_client::{
-    event_created_child,
+    Connection, Dispatch, QueueHandle, event_created_child,
     protocol::{wl_registry, wl_seat},
-    Connection, Dispatch, QueueHandle,
 };
 use wayland_protocols_wlr::data_control::v1::client::{
     zwlr_data_control_device_v1::{self, ZwlrDataControlDeviceV1},
@@ -56,7 +55,9 @@ fn spawn_daemon(mime: &str, data: &[u8]) -> anyhow::Result<()> {
         anyhow::bail!("refusing to copy empty data");
     }
     if !manager_available() {
-        anyhow::bail!("compositor does not support zwlr_data_control_manager_v1, cannot copy to clipboard");
+        anyhow::bail!(
+            "compositor does not support zwlr_data_control_manager_v1, cannot copy to clipboard"
+        );
     }
 
     let exe = std::env::current_exe().context("cannot locate own executable")?;
@@ -160,10 +161,9 @@ pub fn daemon_main() -> anyhow::Result<()> {
         .seat
         .clone()
         .ok_or_else(|| anyhow::anyhow!("no wl_seat"))?;
-    let manager = app
-        .manager
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("compositor does not support zwlr_data_control_manager_v1"))?;
+    let manager = app.manager.take().ok_or_else(|| {
+        anyhow::anyhow!("compositor does not support zwlr_data_control_manager_v1")
+    })?;
 
     let device = manager.get_data_device(&seat, &qh, ());
     let source = manager.create_data_source(&qh, ());

@@ -95,8 +95,7 @@ fn expected_origin(cap: &Capture) -> (f32, f32) {
 /// → same output
 fn display_matches(bounds: &Bounds<Pixels>, cap: &Capture) -> bool {
     let (ex, ey) = expected_origin(cap);
-    (f32::from(bounds.origin.x) - ex).abs() < 2.0
-        && (f32::from(bounds.origin.y) - ey).abs() < 2.0
+    (f32::from(bounds.origin.x) - ex).abs() < 2.0 && (f32::from(bounds.origin.y) - ey).abs() < 2.0
 }
 
 // tests deliberately avoids `use super::*`: the parent module's
@@ -106,7 +105,7 @@ fn display_matches(bounds: &Bounds<Pixels>, cap: &Capture) -> bool {
 mod tests {
     use super::{display_matches, expected_origin};
     use crate::capture::Capture;
-    use gpui_kit::{point, px, size, Bounds, Pixels};
+    use gpui_kit::{Bounds, Pixels, point, px, size};
 
     fn cap(pos: (i32, i32), scale: f32) -> Capture {
         Capture::for_test(pos, scale)

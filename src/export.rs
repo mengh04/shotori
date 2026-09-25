@@ -44,7 +44,9 @@ pub fn crop(
 pub fn next_path() -> anyhow::Result<PathBuf> {
     let dir = save_dir()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let stamp = chrono::Local::now().format("Shotori_%Y-%m-%d_%H-%M-%S").to_string();
+    let stamp = chrono::Local::now()
+        .format("Shotori_%Y-%m-%d_%H-%M-%S")
+        .to_string();
     Ok(next_path_in(&dir, &stamp))
 }
 
@@ -85,9 +87,8 @@ pub fn encode_png(w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<Vec<u8>> {
 /// context (the caller decides whether to stay open).
 pub fn save_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<()> {
     let bytes = encode_png(w, h, rgba)?;
-    std::fs::write(path, &bytes).with_context(|| {
-        format!("writing {} ({} KB)", path.display(), bytes.len() / 1024)
-    })?;
+    std::fs::write(path, &bytes)
+        .with_context(|| format!("writing {} ({} KB)", path.display(), bytes.len() / 1024))?;
     Ok(())
 }
 
@@ -96,7 +97,7 @@ mod tests {
     // Explicit imports (same reason as selection.rs: avoid gpui's test macro
     // shadowing the built-in #[test])
     use super::{crop, next_path_in, save_png};
-    use gpui_kit::{point, px, size, Bounds, Pixels};
+    use gpui_kit::{Bounds, Pixels, point, px, size};
 
     /// 4×3 synthetic image: pixel value = (x, y, 0, 255) for easy
     /// coordinate-mapping assertions

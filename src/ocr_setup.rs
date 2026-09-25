@@ -144,14 +144,7 @@ fn card_body(setup: &OcrSetup) -> impl IntoElement {
                 .child(title),
         )
         .children(body)
-        .child(
-            div()
-                .flex()
-                .justify_end()
-                .gap_2()
-                .pt_2()
-                .children(buttons),
-        )
+        .child(div().flex().justify_end().gap_2().pt_2().children(buttons))
 }
 
 fn text_line(s: &str) -> AnyElement {
