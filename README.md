@@ -14,43 +14,28 @@ out of it — all without leaving the keyboard.
 
 ## Features
 
-- **Region selection** — the screen freezes, everything outside your
-  selection dims, and a live size label follows the drag.
-- **Multi-monitor aware** — one overlay per output, pinned to the screen it
-  captured. Mixed scales (1× / 1.5× / 2×) and rotated (portrait) outputs are
-  handled.
-- **Copy to clipboard** (`Enter` / `Ctrl+C`) — PNG served by a resident
-  background daemon (the `wl-copy` model), so the clipboard outlives the
-  process that filled it.
-- **Save to disk** (`Ctrl+S`) — the system's native "save as" dialog
-  (xdg-desktop-portal), pre-filled with a millisecond-precision name like
-  `Shotori_2026-09-26_12-34-56_789.png`; pick any folder, the PNG lands
-  there.
-- **OCR** (`Ctrl+O`) — on-device text recognition (PP-OCRv6 via ONNX
-  Runtime) straight to the clipboard. Works on mixed Chinese/English
-  content, runs fully offline after a one-time model download.
-- **Desktop notifications** — every exit (copy / save / OCR) reports back
-  with a thumbnail of the screenshot.
-- **No-terminal friendly** — everything works from a keybinding;
-  notifications are the feedback channel.
+- Region selection with a live size label; everything else dims
+- Multi-monitor aware, including mixed scales and rotated outputs
+- Copy to clipboard (`Enter` / `Ctrl+C`)
+- Save to disk (`Ctrl+S`) via the system "save as" dialog
+- OCR (`Ctrl+O`) — on-device, works on mixed Chinese/English text
+- Desktop notifications with a thumbnail of the result
 
 ## Requirements
 
 - Linux with a wlroots-adjacent Wayland compositor (niri, sway, Hyprland, …)
-  exposing `zwlr_screencopy-unstable-v1` and `zwlr-data-control-v1`.
-- A notification daemon (dunst, mako, swaync, …) is optional — copy, save
-  and OCR work fine without one.
-- `xdg-desktop-portal` with a file-chooser backend (installed by default on
-  most desktops) for the save dialog.
-- Building with the default features downloads a prebuilt ONNX Runtime
-  during compilation.
+- `xdg-desktop-portal` for the save dialog (installed by default on most
+  desktops)
+- A notification daemon (dunst, mako, swaync, …) is optional
 
 ## Installation
 
 ```bash
-cargo install shotori
+cargo install shotori        # crates.io
+paru -S shotori              # AUR (prebuilt binary)
 ```
 
+Or grab a binary from [GitHub Releases](https://github.com/mengh04/shotori/releases).
 Bind it to a key, e.g. in niri:
 
 ```kdl
@@ -59,7 +44,8 @@ Mod+Shift+S { spawn "shotori"; }
 
 ## Usage
 
-Run `shotori`; every screen freezes and a selection overlay appears.
+Run `shotori`; every screen freezes and a selection overlay appears. A
+toolbar with equivalent buttons shows up below the selection after release.
 
 | Key              | Action                                        |
 | ---------------- | --------------------------------------------- |
@@ -70,33 +56,13 @@ Run `shotori`; every screen freezes and a selection overlay appears.
 | `Esc` (dragging) | abandon the current drag                      |
 | `Esc`            | exit                                          |
 
-A toolbar with equivalent buttons appears below the selection after release.
-
 ### OCR
 
-- The engine is PP-OCRv6 small (detection + orientation + recognition),
-  running locally through ONNX Runtime.
-- First use opens a confirmation card, then a progress bar with a cancel
-  button. Models (~31 MB, fetched from ModelScope) are verified with sha256
-  and installed atomically. Cancel closes the dialog immediately; the worker
-  removes its temporary file when the current network operation returns or
-  reaches its 10-second timeout. Already verified models are kept for retry.
-  They live in `~/.local/share/shotori/ocr-models/` and are reused from
-  then on.
-- In the setup dialog, `←` / `→` or `h` / `l` cycles through buttons and
-  `Enter` activates the focused button. `Esc` cancels or closes
-  setup and returns to the selection. Download/Retry receives initial focus;
-  while downloading, focus moves to Cancel.
-- The engine prewarms while you draw the selection, so recognition
-  typically finishes within a few hundred milliseconds of pressing
-  `Ctrl+O`; a spinner badge marks the wait.
-- Small text (< ~16 px on a 1080p-class screen) strains the model; HiDPI
-  screens fare better.
-- OCR is a default feature. For a lighter binary without it:
-
-  ```bash
-  cargo install shotori --no-default-features
-  ```
+The first `Ctrl+O` asks before downloading the models (~31 MB, one time);
+after that everything runs fully offline. Models are cached in
+`~/.local/share/shotori/ocr-models/`. Recognition is prewarmed while you
+draw, so it usually completes within a few hundred milliseconds. Very small
+text strains the model; HiDPI screens fare better.
 
 ## Building from source
 
@@ -104,15 +70,13 @@ A toolbar with equivalent buttons appears below the selection after release.
 git clone https://github.com/mengh04/shotori
 cd shotori
 cargo build --release
-cargo test                          # unit tests, no compositor needed
-cargo build --no-default-features   # slim build without OCR
+cargo test    # unit tests, no compositor needed
 ```
 
 ## Design notes
 
-The resident-offer clipboard model, display matching under mixed scales,
-output transforms that contradict their protocol names, and a pixel-level
-forensics story about a 1 px seam bug are written up in
+Implementation write-ups (the resident-offer clipboard model, display
+matching under mixed scales, a 1 px seam forensics story) live in
 [ROADMAP.md](ROADMAP.md).
 
 ## License

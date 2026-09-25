@@ -14,36 +14,28 @@ Wayland 原生的截图工具，内置本地 OCR——整套 UI 用
 
 ## 功能
 
-- **区域选择**——屏幕冻结，选区之外变暗，实时尺寸标签跟随拖拽。
-- **多屏感知**——每块输出一个覆盖层，钉在它截获的那块屏上。混合缩放
-  （1× / 1.5× / 2×）与旋转（竖屏）输出都能正确处理。
-- **复制到剪贴板**（`Enter` / `Ctrl+C`）——PNG 由驻留后台分身伺服
-  （`wl-copy` 同款模型），剪贴板内容活得比填充它的进程久。
-- **保存到磁盘**（`Ctrl+S`）——弹出系统原生"另存为"对话框
-  （xdg-desktop-portal），毫秒精度时间戳文件名已预填（如
-  `Shotori_2026-09-26_12-34-56_789.png`），任选目录保存。
-- **OCR**（`Ctrl+O`）——本地文字识别（PP-OCRv6，ONNX Runtime），文本
-  直接进剪贴板。中英混排可用，一次性下载模型后完全离线。
-- **桌面通知**——复制 / 保存 / OCR 每个出口都带截图缩略图反馈。
-- **无需终端**——从键位启动一切正常；通知就是反馈通道。
+- 区域选择，实时尺寸标签跟随，选区之外变暗
+- 多屏感知，混合缩放与旋转（竖屏）输出都能正确处理
+- 复制到剪贴板（`Enter` / `Ctrl+C`）
+- 保存到磁盘（`Ctrl+S`）——系统"另存为"对话框，任选目录
+- OCR（`Ctrl+O`）——本地识别，中英混排可用
+- 桌面通知，带结果缩略图
 
 ## 环境要求
 
-- Linux + wlroots 系 Wayland 合成器（niri、sway、Hyprland……），需要
-  `zwlr_screencopy-unstable-v1` 和 `zwlr-data-control-v1`。
-- 通知 daemon（dunst、mako、swaync……）可选——没有也不影响复制、
-  保存和 OCR。
-- 保存对话框依赖 `xdg-desktop-portal` 及其文件选择后端（绝大多数
-  桌面发行版默认就有）。
-- 默认 feature 构建时会在编译期下载预编译的 ONNX Runtime。
+- Linux + wlroots 系 Wayland 合成器（niri、sway、Hyprland……）
+- 保存对话框依赖 `xdg-desktop-portal`（绝大多数桌面发行版默认就有）
+- 通知 daemon（dunst、mako、swaync……）可选
 
 ## 安装
 
 ```bash
-cargo install shotori
+cargo install shotori        # crates.io
+paru -S shotori              # AUR（预编译二进制）
 ```
 
-绑到键位上，比如 niri：
+也可以从 [GitHub Releases](https://github.com/mengh04/shotori/releases)
+直接下载二进制。绑到键位上，比如 niri：
 
 ```kdl
 Mod+Shift+S { spawn "shotori"; }
@@ -51,7 +43,8 @@ Mod+Shift+S { spawn "shotori"; }
 
 ## 用法
 
-运行 `shotori`，所有屏幕冻结并出现选区覆盖层。
+运行 `shotori`，所有屏幕冻结并出现选区覆盖层。松手后选区下方会出现
+等效按钮的工具条。
 
 | 按键              | 动作                                   |
 | ----------------- | -------------------------------------- |
@@ -62,26 +55,12 @@ Mod+Shift+S { spawn "shotori"; }
 | `Esc`（拖拽中）   | 放弃本次拖拽                           |
 | `Esc`             | 退出                                   |
 
-松手后选区下方会出现等效按钮的工具条。
-
 ### OCR
 
-- 引擎为 PP-OCRv6 small（检测 + 方向 + 识别），经 ONNX Runtime 本地运行。
-- 首次使用弹出确认卡片，随后是带取消按钮的进度条。模型（~31MB，取自
-  ModelScope）经 sha256 校验、原子安装。取消会立即关闭对话框；后台在
-  当前网络操作返回或达到 10 秒超时后清理临时文件，已校验的模型保留供重试复用。
-  存放于 `~/.local/share/shotori/ocr-models/`，之后一直复用。
-- 下载弹窗支持 `←` / `→` 或 `h` / `l` 切换按钮，`Enter` 激活当前按钮，
-  `Esc` 取消或关闭弹窗并返回选区。打开或失败后默认聚焦下载／重试按钮，
-  下载期间聚焦取消按钮。
-- 你画选区的同时引擎在后台预热，按下 `Ctrl+O` 后通常几百毫秒内出结果；
-  等待期间有转圈徽章提示。
-- 1080p 级屏幕上小于 ~16px 的文字吃力；HiDPI 屏表现更好。
-- OCR 是默认 feature。想要不带它的轻量二进制：
-
-  ```bash
-  cargo install shotori --no-default-features
-  ```
+首次按 `Ctrl+O` 会先询问再下载模型（~31MB，仅一次），之后完全离线。
+模型缓存在 `~/.local/share/shotori/ocr-models/`。画选区的同时引擎在
+后台预热，通常几百毫秒内出结果。过小的文字识别吃力，HiDPI 屏表现
+更好。
 
 ## 源码构建
 
@@ -89,15 +68,13 @@ Mod+Shift+S { spawn "shotori"; }
 git clone https://github.com/mengh04/shotori
 cd shotori
 cargo build --release
-cargo test                          # 单元测试，无需合成器
-cargo build --no-default-features   # 不带 OCR 的轻量构建
+cargo test    # 单元测试，无需合成器
 ```
 
 ## 设计笔记
 
-驻留 offer 剪贴板模型、混合缩放下的 display 匹配、与协议字面相反的
-输出 transform、以及一个 1px 接缝 bug 的像素级取证，都写在
-[ROADMAP.md](ROADMAP.md)（英文）里。
+实现细节的记录（驻留 offer 剪贴板模型、混合缩放下的 display 匹配、
+一个 1px 接缝 bug 的像素级取证……）都在 [ROADMAP.md](ROADMAP.md)（英文）。
 
 ## 许可
 
