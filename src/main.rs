@@ -44,7 +44,13 @@ pub struct Overlay {
 
 impl Overlay {
     fn new(capture: Capture, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let buf = ImageBuffer::from_raw(capture.width, capture.height, capture.rgba.clone())
+        // RenderImage 的契约是 BGRA 字节（gpui 的 img.rs 解码路径同样做了
+        // RGBA→BGRA 转换；我们跳过解码直接喂内存，必须自己交换 R/B）
+        let mut bgra = capture.rgba.clone();
+        for px in bgra.chunks_exact_mut(4) {
+            px.swap(0, 2);
+        }
+        let buf = ImageBuffer::from_raw(capture.width, capture.height, bgra)
             .expect("像素尺寸不一致");
         let frozen = Arc::new(RenderImage::new(SmallVec::from_elem(Frame::new(buf), 1)));
 
