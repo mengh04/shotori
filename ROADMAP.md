@@ -140,3 +140,11 @@ overlay 只剩装配。首批 12 个单元测试（不需要合成器）。
   此前靠未写内存假通过）——已修 + 四角断言锁死
 - pin_selection 裁剪改走自算 scale（原 scale_factor() 错报路径的漏网之鱼）
 - 删除死代码 capture_first_output；测试 12 → 21
+
+## 发布路线（2026-09-26）
+
+- **本地安装**：`cargo install --path . --bin saccade` → ~/.cargo/bin（无阻塞）
+- **crates.io**：三阻塞 ① publish=false ② [patch.crates-io] 本地 path（crates.io 禁止）
+  ③ set_layer_margin 上游未合并。路线：pin 做 feature gate → 无 pin 构建去掉 patch → 可发
+- **AUR / GitHub Release**：对 Arch 用户更现实；PKGBUILD 里可以打 vendor 补丁
+- 用户现状：niri `Mod+Shift+S` 原绑 shotori，saccade 接班中

@@ -1,6 +1,6 @@
 [package]
 name = "saccade"
-version = "0.1.0"
+version = "0.3.1"
 edition = "2024"
 publish = false
 description = "Saccade — Wayland-first screenshot & OCR suite built with gpui-kit"
