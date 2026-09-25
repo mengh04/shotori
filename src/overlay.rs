@@ -160,40 +160,35 @@ impl Overlay {
         cx.quit();
     }
 
-    /// Ctrl+S / toolbar [Save]: crop → PNG → disk. Stays in the overlay on
-    /// failure (retry / Esc to exit)
+    /// Ctrl+S / toolbar [Save]: crop → stash pixels → quit the overlay.
+    /// The overlay is a layer-shell surface that would cover the native file
+    /// dialog, so it exits first; the dialog itself (xdg-desktop-portal
+    /// SaveFile), the write and the notification run on the main thread
+    /// afterwards — see [`crate::save_dialog`]
     fn save_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (w, h, out) = match self.crop(self.selection_or_full(window), window) {
-            Some(x) => x,
-            None => {
-                println!("[shotori] empty selection, ignoring");
-                return;
-            }
+        let Some((w, h, rgba)) = self.crop(self.selection_or_full(window), window) else {
+            println!("[shotori] empty selection, ignoring");
+            return;
         };
-
-        let path = match crate::export::save_png(w, h, &out) {
-            Ok(path) => path,
-            Err(e) => {
-                eprintln!("[shotori] save failed: {e:#}");
-                return;
-            }
-        };
-
         println!(
-            "[shotori] saved {w}x{h} (from {}) → {}",
-            self.capture.output_name,
-            path.display()
+            "[shotori] save: handing {w}x{h} (from {}) to the file dialog",
+            self.capture.output_name
         );
-        // The path is the thing users actually need — stdout is lost when
-        // launched from a keybinding, so the notification is the feedback
-        crate::notify::send_with_preview(
-            "Shotori",
-            &format!("Saved {w}×{h} → {}", path.display()),
-            w,
-            h,
-            &out,
-        );
-        cx.quit();
+        crate::save_dialog::stash(w, h, rgba);
+        // Unmap all overlays — they would cover the save dialog (layer-shell
+        // Overlay layer + exclusive keyboard). Quit is delayed a beat: the
+        // run loop needs a few iterations to flush the surface-destroy
+        // requests to the compositor — quitting immediately leaves frozen
+        // frames mapped on screen (measured)
+        cx.set_quit_mode(gpui_kit::QuitMode::Explicit);
+        crate::save_dialog::close_overlays(window, cx);
+        cx.spawn(async move |_, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(150))
+                .await;
+            cx.update(|cx| cx.quit());
+        })
+        .detach();
     }
 
     /// Ctrl+O / toolbar [OCR]. With cached models this runs immediately; on

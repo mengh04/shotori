@@ -580,3 +580,52 @@ fight the virtual mouse.
 - README restructured to the standard layout (badges, features,
   requirements, install, usage, OCR notes, build, license); Chinese
   README mirrors it.
+
+## v0.8.0-dev: save via the system file picker (2026-09-26)
+
+`Ctrl+S` no longer writes to a fixed path — it opens the desktop's native
+"save as" dialog (xdg-desktop-portal FileChooser via rfd 0.17 / ashpd, the
+`xdg-portal` feature, no GTK link time; zenity fallback if the portal is
+dead). Suggested name pre-filled (`Shotori_<date>_<time>.png`, default dir
+`~/Pictures/Shotori`), extension re-appended if dropped while renaming.
+
+Flow: the overlay action crops, stashes RGBA pixels in a static slot and
+tears the overlays down; after the run loop returns, the main thread runs
+the dialog (blocking), writes the PNG and fires the thumbnail notification.
+Headless e2e keeps working via `SHOTORI_DEBUG_SAVE_PATH=<file>` (skips the
+dialog).
+
+Three measured gotchas along the way, all worth remembering:
+
+1. **A portal dialog cannot coexist with the overlay.** The overlays are
+   layer-shell surfaces on the Overlay layer with exclusive keyboard — a
+   regular toplevel (the dialog) renders below them and gets no input. The
+   overlays must be unmapped first.
+2. **`cx.quit()` does not unmap surfaces.** It stops the run loop; the
+   window-destroy requests may still be sitting unflushed in the wayland
+   connection buffer. With the process exiting immediately (every other
+   action path) nobody notices — the socket close cleans up. With the
+   process alive waiting on the dialog, frozen frames stay mapped on
+   screen forever. Fix: `QuitMode::Explicit`, remove every window, then
+   quit from a 150 ms timer so the loop gets a few iterations to flush.
+3. **`handle.update()` on the window currently running an action handler
+   is a no-op** (gpui takes the window out of the map during its update,
+   so the nested update finds nothing). The current window must remove
+   itself through its own `window` reference; `close_overlays` therefore
+   takes both.
+
+Also: removing the last window auto-quits gpui on Linux
+(`QuitMode::Default == LastWindowClosed` off macOS) — irrelevant now that
+we set Explicit, but good to know. The fixed-path `export::next_path`
+machinery and its collision-suffix logic were deleted (the dialog asks
+before overwriting).
+
+### Addendum: superseding the atomic fixed-path writer (2026-09-26)
+
+Between the dialog work starting and landing, a parallel change introduced
+millisecond timestamps + an atomic `create_new` collision-suffix writer for
+the fixed-path flow (concurrent instances racing on the same second).
+Merged resolution: the millisecond stamp lives on in the dialog's suggested
+name (`..._%3f`), while the atomic writer itself has no caller anymore —
+with a picker in front, overwrite confirmation is the dialog's business and
+`save_png` writes the chosen path plainly.

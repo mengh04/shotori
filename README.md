@@ -22,10 +22,10 @@ out of it — all without leaving the keyboard.
 - **Copy to clipboard** (`Enter` / `Ctrl+C`) — PNG served by a resident
   background daemon (the `wl-copy` model), so the clipboard outlives the
   process that filled it.
-- **Save to disk** (`Ctrl+S`) — PNGs named like
-  `Shotori_2026-09-26_12-34-56_789.png` (local time, milliseconds) in
-  `~/Pictures/Shotori/`. Concurrent saves use automatic suffixes on name
-  collisions and never overwrite existing files.
+- **Save to disk** (`Ctrl+S`) — the system's native "save as" dialog
+  (xdg-desktop-portal), pre-filled with a millisecond-precision name like
+  `Shotori_2026-09-26_12-34-56_789.png`; pick any folder, the PNG lands
+  there.
 - **OCR** (`Ctrl+O`) — on-device text recognition (PP-OCRv6 via ONNX
   Runtime) straight to the clipboard. Works on mixed Chinese/English
   content, runs fully offline after a one-time model download.
@@ -40,6 +40,8 @@ out of it — all without leaving the keyboard.
   exposing `zwlr_screencopy-unstable-v1` and `zwlr-data-control-v1`.
 - A notification daemon (dunst, mako, swaync, …) is optional — copy, save
   and OCR work fine without one.
+- `xdg-desktop-portal` with a file-chooser backend (installed by default on
+  most desktops) for the save dialog.
 - Building with the default features downloads a prebuilt ONNX Runtime
   during compilation.
 
@@ -63,7 +65,7 @@ Run `shotori`; every screen freezes and a selection overlay appears.
 | ---------------- | --------------------------------------------- |
 | drag             | select a region                               |
 | `Enter` / `Ctrl+C` | copy the selection (or the full screen) to the clipboard |
-| `Ctrl+S`         | save the selection as PNG                     |
+| `Ctrl+S`         | save the selection — system "save as" dialog  |
 | `Ctrl+O`         | OCR the selection → text to the clipboard     |
 | `Esc` (dragging) | abandon the current drag                      |
 | `Esc`            | exit                                          |

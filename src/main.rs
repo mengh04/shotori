@@ -92,13 +92,23 @@ fn main() {
                                 cap.output_name
                             );
                         }
-                        cx.open_window(Overlay::window_options(did), |window, cx| {
-                            cx.new(|cx| Overlay::new(cap, window, cx))
-                        })
-                        .expect("failed to open layer-shell window");
+                        let handle = cx
+                            .open_window(Overlay::window_options(did), |window, cx| {
+                                cx.new(|cx| Overlay::new(cap, window, cx))
+                            })
+                            .expect("failed to open layer-shell window");
+                        // Needed by the save flow to unmap every overlay
+                        // before the file dialog takes over the screen
+                        shotori::save_dialog::register_overlay(handle.into());
                     }
                 });
             })
             .detach();
         });
+
+    // ③ Save flow: Ctrl+S stashed a selection and quit the overlay — now
+    // that the app loop (and the covering layer-shell surface) is gone, the
+    // native save dialog can take over the screen. No-op on every other
+    // exit path.
+    shotori::save_dialog::complete_pending();
 }

@@ -38,7 +38,9 @@ pub fn crop(
     Some((w, h, out))
 }
 
-fn save_dir() -> anyhow::Result<PathBuf> {
+/// The conventional save directory `~/Pictures/Shotori` (dialog default /
+/// created on demand)
+pub(crate) fn save_dir() -> anyhow::Result<PathBuf> {
     let home = std::env::var("HOME").context("HOME environment variable is not set")?;
     Ok(PathBuf::from(home).join("Pictures/Shotori"))
 }
@@ -55,53 +57,23 @@ pub fn encode_png(w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Save a PNG named with local date and time, including milliseconds.
-/// Returns the actual path; concurrent saves never overwrite an existing file.
-pub fn save_png(w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<PathBuf> {
-    let stamp = chrono::Local::now()
-        .format("Shotori_%Y-%m-%d_%H-%M-%S_%3f")
-        .to_string();
-    save_png_in(&save_dir()?, &stamp, w, h, rgba)
-}
-
-fn save_png_in(dir: &Path, stem: &str, w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<PathBuf> {
-    use std::io::{ErrorKind, Write as _};
-
+/// Encode RGBA8 pixels as PNG and write to `path` — the user-chosen save
+/// location from the file dialog. Overwrites plainly: the dialog has
+/// already asked for confirmation. (The pre-dialog fixed-path writer used
+/// atomic `create_new` + suffixes against concurrent instances; with a
+/// picker in front, collisions are the dialog's business.)
+pub fn save_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<()> {
     let bytes = encode_png(w, h, rgba)?;
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    for n in 1u64.. {
-        let name = if n == 1 {
-            format!("{stem}.png")
-        } else {
-            format!("{stem}_{n}.png")
-        };
-        let path = dir.join(name);
-        // Reserve and open in one operation. An existence check followed by
-        // std::fs::write would race with another Shotori process.
-        let mut file = match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(file) => file,
-            Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e).with_context(|| format!("creating {}", path.display())),
-        };
-        if let Err(e) = file.write_all(&bytes) {
-            drop(file);
-            let _ = std::fs::remove_file(&path);
-            return Err(e).with_context(|| format!("writing {}", path.display()));
-        }
-        return Ok(path);
-    }
-    anyhow::bail!("no available screenshot filename for {stem}")
+    std::fs::write(path, &bytes)
+        .with_context(|| format!("writing {} ({} KB)", path.display(), bytes.len() / 1024))?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     // Explicit imports (same reason as selection.rs: avoid gpui's test macro
     // shadowing the built-in #[test])
-    use super::{crop, save_png_in};
+    use super::{crop, save_png};
     use gpui_kit::{Bounds, Pixels, point, px, size};
 
     /// 4×3 synthetic image: pixel value = (x, y, 0, 255) for easy
@@ -164,53 +136,11 @@ mod tests {
     }
 
     #[test]
-    fn existing_screenshot_is_preserved_on_timestamp_collision() {
-        let dir = tempfile::tempdir().unwrap();
-        let stem = "Shotori_2026-09-26_12-34-56_789";
-        let existing = dir.path().join(format!("{stem}.png"));
-        std::fs::write(&existing, b"existing screenshot").unwrap();
-        let (w, h, rgba) = gradient_4x3();
-        let saved = save_png_in(dir.path(), stem, w, h, &rgba).unwrap();
-        assert_eq!(saved, dir.path().join(format!("{stem}_2.png")));
-        assert_eq!(std::fs::read(existing).unwrap(), b"existing screenshot");
-        assert_eq!(image::open(saved).unwrap().to_rgba8().into_raw(), rgba);
-    }
-
-    #[test]
-    fn concurrent_saves_with_the_same_timestamp_keep_every_image() {
-        use std::sync::{Arc, Barrier};
-
-        let dir = tempfile::tempdir().unwrap();
-        let barrier = Arc::new(Barrier::new(8));
-        let workers: Vec<_> = (0..8u8)
-            .map(|i| {
-                let dir = dir.path().to_path_buf();
-                let barrier = barrier.clone();
-                std::thread::spawn(move || {
-                    let pixel = [i, 0, 0, 255];
-                    barrier.wait();
-                    let path =
-                        save_png_in(&dir, "Shotori_2026-09-26_12-34-56_789", 1, 1, &pixel).unwrap();
-                    (path, pixel)
-                })
-            })
-            .collect();
-        let saved: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
-        let unique: std::collections::HashSet<_> = saved.iter().map(|(p, _)| p).collect();
-        assert_eq!(unique.len(), 8);
-        for (path, pixel) in saved {
-            assert_eq!(
-                image::open(path).unwrap().to_rgba8().get_pixel(0, 0).0,
-                pixel
-            );
-        }
-    }
-
-    #[test]
     fn png_encodes_and_reads_back() {
         let (w, h, rgba) = gradient_4x3();
         let dir = tempfile::tempdir().unwrap();
-        let path = save_png_in(dir.path(), "roundtrip", w, h, &rgba).unwrap();
+        let path = dir.path().join("roundtrip.png");
+        save_png(&path, w, h, &rgba).unwrap();
 
         let img = image::open(&path).unwrap().to_rgba8();
         assert_eq!(img.dimensions(), (w, h));

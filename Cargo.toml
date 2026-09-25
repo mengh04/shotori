@@ -32,6 +32,7 @@ chrono = "0.4"
 # Sent from a detached child process (see src/notify.rs) so a quick
 # cx.quit() can never cut a notification off
 notify-rust = "4"
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 
 # The pin (floating image) feature lives on the `pin` branch (it needs the
 # vendored set_layer_margin patch); once upstream merges it, the branch can

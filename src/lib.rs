@@ -31,6 +31,7 @@ pub mod hud;
 pub mod image_util;
 pub mod notify;
 pub mod overlay;
+pub mod save_dialog;
 pub mod selection;
 pub mod theme;
 pub mod toolbar;
