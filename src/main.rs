@@ -1,73 +1,296 @@
-//! # Saccade · 覆盖层（spike #1 最终形态，base 自绘路线）
+//! # Saccade · 合体：冻结屏幕覆盖层 + 选区交互
 //!
-//! 架构决策存档（详见 ROADMAP.md）：
-//! - 覆盖层 = 裸 `cx.open_window`，绝不包 Root（Root 的 CSD 装饰栈会：
-//!   刷主题背景挡桌面 + set_client_inset(20) 膨胀窗口 + padding 内缩内容）
-//! - `gpui_kit::base::init`：只初始化 base 层，不注册任何 Root 插件
-//! - 四边全锚 + exclusive_zone(-1) + Exclusive 键盘 + 半透明暗幕（已像素级验证）
+//! PixPin 式的完整流程（v0.1）：
+//!   启动 → 冻结屏幕（screencopy 拿像素）→ layer-shell 覆盖层显示冻结画面
+//!   → 拖拽框选（选区"透视"，四周变暗）→ Enter 裁剪保存 / Esc 退出
+//!
+//! 为什么用"冻结画面"而不是实时半透明：见 ROADMAP（兼容性 + 专业手感 +
+//! 裁剪直接从内存像素走，不需要二次截图）。
+
+use std::sync::Arc;
 
 use gpui_kit::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui_kit::*;
+use image::{Frame, ImageBuffer};
+use smallvec::SmallVec;
 
-gpui_kit::actions!([QuitOverlay]);
+use saccade::capture::{self, Capture};
+
+gpui_kit::actions!([QuitOverlay, ConfirmSelection]);
+
+const DIM: u32 = 0x0000008C; // 选区外变暗层的颜色（55% 黑）
+const ACCENT: u32 = 0xFF6A00FF; // 选框/标签的橙色
+
+/// 选区状态机
+enum Selection {
+    Idle,
+    Dragging {
+        start: Point<Pixels>,
+        current: Point<Pixels>,
+    },
+    Selected {
+        bounds: Bounds<Pixels>,
+    },
+}
 
 pub struct Overlay {
-    /// 按键分发沿焦点路径走，根节点必须可聚焦
     focus_handle: FocusHandle,
+    /// 冻结的屏幕画面（给 img 元素显示）
+    frozen: Arc<RenderImage>,
+    /// 原始像素（裁剪用）
+    capture: Capture,
+    selection: Selection,
 }
 
 impl Overlay {
-    fn new(cx: &mut Context<Self>) -> Self {
+    fn new(capture: Capture, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let buf = ImageBuffer::from_raw(capture.width, capture.height, capture.rgba.clone())
+            .expect("像素尺寸不一致");
+        let frozen = Arc::new(RenderImage::new(SmallVec::from_elem(Frame::new(buf), 1)));
+
+        let focus_handle = cx.focus_handle();
+        window.focus(&focus_handle, cx);
+
         Self {
-            focus_handle: cx.focus_handle(),
+            focus_handle,
+            frozen,
+            capture,
+            selection: Selection::Idle,
         }
+    }
+
+    /// 当前选区（拖拽中也算，实时显示）
+    fn selection_bounds(&self) -> Option<Bounds<Pixels>> {
+        match &self.selection {
+            Selection::Idle => None,
+            Selection::Dragging { start, current } => Some(Bounds::from_corners(*start, *current)),
+            Selection::Selected { bounds } => Some(*bounds),
+        }
+    }
+
+    /// Enter：从冻结像素里裁出选区，保存 PNG
+    fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(bounds) = self.selection_bounds() else {
+            return;
+        };
+        // 逻辑坐标 → 物理像素（eDP 缩放 2.0 的屏，1 逻辑像素 = 2 物理像素）
+        let scale = window.scale_factor();
+        let cap = &self.capture;
+        let clamp = |v: f32, max: u32| v.round().clamp(0., max as f32) as u32;
+        let x0 = clamp(f32::from(bounds.left()) * scale, cap.width);
+        let y0 = clamp(f32::from(bounds.top()) * scale, cap.height);
+        let x1 = clamp(f32::from(bounds.right()) * scale, cap.width);
+        let y1 = clamp(f32::from(bounds.bottom()) * scale, cap.height);
+        let (w, h) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
+        if w == 0 || h == 0 {
+            println!("[saccade] 选区为空，忽略");
+            return;
+        }
+
+        // 逐行裁剪 RGBA
+        let mut out = vec![0u8; (w * h * 4) as usize];
+        let cw4 = (cap.width as usize) * 4;
+        for row in 0..h as usize {
+            let src = (y0 as usize + row) * cw4 + x0 as usize * 4;
+            let dst = row * (w as usize * 4);
+            out[dst..dst + w as usize * 4]
+                .copy_from_slice(&cap.rgba[src..src + w as usize * 4]);
+        }
+
+        // 保存到 ~/Pictures/Saccade/
+        let dir = std::path::PathBuf::from(
+            std::env::var("HOME").expect("没有 HOME 环境变量"),
+        )
+        .join("Pictures/Saccade");
+        std::fs::create_dir_all(&dir).ok();
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let path = dir.join(format!("saccade_{ts}.png"));
+
+        let file = std::fs::File::create(&path).expect("创建文件失败");
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()
+            .expect("png header")
+            .write_image_data(&out)
+            .expect("png 数据");
+
+        println!(
+            "[saccade] 已保存 {w}x{h}（来自 {}）→ {}",
+            self.capture.output_name,
+            path.display()
+        );
+        cx.quit();
     }
 }
 
 impl Render for Overlay {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let sel = self.selection_bounds();
+        let ws = window.bounds().size; // 窗口逻辑尺寸（= 输出逻辑尺寸）
+
         div()
             .id("saccade-overlay")
             .size_full()
+            .relative()
             .track_focus(&self.focus_handle)
-            // 变暗层的真相：compositor 没有"变暗"功能，我们自己就是那层半透明黑
-            .bg(rgba(0x000000B3))
-            .flex()
-            .items_center()
-            .justify_center()
+            .on_action(cx.listener(|this, _: &ConfirmSelection, window, cx| {
+                this.confirm(window, cx);
+            }))
+            // ── 选区交互 ─────────────────────────────────────
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                    // 按下即开始新选区（Selected 状态下重新框选也是它）
+                    this.selection = Selection::Dragging {
+                        start: ev.position,
+                        current: ev.position,
+                    };
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                if let Selection::Dragging { current, .. } = &mut this.selection {
+                    if *current != ev.position {
+                        *current = ev.position;
+                        cx.notify();
+                    }
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseUpEvent, _, cx| {
+                    if let Selection::Dragging { start, .. } = this.selection {
+                        this.selection =
+                            Selection::Selected {
+                                bounds: Bounds::from_corners(start, ev.position),
+                            };
+                        cx.notify();
+                    }
+                }),
+            )
+            // ── 图层堆栈（从底到顶）───────────────────────────
+            // ① 冻结的屏幕画面（不透明，铺满）
+            .child(img(self.frozen.clone()).size_full())
+            // ② 变暗层：无选区=全屏；有选区=四条边带（选区"透视"）
+            .children(dim_strips(sel, ws))
+            // ③ 选区边框 + 尺寸标签
+            .children(sel.map(|b| selection_chrome(b)))
+            // ④ 底部提示条
             .child(
                 div()
-                    .px_6()
-                    .py_4()
-                    .rounded_lg()
-                    .bg(rgba(0x16161DE6))
-                    .border_1()
-                    .border_color(rgba(0xFF6A00FF))
+                    .absolute()
+                    .bottom(px(24.))
+                    .left_0()
+                    .w_full()
+                    .flex()
+                    .justify_center()
                     .child(
                         div()
-                            .text_size(px(22.))
-                            .text_color(rgba(0xFFFFFFFF))
-                            .child("Saccade · 覆盖层（base 自绘路线）"),
-                    )
-                    .child(
-                        div()
-                            .mt_2()
+                            .px_4()
+                            .py_1()
+                            .rounded_lg()
+                            .bg(rgba(0x16161DE6))
                             .text_size(px(13.))
                             .text_color(rgba(0xAAAAAAFF))
-                            .child("暗幕铺满 · 半透明正常 · Esc 退出"),
+                            .child("拖拽框选 · Enter 保存 · Esc 退出"),
                     ),
             )
     }
 }
 
+/// 变暗层：无选区时整屏一块；有选区时挖空选区（四条边带）
+fn dim_strips(sel: Option<Bounds<Pixels>>, ws: Size<Pixels>) -> Vec<AnyElement> {
+    let mut els = Vec::new();
+    let mut strip = |x: Pixels, y: Pixels, w: Pixels, h: Pixels| {
+        if w > px(0.) && h > px(0.) {
+            els.push(
+                div()
+                    .absolute()
+                    .left(x)
+                    .top(y)
+                    .w(w)
+                    .h(h)
+                    .bg(rgba(DIM))
+                    .into_any_element(),
+            );
+        }
+    };
+
+    match sel {
+        None => strip(px(0.), px(0.), ws.width, ws.height),
+        Some(b) => {
+            strip(px(0.), px(0.), ws.width, b.top()); // 上
+            strip(px(0.), b.bottom(), ws.width, ws.height - b.bottom()); // 下
+            strip(px(0.), b.top(), b.left(), b.size.height); // 左
+            strip(b.right(), b.top(), ws.width - b.right(), b.size.height); // 右
+        }
+    }
+    els
+}
+
+/// 选区边框 + 左上角尺寸标签
+fn selection_chrome(b: Bounds<Pixels>) -> impl IntoElement {
+    let label_y = if b.top() >= px(34.) {
+        b.top() - px(30.)
+    } else {
+        b.bottom() + px(6.)
+    };
+
+    div()
+        .absolute()
+        .left(b.left())
+        .top(b.top())
+        .w(b.size.width)
+        .h(b.size.height)
+        .border_1()
+        .border_color(rgba(ACCENT))
+        .child(
+            div()
+                .absolute()
+                .left(px(0.))
+                .top(label_y - b.top())
+                .px_2()
+                .py(px(2.))
+                .rounded(px(4.))
+                .bg(rgba(ACCENT))
+                .text_size(px(12.))
+                .text_color(rgba(0xFFFFFFFF))
+                .child(format!(
+                    "{} × {}",
+                    f32::from(b.size.width).round() as i32,
+                    f32::from(b.size.height).round() as i32
+                )),
+        )
+}
+
 fn main() {
+    // ① 冻结屏幕（必须在覆盖层出现之前完成）
+    let capture = match capture::capture_first_output() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[saccade] 捕获失败：{e:#}");
+            std::process::exit(1);
+        }
+    };
+    println!(
+        "[saccade] 已冻结 {}（{}x{}）",
+        capture.output_name, capture.width, capture.height
+    );
+
+    // ② 覆盖层
     let app = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
 
-    app.run(|cx| {
-        // base 自绘路线：不注册 component 的 Root 插件（投毒源拔除）
+    app.run(move |cx| {
         gpui_kit::base::init(cx);
 
-        cx.bind_keys([KeyBinding::new("escape", QuitOverlay, None)]);
+        cx.bind_keys([
+            KeyBinding::new("escape", QuitOverlay, None),
+            KeyBinding::new("enter", ConfirmSelection, None),
+        ]);
         cx.on_action(|_: &QuitOverlay, cx| cx.quit());
 
         let options = WindowOptions {
@@ -85,7 +308,11 @@ fn main() {
             ..Default::default()
         };
 
-        cx.open_window(options, |_, cx| cx.new(Overlay::new))
-            .expect("打开 layer-shell 窗口失败");
+        let cap = capture;
+        cx.open_window(options, |window, cx| {
+            cx.new(|cx| Overlay::new(cap, window, cx))
+        })
+        .expect("打开 layer-shell 窗口失败");
     });
 }
+

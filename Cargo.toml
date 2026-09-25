@@ -15,3 +15,8 @@ wayland-protocols-wlr = "0.3"
 memmap2 = "0.9"
 tempfile = "3"
 png = "0.17"
+
+# 内存图像 → gpui 显示（RenderImage 由 image crate 的 Frame 构成，
+# 必须与 gpui-pre 同版本，当前 0.25.10）
+image = "0.25"
+smallvec = "1"
