@@ -103,7 +103,12 @@ jobs:
           sed -i "s/^pkgver=.*/pkgver=${VERSION}/" PKGBUILD
           sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
           sed -i "s/^sha256sums=.*/sha256sums=('${SHA}')/" PKGBUILD
-          makepkg --printsrcinfo > .SRCINFO
+          # makepkg refuses to run as root (exit 10); printsrcinfo only
+          # prints, but the guard fires regardless — run it as a mortal
+          useradd -m builder
+          install -d -o builder -g builder /home/builder/work
+          cp PKGBUILD /home/builder/work/
+          su builder -s /bin/bash -c "cd ~/work && makepkg --printsrcinfo" > .SRCINFO
           git add PKGBUILD .SRCINFO
           git commit -m "shotori ${VERSION}-1"
           git push
