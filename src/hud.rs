@@ -74,17 +74,28 @@ pub(crate) fn selection_label(b: Bounds<Pixels>, ws: Size<Pixels>) -> AnyElement
 
 /// Label geometry, pure for tests. Rough width covers the widest
 /// "3072 × 1920" + padding; the height matches the rendered chip.
+const LABEL_W: f32 = 110.;
+pub(crate) const LABEL_H: f32 = 24.;
+
+/// Inset kept between the box border and elements drawn INSIDE it —
+/// flush against the border line looks glued-on (user-reported).
+const INSET: f32 = 12.;
+
+/// Label placement: ABOVE the selection, or — when the selection hugs the
+/// top of the screen — INSIDE the box at its top-left corner. Never below:
+/// the label owns the top zone and the toolbar owns the bottom zone
+/// (hud::label_anchor / toolbar::toolbar_anchor), so the two cannot
+/// collide by construction, and the label never depends on the toolbar's
+/// existence (no "reserving room" jumps while dragging).
 fn label_anchor(b: &Bounds<Pixels>, ws: Size<Pixels>) -> (f32, f32) {
-    const LABEL_W: f32 = 110.;
-    const LABEL_H: f32 = 24.;
-    let x = f32::from(b.left()).clamp(4., (f32::from(ws.width) - LABEL_W - 4.).max(4.));
-    let y = if f32::from(b.top()) >= LABEL_H + 10. {
-        f32::from(b.top()) - LABEL_H - 6.
-    } else if f32::from(b.bottom()) + LABEL_H + 6. <= f32::from(ws.height) {
-        f32::from(b.bottom()) + 6.
+    let inside = f32::from(b.top()) < LABEL_H + 10.;
+    let x = (f32::from(b.left()) + if inside { INSET } else { 0. })
+        .clamp(4., (f32::from(ws.width) - LABEL_W - 4.).max(4.));
+    let y = if inside {
+        // inside, top-left corner
+        f32::from(b.top()) + 8.
     } else {
-        // No room above or below: inside the box, pinned to its top edge
-        f32::from(b.top()) + 4.
+        f32::from(b.top()) - LABEL_H - 6.
     };
     (x, y)
 }
@@ -204,7 +215,8 @@ fn spinner() -> impl IntoElement {
 mod tests {
     // Explicit imports (same reason as selection.rs: avoid gpui's test macro
     // shadowing the built-in #[test])
-    use super::label_anchor;
+    use super::{LABEL_H, label_anchor};
+    use crate::toolbar::{TB_H, toolbar_anchor};
     use gpui_kit::{Bounds, Pixels, point, px, size};
 
     fn bounds(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
@@ -214,8 +226,8 @@ mod tests {
         }
     }
 
-    fn ws(w: f32, h: f32) -> gpui_kit::Size<Pixels> {
-        size(px(w), px(h))
+    fn ws() -> gpui_kit::Size<Pixels> {
+        size(px(1920.), px(1080.))
     }
 
     struct BackdropHarness {
@@ -289,32 +301,69 @@ mod tests {
     }
 
     #[test]
-    fn label_prefers_above() {
-        // selection at y=100 → label above at 100 - 24 - 6
-        let (x, y) = label_anchor(&bounds(50., 100., 300., 200.), ws(1920., 1080.));
+    fn label_sits_above_by_default() {
+        let (x, y) = label_anchor(&bounds(50., 100., 300., 200.), ws());
         assert_eq!((x, y), (50., 70.));
     }
 
     #[test]
-    fn label_falls_back_to_below_when_touching_the_top() {
-        // selection hugging the top edge → below
-        let (_, y) = label_anchor(&bounds(50., 0., 300., 200.), ws(1920., 1080.));
-        assert_eq!(y, 200. + 6.);
+    fn label_goes_inside_top_left_when_hugging_the_top() {
+        let (x, y) = label_anchor(&bounds(50., 0., 300., 200.), ws());
+        assert_eq!((x, y), (50. + 12., 8.));
     }
 
     #[test]
-    fn label_goes_inside_when_both_edges_taken() {
-        // selection spanning the full screen height: above and below are
-        // both off-screen → inside, pinned to the top edge
-        let (_, y) = label_anchor(&bounds(50., 0., 300., 1080.), ws(1920., 1080.));
-        assert_eq!(y, 4.);
+    fn label_stays_put_while_dragging_near_the_bottom() {
+        // The label must not depend on the toolbar (which only exists after
+        // release): a drag reaching the screen bottom keeps the label above
+        let (_, y) = label_anchor(&bounds(50., 300., 300., 779.), ws());
+        assert_eq!(y, 270.);
     }
 
     #[test]
     fn label_clamps_near_the_right_edge() {
-        // narrow selection hugging the right edge: the chip (wider than the
-        // selection) is pinned into the screen instead of overflowing
-        let (x, _) = label_anchor(&bounds(1900., 100., 20., 200.), ws(1920., 1080.));
+        let (x, _) = label_anchor(&bounds(1900., 100., 20., 200.), ws());
         assert_eq!(x, 1920. - 110. - 4.);
+    }
+
+    #[test]
+    fn toolbar_sits_below_by_default() {
+        let (x, y) = toolbar_anchor(&bounds(50., 100., 300., 200.), ws());
+        assert_eq!((x, y), (50., 308.));
+    }
+
+    #[test]
+    fn toolbar_goes_inside_bottom_left_when_reaching_the_bottom() {
+        let (x, y) = toolbar_anchor(&bounds(50., 300., 300., 780.), ws());
+        assert_eq!((x, y), (50. + 12., 1080. - 40. - 8.));
+    }
+
+    #[test]
+    fn zones_stay_disjoint_across_a_grid_of_selections() {
+        // The scheme's core invariant: the label zone (top) and the toolbar
+        // zone (bottom) never overlap and never leave the screen — swept
+        // over a representative grid of selection geometries.
+        for top in [0., 4., 34., 50., 78., 200., 800.] {
+            for bottom in [top + 40., 1000., 1040., 1072., 1080.] {
+                if bottom <= top || bottom > 1080. {
+                    continue;
+                }
+                let b = bounds(50., top, 300., bottom - top);
+                let (_, ly) = label_anchor(&b, ws());
+                let (_, ty) = toolbar_anchor(&b, ws());
+                assert!(ly >= 0., "label off-screen for {b:?}");
+                assert!(
+                    ty >= 0. && ty + TB_H <= 1080.,
+                    "toolbar off-screen for {b:?}"
+                );
+                assert!(
+                    ly + LABEL_H <= ty,
+                    "zones overlap for {b:?}: label {}..{}, toolbar {ty}..{}",
+                    ly,
+                    ly + LABEL_H,
+                    ty + TB_H
+                );
+            }
+        }
     }
 }

@@ -639,3 +639,29 @@ drawn INSIDE the selection box, pinned to its top edge. Geometry extracted
 into pure anchor functions (`label_anchor`, `toolbar_anchor`) with unit
 tests for all three states plus horizontal clamping (which also gained a
 max() guard against a clamp(min, max) panic on very narrow windows).
+
+## Label / toolbar placement v2: two disjoint zones (2026-09-26)
+
+The v1 fallback chain (label above→below→inside, toolbar below→above→inside)
+kept colliding as user reports rolled in: overlap when both flipped to the
+same side, a label that visibly "reserved room" for a toolbar that only
+exists after release, and elements glued flush to the screen edge at
+exactly-zero margin.
+
+An intermediate fix computed both Y anchors in one six-state matrix —
+correct, but the label↔toolbar coupling was the drag-jump bug in disguise,
+and the matrix only grew.
+
+Final scheme (user-designed, and better): **two disjoint zones**.
+- Label: ABOVE the box; if the box hugs the screen top, inside its
+  TOP-LEFT corner.
+- Toolbar: BELOW the box; if the box reaches the screen bottom, inside its
+  BOTTOM-LEFT corner.
+
+No overlap is possible by construction (the zones cannot intersect), the
+label is toolbar-independent (drag-stable), and off-screen is impossible.
+Inside corners carry a 12 px horizontal / 8 px vertical inset; the
+below-fit decision keeps 12 px of breathing room at the screen edge
+(zero-margin still looks glued on — measured). Anchors stay pure and
+unit-tested, including a grid sweep asserting the disjoint-and-on-screen
+invariant over 35 selection geometries.
