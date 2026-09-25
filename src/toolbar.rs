@@ -7,10 +7,11 @@
 use gpui_kit::base::Button;
 use gpui_kit::*;
 
-use crate::overlay::{ConfirmSelection, PinSelection, QuitOverlay};
+use crate::overlay::{CopySelection, QuitOverlay, SaveSelection};
 use crate::theme;
 
-/// 工具条：摆放在选区左下角下方 8px（空间不够放上方），水平夹在屏幕内
+/// 工具条：摆放在选区左下角下方 8px（空间不够放上方），水平夹在屏幕内。
+/// v0.2.1 起为 [复制][保存][取消]（贴图按钮待 pin 边缘 bug 修复后归队，P 键仍可用）
 pub fn selection_toolbar(b: Bounds<Pixels>, ws: Size<Pixels>) -> impl IntoElement {
     // 估算工具条尺寸（3 按钮 + 间距 + padding），够 v1 用
     const TB_W: f32 = 240.;
@@ -40,11 +41,11 @@ pub fn selection_toolbar(b: Bounds<Pixels>, ws: Size<Pixels>) -> impl IntoElemen
         .on_mouse_down(MouseButton::Left, |_, _, cx| {
             cx.stop_propagation();
         })
-        .child(toolbar_button("tb-save", "保存", |window, cx| {
-            window.dispatch_action(Box::new(ConfirmSelection), cx);
+        .child(toolbar_button("tb-copy", "复制", |window, cx| {
+            window.dispatch_action(Box::new(CopySelection), cx);
         }))
-        .child(toolbar_button("tb-pin", "贴图", |window, cx| {
-            window.dispatch_action(Box::new(PinSelection), cx);
+        .child(toolbar_button("tb-save", "保存", |window, cx| {
+            window.dispatch_action(Box::new(SaveSelection), cx);
         }))
         .child(toolbar_button("tb-cancel", "取消", |window, cx| {
             window.dispatch_action(Box::new(QuitOverlay), cx);

@@ -1,7 +1,7 @@
 //! # 截图覆盖层：冻结屏幕 + 选区交互的装配层
 //!
 //! 流程：冻结画面打底（img）→ 拖拽框选（选区"透视"，四周变暗）
-//! → Enter 保存 PNG / P 贴图 / Esc 退出。
+//! → Enter 复制到剪贴板 / Ctrl+S 保存 PNG / P 贴图（挂起中）/ Esc 退出。
 //!
 //! 纯逻辑分别在 [`crate::selection`]（状态机）和 [`crate::export`]（裁剪/编码/落盘），
 //! 本文件只做 gpui 装配：窗口、事件 → 状态机调用、状态 → 渲染。
@@ -18,7 +18,7 @@ use crate::selection::Selection;
 use crate::theme::{ACCENT, CHIP_BG, DIM, HINT_TEXT};
 use crate::toolbar::selection_toolbar;
 
-gpui_kit::actions!([QuitOverlay, ConfirmSelection, PinSelection]);
+gpui_kit::actions!([QuitOverlay, CopySelection, SaveSelection, PinSelection]);
 
 pub struct Overlay {
     focus_handle: FocusHandle,
@@ -26,11 +26,18 @@ pub struct Overlay {
     frozen: Arc<RenderImage>,
     /// 原始像素（裁剪用）
     capture: Capture,
+    /// 本覆盖层所在的屏（开贴图窗口时钉同一块屏）
+    display_id: Option<DisplayId>,
     selection: Selection,
 }
 
 impl Overlay {
-    pub fn new(capture: Capture, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        capture: Capture,
+        display_id: Option<DisplayId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let frozen = image_util::rgba_to_render_image(
             capture.rgba.clone(),
             capture.width,
@@ -40,10 +47,26 @@ impl Overlay {
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
 
+        // 开发后门：SACCADE_DEBUG_ACTION=copy，1.5s 后自动触发复制——
+        // 无头 e2e 的唯一入口（虚拟指针在 niri 上不可用，见 ROADMAP）
+        if std::env::var("SACCADE_DEBUG_ACTION").ok().as_deref() == Some("copy") {
+            let win = window.window_handle();
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(1500))
+                    .await;
+                let _ = win.update(cx, |_, window, cx| {
+                    let _ = this.update(cx, |overlay, cx| overlay.copy_selection(window, cx));
+                });
+            })
+            .detach();
+        }
+
         Self {
             focus_handle,
             frozen,
             capture,
+            display_id,
             // 开发后门：SACCADE_DEBUG_SELECTION=x,y,w,h 注入现成选区
             // （自动化验证工具条/选区渲染用，正常启动不受影响）
             selection: std::env::var("SACCADE_DEBUG_SELECTION")
@@ -64,12 +87,14 @@ impl Overlay {
         }
     }
 
-    /// 覆盖层窗口的 WindowOptions（四边全锚铺满 + Exclusive 键盘）
-    pub fn window_options() -> WindowOptions {
+    /// 覆盖层窗口的 WindowOptions（四边全锚铺满 + Exclusive 键盘）。
+    /// display_id：钉在捕获的那块屏上（不给的话 compositor 自己挑——多屏=抽签）
+    pub fn window_options(display_id: Option<DisplayId>) -> WindowOptions {
         WindowOptions {
             titlebar: None,
             window_background: WindowBackgroundAppearance::Transparent,
             focus: true,
+            display_id,
             kind: WindowKind::LayerShell(LayerShellOptions {
                 namespace: "saccade-overlay".into(),
                 layer: Layer::Overlay,
@@ -82,9 +107,12 @@ impl Overlay {
         }
     }
 
-    /// Enter：裁出选区存 PNG；无选区 = 全屏。失败留在覆盖层（可重试/Esc 退出）
-    fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // 无选区 → 整窗（= 整个输出），所有截图工具的默认行为
+    /// 当前选区的物理像素裁剪；无选区 = 整窗（= 整个输出），所有截图工具的默认行为。
+    /// 空选区返回 None。
+    fn crop_selection_or_full(
+        &self,
+        window: &mut Window,
+    ) -> Option<(u32, u32, Vec<u8>)> {
         let bounds = self
             .selection
             .bounds()
@@ -92,9 +120,53 @@ impl Overlay {
                 origin: Point::default(),
                 size: window.bounds().size,
             });
-        let Some((w, h, out)) =
-            crate::export::crop(&self.capture.rgba, self.capture.width, self.capture.height, bounds, window.scale_factor())
-        else {
+        // 不用 window.scale_factor()：多屏异缩放下 gpui 会报别的输出的 scale
+        // （实测：窗口钉在 HDMI 渲染按 1.0，scale_factor() 却报 DP-2 的 1.5）。
+        // 用"捕获物理宽 ÷ 窗口逻辑宽"自算——与渲染天然自洽，免疫错报。
+        let ws = window.bounds().size;
+        let scale = if f32::from(ws.width) > 0. {
+            self.capture.width as f32 / f32::from(ws.width)
+        } else {
+            window.scale_factor()
+        };
+        crate::export::crop(
+            &self.capture.rgba,
+            self.capture.width,
+            self.capture.height,
+            bounds,
+            scale,
+        )
+    }
+
+    /// Enter / Ctrl+C / 工具条[复制]：裁剪 → PNG → 剪贴板（分身驻留）→ 退出。
+    /// 日常使用的第一出口。
+    fn copy_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((w, h, rgba)) = self.crop_selection_or_full(window) else {
+            println!("[saccade] 选区为空，忽略");
+            return;
+        };
+        let png = match crate::export::encode_png(w, h, &rgba) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[saccade] PNG 编码失败：{e:#}");
+                return;
+            }
+        };
+        if let Err(e) = crate::clipboard::copy_image(png) {
+            // 失败留在覆盖层：用户还能 Ctrl+S 保存文件
+            eprintln!("[saccade] 复制失败：{e:#}");
+            return;
+        }
+        println!(
+            "[saccade] 已复制 {w}x{h}（来自 {}）到剪贴板",
+            self.capture.output_name
+        );
+        cx.quit();
+    }
+
+    /// Ctrl+S / 工具条[保存]：裁剪 → PNG → 落盘。失败留在覆盖层（可重试/Esc 退出）
+    fn save_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((w, h, out)) = self.crop_selection_or_full(window) else {
             println!("[saccade] 选区为空，忽略");
             return;
         };
@@ -138,9 +210,10 @@ impl Overlay {
         let pos = point(bounds.left(), bounds.top());
         let logical_size = size(bounds.size.width, bounds.size.height);
 
-        cx.open_window(PinWindow::window_options(pos, logical_size), |window, cx| {
-            cx.new(|cx| PinWindow::new(rgba, w, h, pos, window, cx))
-        })
+        cx.open_window(
+            PinWindow::window_options(pos, logical_size, self.display_id),
+            |window, cx| cx.new(|cx| PinWindow::new(rgba, w, h, pos, window, cx)),
+        )
         .expect("打开贴图窗口失败");
 
         println!(
@@ -165,8 +238,11 @@ impl Render for Overlay {
             .size_full()
             .relative()
             .track_focus(&self.focus_handle)
-            .on_action(cx.listener(|this, _: &ConfirmSelection, window, cx| {
-                this.confirm(window, cx);
+            .on_action(cx.listener(|this, _: &CopySelection, window, cx| {
+                this.copy_selection(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SaveSelection, window, cx| {
+                this.save_selection(window, cx);
             }))
             .on_action(cx.listener(|this, _: &PinSelection, window, cx| {
                 this.pin_selection(window, cx);
@@ -237,7 +313,7 @@ fn hint_bar() -> impl IntoElement {
                 .bg(rgba(CHIP_BG))
                 .text_size(px(13.))
                 .text_color(rgba(HINT_TEXT))
-                .child("拖拽框选 · Enter 保存（无选区=全屏） · P 贴图 · Esc 退出"),
+                .child("拖拽框选 · Enter 复制 · Ctrl+S 保存 · Esc 退出"),
         )
 }
 

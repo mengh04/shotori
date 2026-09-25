@@ -65,16 +65,23 @@ pub fn next_path_in(dir: &Path, stem: &str) -> PathBuf {
     unreachable!()
 }
 
-/// RGBA8 像素编码为 PNG 写入 path。错误带上下文返回（调用方决定去留）。
-pub fn save_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<()> {
-    let file = std::fs::File::create(path).with_context(|| format!("创建 {}", path.display()))?;
-    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+/// RGBA8 像素编码为 PNG（内存版，剪贴板/落盘共用）
+pub fn encode_png(w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut enc = png::Encoder::new(&mut out, w, h);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
-    enc.write_header()
-        .context("PNG header")?
-        .write_image_data(rgba)
-        .with_context(|| format!("PNG 数据 → {}", path.display()))?;
+    let mut writer = enc.write_header().context("PNG header")?;
+    writer.write_image_data(rgba).context("PNG 数据")?;
+    writer.finish().context("PNG IEND 尾块")?;
+    Ok(out)
+}
+
+/// RGBA8 像素编码为 PNG 写入 path。错误带上下文返回（调用方决定去留）。
+pub fn save_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<()> {
+    let bytes = encode_png(w, h, rgba)?;
+    std::fs::write(path, &bytes)
+        .with_context(|| format!("写入 {}（{} KB）", path.display(), bytes.len() / 1024))?;
     Ok(())
 }
 

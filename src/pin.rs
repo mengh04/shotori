@@ -47,12 +47,18 @@ impl PinWindow {
         }
     }
 
-    /// 开贴图窗口的 WindowOptions（锚左上 + margin 伪绝对定位）
-    pub fn window_options(pos: Point<Pixels>, logical_size: Size<Pixels>) -> WindowOptions {
+    /// 开贴图窗口的 WindowOptions（锚左上 + margin 伪绝对定位）。
+    /// display_id：钉在覆盖层同款屏上（不给 = compositor 抽签）
+    pub fn window_options(
+        pos: Point<Pixels>,
+        logical_size: Size<Pixels>,
+        display_id: Option<DisplayId>,
+    ) -> WindowOptions {
         WindowOptions {
             titlebar: None,
             window_background: WindowBackgroundAppearance::Transparent,
             focus: true,
+            display_id,
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: Point::default(),
                 size: logical_size,

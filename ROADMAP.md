@@ -42,10 +42,20 @@
 - **Root/CSD 毒害案**：base::Root 的 WindowState 插件（component）对 layer-shell 窗口刷主题背景
   （白墙→灰雾 76=0.3×255）+ WindowBorder 调 set_client_inset(20)（窗口膨胀+40）+ padding 内缩。
   覆盖层永远裸 cx.open_window；正常窗口可用 Root。
-- **240Hz 隐形案（已改判 2026-09-25 晚）**：显示/合成**正常**（用户肉眼验证 240Hz 下一切可见）。
-  grim/wlr-screencopy 在 240Hz 下拍不到覆盖层 = **捕获路径假象**（头号嫌疑：全屏不透明
-  layer 表面被 niri 直接扫描输出 direct-scanout，绕过合成器，screencopy 拍的是合成结果）。
-  推论：自动像素验证对"全屏覆盖层"有高刷盲区；小贴图窗口待验证。**不要再为测试切刷新率**。
+- **240Hz 隐形案（终审 2026-09-25 深夜）**：与刷新率**完全无关**——真凶是 **layer surface 落点抽签**。
+  gpui 不给 layer surface 指定 output 时 niri 自选（焦点所在屏），覆盖层有时落在 DP-2（720×1280），
+  grim 只拍 HDMI 自然"隐形"；恰好 60Hz 测试时段覆盖层落在 HDMI，造成"刷新率相关"的假象。
+  修复：开窗时带 `display_id` 钉在捕获的屏上（上游管道本来就有：WindowOptions.display_id →
+  wl_outputs 匹配 → get_layer_surface(output)）。**教训：三屏异缩放环境，任何"某屏拍不到"
+  先查落点再查渲染。**
+- **displays() 启动为空（zed#46378）的真实形态**：同步启动阶段恒为空，但事件循环首圈后
+  （cx.spawn 的第一次 update）就有 3 屏。workaround：开窗挪进 spawn 的异步任务，首拍即得。
+  display_id 匹配：bounds 尺寸 == 捕获尺寸（scale=1 精确；异缩放匹配需 vendor 暴露 output 名，backlog）。
+- **scale_factor() 多屏错报**：窗口钉在 HDMI（渲染按 1.0），`window.scale_factor()` 却报 1.5
+  （DP-2 的）。裁剪改用"捕获物理宽 ÷ 窗口逻辑宽"自算，与渲染天然自洽。
+- **niri 的 zwlr_virtual_pointer 疑似死的**：motion_absolute/motion/button 全部石沉大海
+  （WAYLAND_DEBUG 确认请求已上电线，客户端零事件；with_output/不带 output、绝对/相对都一样）。
+  lab 的 vinput 测试台因此不可用，GUI 自动化点击暂无手段（键盘侧未测）。可报 niri 上游。
 - **RenderImage 契约**：BGRA 字节（Vulkan 后端），内存直喂必须 swap(0,2)；PNG 路径是 RGBA。
 - **wl_shm format 是序号**（xrgb8888=1）不是 DRM fourcc；格式名描述"字"的位序，小端内存反序。
 - **多屏 output 选择**：上游 zed#46378（displays() 启动为空），修复 PR #61578 久未 review；
@@ -53,6 +63,25 @@
 
 ### 开发后门
 - `SACCADE_DEBUG_SELECTION=x,y,w,h`：注入现成选区（自动化验证选区 UI 用）
+- `SACCADE_DEBUG_ACTION=copy`：启动 1.5s 后自动触发复制动作——无头 e2e 的唯一入口
+  （验证套路：`SACCADE_DEBUG_SELECTION=... SACCADE_DEBUG_ACTION=copy ./saccade & sleep 4;
+  wl-paste --type image/png | 尺寸断言`）
+
+## v0.2.1 剪贴板复制（2026-09-25 深夜）
+
+### 功能
+- Enter / Ctrl+C / 工具条[复制]：选区 → PNG → 剪贴板 → 退出；无选区 = 全屏
+- Ctrl+S / 工具条[保存]：落盘（原 Enter 行为）；工具条改 [复制][保存][取消]（贴图按钮候补）
+- **驻留 offer 模型**（wl-copy 同款）：复制 = re-exec 自身 `--clipboard-daemon` 分身，
+  stdin 传 PNG 字节；分身挂 `zwlr_data_control` 源服务粘贴，被覆盖时收 cancelled 退场
+- wayland-rs 坑：compositor 在 data_offer 事件里替客户端建新对象，父接口必须特化
+  `event_created_child`（默认实现 panic，`event_created_child!` 宏一行解决）
+- 全自动 e2e 已验证：字节级读回一致 / 重复粘贴 / 新旧分身替换 / 全链路（钉屏后 600×400 精确）
+
+### 顺带修复（详见上方结案记录）
+- 覆盖层/贴图 display_id 钉屏（落点抽签 bug，即"240Hz 隐形"真凶）
+- 裁剪 scale 自算（scale_factor() 多屏错报）
+- 工具条按钮点击仍未被真实鼠标验证（vinput 死亡）——传播链分析认为没问题，待日常使用确认
 
 ## v0.2 基础功能整理（2026-09-25）
 
