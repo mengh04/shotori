@@ -7,6 +7,7 @@
 //!   the async wait for upstream zed#46378)
 //! - [`clipboard`]: copy to clipboard (zwlr_data_control + resident
 //!   background daemon)
+//! - [`notify`]: desktop notifications (detached child process)
 //! - [`selection`]: selection state machine (pure logic + unit tests)
 //! - [`export`]: crop → PNG encoding → clipboard/disk (pure functions +
 //!   unit tests)
@@ -28,6 +29,7 @@ pub mod display;
 pub mod export;
 pub mod hud;
 pub mod image_util;
+pub mod notify;
 pub mod overlay;
 pub mod selection;
 pub mod theme;

@@ -20,6 +20,11 @@ use shotori::overlay::{CopySelection, Overlay, QuitOverlay, SaveSelection};
 use shotori::overlay::OcrSelection;
 
 fn main() {
+    // Notification child: `shotori --notify <summary> <body>` (see notify.rs)
+    if std::env::args().nth(1).as_deref() == Some(shotori::notify::NOTIFY_ARG) {
+        std::process::exit(shotori::notify::notify_main());
+    }
+
     // Clipboard daemon: the background resident process behind the copy
     // action (see the resident-offer model in clipboard.rs)
     if std::env::args().nth(1).as_deref() == Some(clipboard::DAEMON_ARG) {

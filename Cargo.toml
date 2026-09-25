@@ -29,6 +29,11 @@ smallvec = "1"
 # 保存文件名的人类可读时间戳（gpui 生态已在依赖树中，零新增编译）
 chrono = "0.4"
 
+# 桌面通知（org.freedesktop.Notifications over D-Bus）。
+# 从独立子进程发送（见 src/notify.rs）——cx.quit() 快速退出
+# 永远杀不掉一条已派发的通知
+notify-rust = "4"
+
 # 贴图功能（依赖 vendor 的 set_layer_margin 补丁）在 `pin` 分支保存；
 # 上游合并补丁后可合回主干并恢复此处 [patch.crates-io] 或直接用上游版本
 #

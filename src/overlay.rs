@@ -190,6 +190,9 @@ impl Overlay {
             self.capture.output_name,
             path.display()
         );
+        // The path is the thing users actually need — stdout is lost when
+        // launched from a keybinding, so the notification is the feedback
+        crate::notify::send("Shotori", &format!("Saved {w}×{h} → {}", path.display()));
         cx.quit();
     }
 
@@ -361,10 +364,18 @@ async fn ocr_to_clipboard(
             println!(
                 "[shotori] OCR done {w}x{h} → {lines} line(s) → clipboard (preview: {preview})"
             );
+            crate::notify::send(
+                "Shotori OCR",
+                &format!("{lines} lines → clipboard\n{preview}"),
+            );
             cx.quit();
         }
         Err(e) => {
             eprintln!("[shotori] OCR failed: {e:#}");
+            // The overlay stays open with no in-UI error display yet —
+            // without this notification a keybinding user sees nothing
+            let msg: String = e.to_string().chars().take(200).collect();
+            crate::notify::send("Shotori OCR failed", &msg);
         }
     });
 }
@@ -537,7 +548,8 @@ fn spawn_debug_action(window: &mut Window, cx: &mut Context<Overlay>) {
     let Some(action) = std::env::var("SHOTORI_DEBUG_ACTION")
         .ok()
         .filter(|a| {
-            a == "copy" || a == "quit" || (a == "ocr" && cfg!(feature = "ocr"))
+            a == "copy" || a == "quit" || a == "save"
+                || (a == "ocr" && cfg!(feature = "ocr"))
                 || (a == "ocrsetup" && cfg!(feature = "ocr"))
         })
     else {
@@ -574,6 +586,7 @@ fn spawn_debug_action(window: &mut Window, cx: &mut Context<Overlay>) {
         let _ = win.update(cx, |_, window, cx| {
             let action: Box<dyn gpui_kit::Action> = match action.as_str() {
                 "copy" => Box::new(CopySelection),
+                "save" => Box::new(SaveSelection),
                 #[cfg(feature = "ocr")]
                 "ocr" => Box::new(OcrSelection),
                 _ => Box::new(QuitOverlay),

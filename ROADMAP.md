@@ -311,3 +311,24 @@ overlay 只剩装配。首批 12 个单元测试（不需要合成器）。
 - ocrsetup 后门：1.5s 开对话框 → 6s 自动 [Download] → 下载 → OCR → 剪贴板
   （删模型后实测通过；无 .part 残留）
 - 旧 headless 路径（DEBUG_ACTION=ocr）保留：仍然内联下载，回归通过
+
+## v0.6.5 桌面通知（2026-09-26）
+
+### 功能（noctalia / org.freedesktop.Notifications 实测通过）
+- 保存成功 → "Saved 500×300 → ~/Pictures/Shotori/…png"（路径是刚需，
+  keybinding 启动时 stdout 全丢，通知是唯一反馈）
+- OCR 成功 → "N lines → clipboard + 预览"；OCR 失败 → 错误摘要
+  （覆盖层无内嵌错误显示，通知兜住 keybinding 场景）
+
+### 架构：通知子进程（沿用剪贴板分身模式）
+- `shotori --notify <summary> <body>`：父进程 spawn 后立即退出，
+  **分离子进程活得比父进程久**——普通后台线程会被 cx.quit() 后的
+  process::exit 杀死，通知发一半就丢
+- notify-rust 4（zbus/D-Bus）；子进程失败静默（stderr 报一句），
+  没 daemon 绝不影响截图功能
+- 纯图片复制不通知（覆盖层消失本身就是反馈）
+
+### 备注
+- debug 后门 +save 动作（e2e 通知链路用）
+- 已知现象再确认：quit 路径的 stdout 全缓冲可能吞最后一行日志
+  （通知走子进程不受影响）
