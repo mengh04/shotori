@@ -159,7 +159,13 @@ impl Overlay {
             "[shotori] copied {w}x{h} (from {}) to clipboard",
             self.capture.output_name
         );
-        crate::notify::send("Shotori", &format!("Copied {w}×{h} → clipboard"));
+        crate::notify::send_with_preview(
+            "Shotori",
+            &format!("Copied {w}×{h} → clipboard"),
+            w,
+            h,
+            &rgba,
+        );
         cx.quit();
     }
 
@@ -193,7 +199,13 @@ impl Overlay {
         );
         // The path is the thing users actually need — stdout is lost when
         // launched from a keybinding, so the notification is the feedback
-        crate::notify::send("Shotori", &format!("Saved {w}×{h} → {}", path.display()));
+        crate::notify::send_with_preview(
+            "Shotori",
+            &format!("Saved {w}×{h} → {}", path.display()),
+            w,
+            h,
+            &out,
+        );
         cx.quit();
     }
 

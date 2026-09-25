@@ -332,3 +332,22 @@ overlay 只剩装配。首批 12 个单元测试（不需要合成器）。
 - debug 后门 +save 动作（e2e 通知链路用）
 - 已知现象再确认：quit 路径的 stdout 全缓冲可能吞最后一行日志
   （通知走子进程不受影响）
+
+## v0.6.6 通知带缩略图预览（2026-09-26）
+
+### 功能
+- 复制/保存的通知带截图缩略图（image-path hint + file:// URL，
+  noctalia 实测渲染 ✓——先用 busctl 裸探规范支持再写代码）
+- OCR 通知保持纯文本（预览即内容）
+
+### 实现
+- notify::send_with_preview(w, h, rgba)：原始像素 → image::imageops
+  缩略（≤256px）→ ~/.cache/shotori/preview-<ts>.png → 子进程带路径
+- 预览文件必须比通知活得久：懒清理（下次发送时删 >24h 的旧预览）
+- 通知子进程 argv 扩展：--notify <summary> <body> [image]
+- 缩略图写入失败 → 静默降级纯文本通知
+
+### 教训
+- e2e 脚本里 pkill 的时机要放在动作（1.5s 后门）触发之后，
+  否则杀的是还没干活的进程——这次的"copy 没预览"是测试竞态，
+  不是代码 bug（后台前台等待退出再检查）
