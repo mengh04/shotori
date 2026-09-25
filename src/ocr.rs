@@ -1,12 +1,18 @@
-//! # OCR：选区 → PP-OCRv6（rapidocr-core + ONNX Runtime）→ 文本
+//! # OCR: selection → PP-OCRv6 (rapidocr-core + ONNX Runtime) → text
 //!
-//! 引擎懒加载：首次 Ctrl+O 下载模型（~31MB，ModelScope）+ 初始化 ~1-2s，
-//! 之后常驻复用（<200ms/次）。模型缓存在 `~/.local/share/shotori/ocr-models/`。
+//! Lazy engine loading: the first Ctrl+O downloads the models (~31MB,
+//! ModelScope) and initializes (~1-2s); afterwards the engine stays resident
+//! (<200ms per call). Models are cached in `~/.local/share/shotori/ocr-models/`.
 //!
-//! 失败策略：**初始化失败不 panic、不缓存失败**——干净返回 Err（覆盖层
-//! 打印错误后保持可用），下次 Ctrl+O 自动重试；模型缓存若留有半成品
-//! 会先清掉（rapidocr-core 直接写目标文件，截断文件过不了 sha256 校验，
-//! 不清就会永久堵死）。
+//! Failure policy: **initialization failures neither panic nor get cached** —
+//! a clean Err is returned (the overlay prints the error and stays usable),
+//! the next Ctrl+O retries automatically; a half-finished model cache is
+//! wiped first (rapidocr-core writes straight to the target file, and a
+//! truncated file never passes the sha256 check — without cleanup that
+//! would brick OCR forever).
+//!
+//! Compiled under the `ocr` feature (on by default; `--no-default-features`
+//! trims it).
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -14,18 +20,19 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use anyhow::Context as _;
 use rapidocr_core::model::PPOCRV6_SMALL;
 
-/// 模型缓存目录（XDG 兼容）
+/// Model cache directory (XDG-aware)
 fn model_dir() -> anyhow::Result<PathBuf> {
     let base = if let Ok(d) = std::env::var("XDG_DATA_HOME") {
         PathBuf::from(d)
     } else {
-        let home = std::env::var("HOME").context("没有 HOME 环境变量")?;
+        let home = std::env::var("HOME").context("HOME environment variable is not set")?;
         PathBuf::from(home).join(".local/share")
     };
     Ok(base.join("shotori/ocr-models"))
 }
 
-/// 下载缺失模型 + 建引擎。Err = 可恢复失败（下次重试），不 panic。
+/// Download missing models + build the engine. Err = a recoverable failure
+/// (retry next time); never panics.
 fn init_engine() -> anyhow::Result<Mutex<rapidocr_core::RapidOcr>> {
     let dir = model_dir()?;
     let missing = PPOCRV6_SMALL
@@ -34,74 +41,77 @@ fn init_engine() -> anyhow::Result<Mutex<rapidocr_core::RapidOcr>> {
         .filter(|a| !dir.join(a.filename).exists())
         .count();
     if missing > 0 {
-        println!("[shotori] OCR 首次使用：下载 PP-OCRv6 small 模型（~31MB，来自 ModelScope）…");
+        println!("[shotori] first OCR use: downloading PP-OCRv6 small models (~31MB from ModelScope)…");
     }
 
-    // 下载在独立线程：reqwest::blocking 不能在异步上下文里跑
-    // （gpui 后台执行器就是异步上下文，虽然它不是 tokio——彻底隔离最稳）；
-    // 8MB 栈给 ort 的模型加载留余量
+    // The download runs on its own thread: reqwest::blocking cannot run
+    // inside an async context (gpui's background executor is one, tokio or
+    // not), so full isolation is the safest bet; the 8MB stack leaves head
+    // room for ort's model loading
     let dl_dir = dir.clone();
     let dl = std::thread::Builder::new()
         .name("shotori-ocr-model-dl".into())
         .stack_size(8 * 1024 * 1024)
         .spawn(move || rapidocr_core::model::ensure_ppocrv6_small_models(&dl_dir))
-        .context("启动模型下载线程失败")?;
+        .context("failed to spawn model download thread")?;
     if let Err(e) = dl
         .join()
-        .map_err(|_| anyhow::anyhow!("模型下载线程 panic"))?
+        .map_err(|_| anyhow::anyhow!("model download thread panicked"))?
     {
-        // 清掉半成品：截断/损坏的模型文件每次都过不了 sha256 校验，
-        // 不清的话 OCR 从此永久失败（rapidocr-core 的下载无 temp+rename）
+        // Wipe half-finished downloads: a truncated/corrupt model file fails
+        // the sha256 check every single time — without this cleanup OCR is
+        // dead permanently (rapidocr-core's downloader has no temp+rename)
         let _ = std::fs::remove_dir_all(&dir);
-        return Err(e.context("模型下载失败（缓存已清理，可重试）"));
+        return Err(e.context("model download failed (cache cleaned, safe to retry)"));
     }
 
     let cfg = PPOCRV6_SMALL.config(&dir);
-    let eng = rapidocr_core::RapidOcr::new(cfg).context("OCR 引擎初始化失败")?;
+    let eng = rapidocr_core::RapidOcr::new(cfg).context("OCR engine init failed")?;
     Ok(Mutex::new(eng))
 }
 
 static ENG: OnceLock<Mutex<rapidocr_core::RapidOcr>> = OnceLock::new();
-/// 初始化互斥：并发 Ctrl+O 只触发一次下载
+/// Initialization mutex: concurrent Ctrl+O triggers only one download
 static INIT_LOCK: Mutex<()> = Mutex::new(());
 
-/// 拿引擎（锁守护）。OCR 天然串行：推理在 gpui 后台线程池执行，
-/// 锁竞争只发生在连按 Ctrl+O 的场景（排队即可）。
-/// 初始化失败不缓存——OnceLock 不 set，下次调用重新走 init。
+/// Acquire the engine (lock-guarded). OCR is inherently serial: inference
+/// runs on gpui's background thread pool, so lock contention only happens
+/// when Ctrl+O is pressed in rapid succession (requests simply queue).
+/// Initialization failures are not cached — OnceLock stays unset, so the
+/// next call retries init.
 fn engine() -> anyhow::Result<MutexGuard<'static, rapidocr_core::RapidOcr>> {
-    // 快路径：已就绪
+    // Fast path: already initialized
     if let Some(m) = ENG.get() {
-        return m.lock().map_err(|_| anyhow::anyhow!("OCR 引擎锁中毒"));
+        return m.lock().map_err(|_| anyhow::anyhow!("OCR engine lock poisoned"));
     }
-    // 慢路径：持初始化锁 → 双检 → 初始化
+    // Slow path: hold the init lock → double-check → initialize
     let _g = INIT_LOCK
         .lock()
-        .map_err(|_| anyhow::anyhow!("OCR 初始化锁中毒"))?;
+        .map_err(|_| anyhow::anyhow!("OCR init lock poisoned"))?;
     if let Some(m) = ENG.get() {
-        return m.lock().map_err(|_| anyhow::anyhow!("OCR 引擎锁中毒"));
+        return m.lock().map_err(|_| anyhow::anyhow!("OCR engine lock poisoned"));
     }
     let eng = init_engine()?;
-    // 竞态兜底：并发初始化时 set 可能失败（别人已放好）——那份 ours drop，
-    // 用先到者的（两份引擎等价，丢一份无妨）
+    // Race backstop: a concurrent initializer may have set ENG first — ours
+    // gets dropped, theirs is used (the two engines are equivalent)
     let _ = ENG.set(eng);
     ENG.get()
-        .context("OCR 引擎初始化后丢失")?
+        .context("OCR engine vanished after init")?
         .lock()
-        .map_err(|_| anyhow::anyhow!("OCR 引擎锁中毒"))
+        .map_err(|_| anyhow::anyhow!("OCR engine lock poisoned"))
 }
 
-/// RGBA 像素 → OCR 文本。
-/// `w`、`h` 是物理像素尺寸（来自 crop 裁剪后的输出）。
+/// RGBA pixels → OCR text.
+/// `w`, `h` are physical pixel dimensions (output of the crop).
 pub fn run_ocr(rgba: &[u8], w: u32, h: u32) -> anyhow::Result<String> {
-    // RGBA → RGB（丢 alpha 道）
+    // RGBA → RGB (drop the alpha channel)
     let rgb: Vec<u8> = rgba
         .chunks(4)
         .flat_map(|chunk| [chunk[0], chunk[1], chunk[2]])
         .collect();
-    let img =
-        image::RgbImage::from_raw(w, h, rgb).context("RGBA→RGB 转换失败")?;
+    let img = image::RgbImage::from_raw(w, h, rgb).context("RGBA→RGB conversion failed")?;
 
-    let out = engine()?.run_image(&img).context("OCR 推理失败")?;
+    let out = engine()?.run_image(&img).context("OCR inference failed")?;
     let text: String = out
         .lines
         .iter()

@@ -1,6 +1,8 @@
-//! screencap CLI：捕获库的调试前端（与库共用 shotori::capture）
-//! 用法：screencap [输出路径前缀] [--all]
-//!   默认存第一块屏；--all 时每屏一张 <前缀>_<输出名>.png
+//! screencap CLI: a debugging front end for the capture library
+//! (shares shotori::capture with the library).
+//! Usage: screencap [output path prefix] [--all]
+//!   Saves the first output by default; with --all, one PNG per output as
+//!   <prefix>_<output-name>.png
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -14,7 +16,7 @@ fn main() -> anyhow::Result<()> {
 
     let caps = shotori::capture::capture_all_outputs()?;
     println!(
-        "[screencap] {} 块屏，耗时 {:?}",
+        "[screencap] {} output(s) in {:?}",
         caps.len(),
         t0.elapsed()
     );
@@ -26,11 +28,11 @@ fn main() -> anyhow::Result<()> {
         enc.set_depth(png::BitDepth::Eight);
         enc.write_header()?.write_image_data(&cap.rgba)?;
         println!(
-            "[screencap] {} {}x{}{} → {}（{} KB）",
+            "[screencap] {} {}x{}{} → {} ({} KB)",
             cap.output_name,
             cap.width,
             cap.height,
-            if cap.rotated() { "（已按 transform 旋转）" } else { "" },
+            if cap.rotated() { " (rotated per transform)" } else { "" },
             path,
             cap.rgba.len() / 1024
         );
@@ -42,7 +44,7 @@ fn main() -> anyhow::Result<()> {
             save(cap, format!("{prefix}_{}.png", cap.output_name))?;
         }
     } else {
-        let cap = caps.first().expect("至少一块屏");
+        let cap = caps.first().expect("at least one output");
         save(cap, format!("{prefix}.png"))?;
     }
     Ok(())

@@ -1,15 +1,17 @@
-//! # 纯像素处理：格式转换 + transform 旋转
+//! # Pure pixel processing: format conversion + transform rotation
 //!
-//! 无 wayland/gpui 依赖，全部可单元测试（旋转语义已被 grim 对拍校准，
-//! 这里用小矩阵把语义锁死）。
+//! No wayland/gpui dependencies; everything is unit-testable (rotation
+//! semantics were calibrated against grim; small matrices lock them in here).
 
 use super::wayland::OutputTransform;
 use wayland_client::protocol::wl_shm;
 
-/// wl_shm 格式名描述 32 位字的位序（MSB→LSB），小端内存字节序正好相反：
-///   Xrgb8888（XR24）→ 内存 B,G,R,X   Argb8888 → 内存 B,G,R,A
-///   Xbgr8888（XB24）→ 内存 R,G,B,X   Abgr8888 → 内存 R,G,B,A
-/// 注意：wl_shm 核心协议的 format 是序号（xrgb8888=1），不是 DRM fourcc！
+/// wl_shm format names describe the byte order of the 32-bit word
+/// (MSB→LSB); little-endian memory byte order is exactly reversed:
+///   Xrgb8888 (XR24) → memory B,G,R,X   Argb8888 → memory B,G,R,A
+///   Xbgr8888 (XB24) → memory R,G,B,X   Abgr8888 → memory R,G,B,A
+/// Note: the core wl_shm protocol's format is an ordinal (xrgb8888=1),
+/// NOT a DRM fourcc!
 pub(super) fn convert_to_rgba(
     bytes: &[u8],
     format: wl_shm::Format,
@@ -46,7 +48,8 @@ pub(super) fn convert_to_rgba(
     rgba
 }
 
-/// transform 后的尺寸（90/270 交换宽高；180 及翻转系不变）
+/// Size after transform (90/270 swap width and height; 180 and the flipped
+/// family keep them)
 pub(super) fn rotated_size(w: u32, h: u32, t: OutputTransform) -> (u32, u32) {
     use OutputTransform::*;
     match t {
@@ -55,10 +58,12 @@ pub(super) fn rotated_size(w: u32, h: u32, t: OutputTransform) -> (u32, u32) {
     }
 }
 
-/// 按 wl_output transform 旋转像素，使方向与屏幕所见一致。
-/// 物理 buffer 是未变换方向。注意：niri 的 "90° counter-clockwise"（_90）
-/// 实测是把 buffer **顺时针**转 90° 填进面板（与协议字面相反，grim 对拍定位）。
-#[allow(clippy::just_underscores_and_digits)] // _90/_180/_270 是协议生成的枚举名
+/// Rotate pixels per the wl_output transform so the orientation matches what
+/// the screen shows. The physical buffer is in the untransformed orientation.
+/// Note: niri's "90° counter-clockwise" (_90) actually fills the panel by
+/// rotating the buffer **clockwise** 90° (opposite of the protocol wording;
+/// pinned down by comparing against grim).
+#[allow(clippy::just_underscores_and_digits)] // _90/_180/_270 are protocol-generated enum names
 pub(super) fn rotate_rgba(rgba: Vec<u8>, w: u32, h: u32, t: OutputTransform) -> Vec<u8> {
     use OutputTransform::*;
     let (rw, _rh) = rotated_size(w, h, t);
@@ -71,7 +76,8 @@ pub(super) fn rotate_rgba(rgba: Vec<u8>, w: u32, h: u32, t: OutputTransform) -> 
                 _90 => (h - 1 - y, x),
                 _180 | Flipped180 => (w - 1 - x, h - 1 - y),
                 _270 => (y, w - 1 - x),
-                // Flipped90/Flipped270 等罕见组合：先按 _90 处理（回头遇到再补）
+                // Flipped90/Flipped270 and other rare combos: treat as _90
+                // for now (handle when actually encountered)
                 _ => (h - 1 - y, x),
             };
             let dst = ((dy * rw + dx) * 4) as usize;
@@ -81,14 +87,15 @@ pub(super) fn rotate_rgba(rgba: Vec<u8>, w: u32, h: u32, t: OutputTransform) -> 
     out
 }
 
-// tests 模块不 `use super::*`：父模块的 glob 会把 gpui 的 test 宏带进来
-// 遮蔽内建 #[test]（详见 selection.rs 的注释）
+// tests avoids `use super::*`: the parent module's glob import pulls gpui's
+// test macro in and shadows the built-in #[test] (see the comment in
+// selection.rs)
 #[cfg(test)]
 mod tests {
     use super::*;
     use wayland_client::protocol::wl_output;
 
-    /// 3×2 像素图，值为坐标编码 (x*10+y)：
+    /// 3×2 pixel grid, values encode coordinates (x*10+y):
     /// ```text
     ///  00 10 20
     ///  01 11 21
@@ -108,8 +115,8 @@ mod tests {
     }
 
     #[test]
-    fn 旋转_90_顺时针() {
-        // niri 的 _90（字面 90CCW）实测 = 顺时针转 buffer：
+    fn rotate_90_clockwise() {
+        // niri's _90 (literally 90 CCW) measured = rotate buffer clockwise:
         // 00 10 20        01 00
         // 01 11 21   →    11 10
         //                 21 20
@@ -118,33 +125,34 @@ mod tests {
         assert_eq!(px_at(&out, 2, 0, 0), 1); // 01
         assert_eq!(px_at(&out, 2, 1, 0), 0); // 00
         assert_eq!(px_at(&out, 2, 0, 1), 11); // 11
-        assert_eq!(px_at(&out, 2, 1, 2), 20); // 右下角 = 原右上角
+        assert_eq!(px_at(&out, 2, 1, 2), 20); // bottom-right = original top-right
     }
 
     #[test]
-    fn 旋转_270_逆时针() {
+    fn rotate_270_counter_clockwise() {
         // 00 10 20        20 21
         // 01 11 21   →    10 11
         //                 00 01
         let out = rotate_rgba(grid(3, 2), 3, 2, wl_output::Transform::_270);
         assert_eq!(px_at(&out, 2, 0, 0), 20);
         assert_eq!(px_at(&out, 2, 1, 0), 21);
-        assert_eq!(px_at(&out, 2, 0, 2), 0); // 00（左下 = 原左上）
+        assert_eq!(px_at(&out, 2, 0, 2), 0); // 00 (bottom-left = original top-left)
         assert_eq!(px_at(&out, 2, 1, 2), 1); // 01
     }
 
     #[test]
-    fn 旋转_180() {
+    fn rotate_180() {
         let out = rotate_rgba(grid(3, 2), 3, 2, wl_output::Transform::_180);
-        // 四角全对（此前 rotated_size 的 _180 分支写错，靠未写内存假通过过一次）
-        assert_eq!(px_at(&out, 3, 0, 0), 21); // 原右下
-        assert_eq!(px_at(&out, 3, 2, 1), 0); // 原左上
-        assert_eq!(px_at(&out, 3, 2, 0), 1); // 原左下
-        assert_eq!(px_at(&out, 3, 0, 1), 20); // 原右上
+        // all four corners correct (rotated_size's _180 branch was once wrong
+        // and fake-passed via unwritten memory)
+        assert_eq!(px_at(&out, 3, 0, 0), 21); // original bottom-right
+        assert_eq!(px_at(&out, 3, 2, 1), 0); // original top-left
+        assert_eq!(px_at(&out, 3, 2, 0), 1); // original bottom-left
+        assert_eq!(px_at(&out, 3, 0, 1), 20); // original top-right
     }
 
     #[test]
-    fn 旋转_尺寸互换() {
+    fn rotate_swaps_size() {
         use wl_output::Transform::*;
         assert_eq!(rotated_size(3, 2, Normal), (3, 2));
         assert_eq!(rotated_size(3, 2, _90), (2, 3));
@@ -153,22 +161,23 @@ mod tests {
     }
 
     #[test]
-    fn 转换_xrgb_小端字节序换位() {
-        // 1×2 像素、stride=12：每行 = [B,G,R,X] + 8 字节其他内容（测行距跳读）
+    fn convert_xrgb_little_endian_swizzle() {
+        // 1×2 pixels, stride=12: each row = [B,G,R,X] + 8 bytes of other
+        // content (tests stride-skipping reads)
         let bytes = [
-            10, 20, 30, 255, 0, 0, 0, 0, 0, 0, 0, 0, // 行0
-            11, 21, 31, 255, 0, 0, 0, 0, 0, 0, 0, 0, // 行1
+            10, 20, 30, 255, 0, 0, 0, 0, 0, 0, 0, 0, // row 0
+            11, 21, 31, 255, 0, 0, 0, 0, 0, 0, 0, 0, // row 1
         ];
         let out = convert_to_rgba(&bytes, wl_shm::Format::Xrgb8888, 1, 2, 12, false);
         assert_eq!(&out[..8], &[30, 20, 10, 255, 31, 21, 11, 255]);
     }
 
     #[test]
-    fn 转换_y翻转() {
-        // 1×2、stride=8：两行各 [B,G,R,X]
+    fn convert_y_invert() {
+        // 1×2, stride=8: two rows, each [B,G,R,X]
         let bytes = [10, 20, 30, 255, 0, 0, 0, 0, 11, 21, 31, 255, 0, 0, 0, 0];
         let out = convert_to_rgba(&bytes, wl_shm::Format::Xrgb8888, 1, 2, 8, true);
-        // 两行交换：第二行变第一行
+        // rows swapped: the second row becomes the first
         assert_eq!(&out[..4], &[31, 21, 11, 255]);
         assert_eq!(&out[4..8], &[30, 20, 10, 255]);
     }

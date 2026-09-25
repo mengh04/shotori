@@ -1,20 +1,27 @@
-//! # 选区工具条：保存 / 贴图 / 取消
+//! # Selection toolbar: Copy / Save / OCR / Cancel
 //!
-//! 按钮点击通过 `dispatch_action` 走和键盘完全相同的动作管线——
-//! "按钮、快捷键三位一体"不是口号，是同一个动作的三种触发方式。
-//! 出现时机由 overlay 决定：只在选区松手定型后（[`crate::selection::Selection::is_selected`]）。
+//! Buttons dispatch the exact same actions as the keyboard through
+//! `dispatch_action` — one action, two triggers, one pipeline.
+//! Visibility is decided by the overlay: it only appears after the selection
+//! is finalized ([`crate::selection::Selection::is_selected`]).
 
 use gpui_kit::base::Button;
 use gpui_kit::*;
 
 use crate::overlay::{CopySelection, QuitOverlay, SaveSelection};
+#[cfg(feature = "ocr")]
+use crate::overlay::OcrSelection;
 use crate::theme;
 
-/// 工具条：摆放在选区左下角下方 8px（空间不够放上方），水平夹在屏幕内。
-/// [复制][保存][取消]
+/// Toolbar: placed 8px below the selection's bottom-left corner (above the
+/// selection when there's no room below), horizontally clamped into the screen.
+/// [Copy][Save][OCR][Cancel]
 pub fn selection_toolbar(b: Bounds<Pixels>, ws: Size<Pixels>) -> impl IntoElement {
-    // 估算工具条尺寸（3 按钮 + 间距 + padding），够 v1 用
-    const TB_W: f32 = 240.;
+    // Rough size estimate (buttons + gaps + padding), good enough for now
+    #[cfg(feature = "ocr")]
+    const TB_W: f32 = 320.;
+    #[cfg(not(feature = "ocr"))]
+    const TB_W: f32 = 245.;
     const TB_H: f32 = 40.;
     let y = if f32::from(b.bottom()) + TB_H + 8. <= f32::from(ws.height) {
         b.bottom() + px(8.)
@@ -37,23 +44,41 @@ pub fn selection_toolbar(b: Bounds<Pixels>, ws: Size<Pixels>) -> impl IntoElemen
         .bg(rgba(theme::CHIP_BG))
         .border_1()
         .border_color(rgba(theme::ACCENT))
-        // 关键：工具条区域点击不冒泡到根节点——否则点按钮会触发"开始新选区"
+        // Key: clicks inside the toolbar must not bubble to the root node —
+        // otherwise pressing a button would start a new selection
         .on_mouse_down(MouseButton::Left, |_, _, cx| {
             cx.stop_propagation();
         })
-        .child(toolbar_button("tb-copy", "复制", |window, cx| {
+        .child(toolbar_button("tb-copy", "Copy", |window, cx| {
             window.dispatch_action(Box::new(CopySelection), cx);
         }))
-        .child(toolbar_button("tb-save", "保存", |window, cx| {
+        .child(toolbar_button("tb-save", "Save", |window, cx| {
             window.dispatch_action(Box::new(SaveSelection), cx);
         }))
-        .child(toolbar_button("tb-cancel", "取消", |window, cx| {
+        // .children() takes an IntoIterator — Option works as "0 or 1 child",
+        // letting the OCR button compile away in slim builds
+        .children(ocr_button())
+        .child(toolbar_button("tb-cancel", "Cancel", |window, cx| {
             window.dispatch_action(Box::new(QuitOverlay), cx);
         }))
 }
 
-/// 自绘工具条按钮：base 版 Button 出行为（点击/焦点/hover 状态机/无障碍），
-/// 我们只画皮——gpui-base 自绘路线的标准姿势。
+/// The OCR button; `None` when the `ocr` feature is compiled out
+/// (`.children()` takes an IntoIterator, so Option works as "0 or 1 child").
+#[cfg(feature = "ocr")]
+fn ocr_button() -> Option<impl IntoElement> {
+    Some(toolbar_button("tb-ocr", "OCR", |window, cx| {
+        window.dispatch_action(Box::new(OcrSelection), cx);
+    }))
+}
+#[cfg(not(feature = "ocr"))]
+fn ocr_button() -> Option<&'static str> {
+    None
+}
+
+/// Hand-drawn toolbar button: the base `Button` provides behavior (click /
+/// focus / hover state machine / accessibility), we only paint the skin —
+/// the standard move for the gpui-base custom-drawing route.
 fn toolbar_button(
     id: &'static str,
     label: &'static str,

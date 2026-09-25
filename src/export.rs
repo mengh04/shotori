@@ -1,15 +1,17 @@
-//! # 导出管线：逻辑选区 → 物理像素裁剪 → PNG 编码 → 落盘
+//! # Export pipeline: logical selection → physical-pixel crop → PNG → disk
 //!
-//! 纯函数集合（不碰 Wayland/gpui 窗口）→ 用合成像素即可单元测试。
-//! 调用方（overlay）只负责传窗口 scale_factor 和错误提示。
+//! A collection of pure functions (no Wayland/gpui window access) → unit
+//! testable with synthetic pixels. Callers (the overlay) only pass the window
+//! scale factor and handle error reporting.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use gpui_kit::*;
 
-/// 逻辑选区 → 物理像素裁剪。
-/// 坐标乘 scale 后取整、夹紧到捕获范围；空选区返回 `None`。
+/// Logical selection → physical-pixel crop.
+/// Coordinates are scaled, rounded and clamped into the capture; an empty
+/// selection returns `None`.
 pub fn crop(
     rgba: &[u8],
     cap_w: u32,
@@ -36,21 +38,23 @@ pub fn crop(
     Some((w, h, out))
 }
 
-/// 生成不冲突的保存路径：`~/Pictures/Shotori/Shotori_年-月-日_时-分-秒.png`
-/// （同一秒内多次保存自动加 `_2`、`_3` 后缀，不覆盖）
+/// Generate a collision-free save path:
+/// `~/Pictures/Shotori/Shotori_<date>_<time>.png`
+/// (repeated saves within the same second get `_2`, `_3` suffixes; no overwrites)
 pub fn next_path() -> anyhow::Result<PathBuf> {
     let dir = save_dir()?;
-    std::fs::create_dir_all(&dir).with_context(|| format!("创建目录 {}", dir.display()))?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let stamp = chrono::Local::now().format("Shotori_%Y-%m-%d_%H-%M-%S").to_string();
     Ok(next_path_in(&dir, &stamp))
 }
 
 fn save_dir() -> anyhow::Result<PathBuf> {
-    let home = std::env::var("HOME").context("没有 HOME 环境变量")?;
+    let home = std::env::var("HOME").context("HOME environment variable is not set")?;
     Ok(PathBuf::from(home).join("Pictures/Shotori"))
 }
 
-/// 冲突规避的纯逻辑（可测试）：`stem.png` 占用时依次尝试 `stem_2.png`、`stem_3.png`…
+/// Collision-avoidance pure logic (testable): tries `stem.png`, then
+/// `stem_2.png`, `stem_3.png`…
 pub fn next_path_in(dir: &Path, stem: &str) -> PathBuf {
     let plain = dir.join(format!("{stem}.png"));
     if !plain.exists() {
@@ -65,33 +69,37 @@ pub fn next_path_in(dir: &Path, stem: &str) -> PathBuf {
     unreachable!()
 }
 
-/// RGBA8 像素编码为 PNG（内存版，剪贴板/落盘共用）
+/// Encode RGBA8 pixels as PNG (in memory; shared by clipboard and disk)
 pub fn encode_png(w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut enc = png::Encoder::new(&mut out, w, h);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
     let mut writer = enc.write_header().context("PNG header")?;
-    writer.write_image_data(rgba).context("PNG 数据")?;
-    writer.finish().context("PNG IEND 尾块")?;
+    writer.write_image_data(rgba).context("PNG data")?;
+    writer.finish().context("PNG IEND chunk")?;
     Ok(out)
 }
 
-/// RGBA8 像素编码为 PNG 写入 path。错误带上下文返回（调用方决定去留）。
+/// Encode RGBA8 pixels as PNG and write to path. Errors are returned with
+/// context (the caller decides whether to stay open).
 pub fn save_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<()> {
     let bytes = encode_png(w, h, rgba)?;
-    std::fs::write(path, &bytes)
-        .with_context(|| format!("写入 {}（{} KB）", path.display(), bytes.len() / 1024))?;
+    std::fs::write(path, &bytes).with_context(|| {
+        format!("writing {} ({} KB)", path.display(), bytes.len() / 1024)
+    })?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    // 显式导入（同 selection.rs 的理由：避开 gpui 的 test 宏遮蔽内建 #[test]）
+    // Explicit imports (same reason as selection.rs: avoid gpui's test macro
+    // shadowing the built-in #[test])
     use super::{crop, next_path_in, save_png};
     use gpui_kit::{point, px, size, Bounds, Pixels};
 
-    /// 4×3 合成图：像素值 = (x, y, 0, 255)，方便断言坐标映射
+    /// 4×3 synthetic image: pixel value = (x, y, 0, 255) for easy
+    /// coordinate-mapping assertions
     fn gradient_4x3() -> (u32, u32, Vec<u8>) {
         let (w, h) = (4u32, 3u32);
         let mut rgba = vec![0u8; (w * h * 4) as usize];
@@ -115,42 +123,42 @@ mod tests {
     }
 
     #[test]
-    fn 裁剪_scale1_精确取像素() {
+    fn crop_scale1_extracts_exact_pixels() {
         let (w, h, rgba) = gradient_4x3();
         let (cw, ch, out) = crop(&rgba, w, h, bounds(1., 1., 2., 1.), 1.0).unwrap();
         assert_eq!((cw, ch), (2, 1));
-        // 两个像素：(1,1) 和 (2,1)
+        // two pixels: (1,1) and (2,1)
         assert_eq!(&out[..4], &[1, 1, 0, 255]);
         assert_eq!(&out[4..8], &[2, 1, 0, 255]);
     }
 
     #[test]
-    fn 裁剪_scale2_逻辑转物理() {
+    fn crop_scale2_logical_to_physical() {
         let (w, h, rgba) = gradient_4x3();
-        // 逻辑 (0.5, 0.5) 尺寸 1×1 → 物理 x∈[1,3) y∈[1,3) → 2×2 像素
+        // logical (0.5, 0.5) size 1×1 → physical x∈[1,3) y∈[1,3) → 2×2 pixels
         let (cw, ch, out) = crop(&rgba, w, h, bounds(0.5, 0.5, 1., 1.), 2.0).unwrap();
         assert_eq!((cw, ch), (2, 2));
-        assert_eq!(&out[..4], &[1, 1, 0, 255]); // 第一行左起 (1,1)
+        assert_eq!(&out[..4], &[1, 1, 0, 255]); // first row, leftmost (1,1)
         assert_eq!(&out[4..8], &[2, 1, 0, 255]); // (2,1)
     }
 
     #[test]
-    fn 裁剪_越界部分被夹紧() {
+    fn crop_clamps_out_of_bounds() {
         let (w, h, rgba) = gradient_4x3();
-        // 右下超出捕获范围：clamp 到 (4,3)，可得 2×2
+        // bottom-right beyond the capture: clamped to (4,3), yields 2×2
         let (cw, ch, _) = crop(&rgba, w, h, bounds(2., 1., 99., 99.), 1.0).unwrap();
         assert_eq!((cw, ch), (2, 2));
     }
 
     #[test]
-    fn 裁剪_空选区返回_none() {
+    fn crop_empty_selection_returns_none() {
         let (w, h, rgba) = gradient_4x3();
-        assert!(crop(&rgba, w, h, bounds(4., 0., 4., 3.), 1.0).is_none()); // 零宽
-        assert!(crop(&rgba, w, h, bounds(0., 3., 4., 0.), 1.0).is_none()); // 零高
+        assert!(crop(&rgba, w, h, bounds(4., 0., 4., 3.), 1.0).is_none()); // zero width
+        assert!(crop(&rgba, w, h, bounds(0., 3., 4., 0.), 1.0).is_none()); // zero height
     }
 
     #[test]
-    fn 文件名_冲突时加后缀() {
+    fn filename_collision_gets_suffix() {
         let dir = tempfile::tempdir().unwrap();
         let p1 = next_path_in(dir.path(), "Shotori_t");
         assert_eq!(p1, dir.path().join("Shotori_t.png"));
@@ -165,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn png_编码后能读回() {
+    fn png_encodes_and_reads_back() {
         let (w, h, rgba) = gradient_4x3();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("roundtrip.png");

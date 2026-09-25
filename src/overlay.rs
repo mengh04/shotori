@@ -1,11 +1,13 @@
-//! # 截图覆盖层：冻结屏幕 + 选区交互的装配层
+//! # Screenshot overlay: assembly layer for frozen-screen + selection interaction
 //!
-//! 流程：冻结画面打底（img）→ 拖拽框选（选区"透视"，四周变暗）
-//! → Enter 复制到剪贴板 / Ctrl+S 保存 PNG / Esc 退出。
+//! Flow: frozen frame as the base (img) → drag a selection (the selection
+//! "sees through", everything around it dims) → Enter copies to clipboard /
+//! Ctrl+S saves PNG / Ctrl+O OCR / Esc exits.
 //!
-//! 分工：纯逻辑在 [`crate::selection`]（状态机）和 [`crate::export`]（裁剪/编码），
-//! 视觉在 [`crate::hud`] 和 [`crate::toolbar`]——本文件只做 gpui 装配：
-//! 窗口、事件 → 状态机调用、状态 → 渲染。
+//! Division of labor: pure logic lives in [`crate::selection`] (state
+//! machine) and [`crate::export`] (crop/encode), visuals in [`crate::hud`]
+//! and [`crate::toolbar`] — this file only does gpui assembly:
+//! window, events → state-machine calls, state → rendering.
 
 use std::sync::Arc;
 
@@ -22,9 +24,9 @@ gpui_kit::actions!([QuitOverlay, CopySelection, SaveSelection, OcrSelection]);
 
 pub struct Overlay {
     focus_handle: FocusHandle,
-    /// 冻结的屏幕画面（给 img 元素显示）
+    /// The frozen screen image (displayed by the img element)
     frozen: Arc<RenderImage>,
-    /// 原始像素（裁剪用）
+    /// Raw pixels (for cropping)
     capture: Capture,
     selection: Selection,
 }
@@ -57,8 +59,9 @@ impl Overlay {
         }
     }
 
-    /// 覆盖层窗口的 WindowOptions（四边全锚铺满 + Exclusive 键盘）。
-    /// display_id：钉在捕获的那块屏上（不给的话 compositor 自己挑——多屏=抽签）
+    /// WindowOptions for the overlay window (anchored on all four edges +
+    /// Exclusive keyboard). display_id: pin to the output the capture came
+    /// from (without it the compositor picks — multi-monitor = lottery)
     pub fn window_options(display_id: Option<DisplayId>) -> WindowOptions {
         WindowOptions {
             titlebar: None,
@@ -77,10 +80,12 @@ impl Overlay {
         }
     }
 
-    /// 本窗口"捕获物理像素 ÷ 逻辑像素"的换算率。
-    /// 不用 window.scale_factor()：多屏异缩放下 gpui 会报别的输出的 scale
-    /// （实测：窗口钉在 HDMI 渲染按 1.0，scale_factor() 却报 DP-2 的 1.5）。
-    /// 自算与渲染天然自洽，免疫错报。
+    /// This window's "captured physical pixels ÷ logical pixels" ratio.
+    /// Deliberately not window.scale_factor(): under mixed-DPI multi-monitor
+    /// setups gpui reports another output's scale (measured: window pinned
+    /// to HDMI renders at 1.0 while scale_factor() reports DP-2's 1.5).
+    /// Computing it ourselves is naturally consistent with rendering and
+    /// immune to the misreport.
     fn render_scale(&self, window: &Window) -> f32 {
         let ws = window.bounds().size;
         if f32::from(ws.width) > 0. {
@@ -90,7 +95,7 @@ impl Overlay {
         }
     }
 
-    /// 逻辑选区 → 物理像素裁剪；空选区返回 None
+    /// Logical selection → physical-pixel crop; None for an empty selection
     fn crop(
         &self,
         bounds: Bounds<Pixels>,
@@ -105,7 +110,8 @@ impl Overlay {
         )
     }
 
-    /// 待处理的选区；无选区 = 整窗（= 整个输出），所有截图工具的默认行为
+    /// The selection to act on; no selection = the whole window (= the whole
+    /// output), the default behavior of every screenshot tool
     fn selection_or_full(&self, window: &mut Window) -> Bounds<Pixels> {
         self.selection.bounds().unwrap_or_else(|| Bounds {
             origin: Point::default(),
@@ -113,41 +119,42 @@ impl Overlay {
         })
     }
 
-    /// Enter / Ctrl+C / 工具条[复制]：裁剪 → PNG → 剪贴板（分身驻留）→ 退出。
-    /// 日常使用的第一出口。
+    /// Enter / Ctrl+C / toolbar [Copy]: crop → PNG → clipboard (resident
+    /// daemon) → exit. The primary exit of daily use.
     fn copy_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (w, h, rgba) = match self.crop(self.selection_or_full(window), window) {
             Some(x) => x,
             None => {
-                println!("[shotori] 选区为空，忽略");
+                println!("[shotori] empty selection, ignoring");
                 return;
             }
         };
         let png = match crate::export::encode_png(w, h, &rgba) {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("[shotori] PNG 编码失败：{e:#}");
+                eprintln!("[shotori] PNG encoding failed: {e:#}");
                 return;
             }
         };
         if let Err(e) = crate::clipboard::copy_image(png) {
-            // 失败留在覆盖层：用户还能 Ctrl+S 保存文件
-            eprintln!("[shotori] 复制失败：{e:#}");
+            // Stay in the overlay on failure: the user can still Ctrl+S
+            eprintln!("[shotori] copy failed: {e:#}");
             return;
         }
         println!(
-            "[shotori] 已复制 {w}x{h}（来自 {}）到剪贴板",
+            "[shotori] copied {w}x{h} (from {}) to clipboard",
             self.capture.output_name
         );
         cx.quit();
     }
 
-    /// Ctrl+S / 工具条[保存]：裁剪 → PNG → 落盘。失败留在覆盖层（可重试/Esc 退出）
+    /// Ctrl+S / toolbar [Save]: crop → PNG → disk. Stays in the overlay on
+    /// failure (retry / Esc to exit)
     fn save_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (w, h, out) = match self.crop(self.selection_or_full(window), window) {
             Some(x) => x,
             None => {
-                println!("[shotori] 选区为空，忽略");
+                println!("[shotori] empty selection, ignoring");
                 return;
             }
         };
@@ -155,30 +162,30 @@ impl Overlay {
         let path = match crate::export::next_path() {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("[shotori] 保存路径失败：{e:#}");
+                eprintln!("[shotori] save path failed: {e:#}");
                 return;
             }
         };
         if let Err(e) = crate::export::save_png(&path, w, h, &out) {
-            eprintln!("[shotori] 保存失败：{e:#}");
+            eprintln!("[shotori] save failed: {e:#}");
             return;
         }
 
         println!(
-            "[shotori] 已保存 {w}x{h}（来自 {}）→ {}",
+            "[shotori] saved {w}x{h} (from {}) → {}",
             self.capture.output_name,
             path.display()
         );
         cx.quit();
     }
 
-    /// Ctrl+O：裁剪选区 → OCR 识别 → 文本进剪贴板。
+    /// Ctrl+O / toolbar [OCR]: crop the selection → OCR → text to clipboard.
     #[cfg(feature = "ocr")]
     fn ocr_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (w, h, rgba) = match self.crop(self.selection_or_full(window), window) {
             Some(x) => x,
             None => {
-                println!("[shotori] 选区为空，忽略");
+                println!("[shotori] empty selection, ignoring");
                 return;
             }
         };
@@ -190,31 +197,31 @@ impl Overlay {
                 .await;
             let text = result.and_then(|t| {
                 if t.is_empty() {
-                    Err(anyhow::anyhow!("OCR 未识别到文字"))
+                    Err(anyhow::anyhow!("OCR found no text"))
                 } else {
                     Ok(t)
                 }
             });
-            let _ = window_handle.update(cx, |_, window, cx| match &text {
+            let _ = window_handle.update(cx, |_, _, cx| match &text {
                 Ok(t) => {
                     if let Err(e) = crate::clipboard::copy_text(t.clone()) {
-                        eprintln!("[shotori] OCR 复制失败：{e:#}");
-                        let _ = window;
+                        eprintln!("[shotori] OCR copy failed: {e:#}");
                         return;
                     }
                     let lines = t.lines().count();
                     let preview: String = t
+                        .replace('\n', " ")
                         .chars()
                         .filter(|c| !c.is_control())
                         .take(60)
                         .collect();
                     println!(
-                        "[shotori] OCR 完成 {w}x{h} → {lines} 行 → 剪贴板（预览：{preview}）"
+                        "[shotori] OCR done {w}x{h} → {lines} line(s) → clipboard (preview: {preview})"
                     );
                     cx.quit();
                 }
                 Err(e) => {
-                    eprintln!("[shotori] OCR 识别失败：{e:#}");
+                    eprintln!("[shotori] OCR failed: {e:#}");
                 }
             });
         })
@@ -225,7 +232,7 @@ impl Overlay {
 impl Render for Overlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sel = self.selection.bounds();
-        let ws = window.bounds().size; // 窗口逻辑尺寸（= 输出逻辑尺寸）
+        let ws = window.bounds().size; // window logical size (= output logical size)
 
         div()
             .id("shotori-overlay")
@@ -247,21 +254,23 @@ impl Render for Overlay {
                     let _ = (this, window, cx);
                 }
             }))
-            // 两段 Esc：拖拽中 = 只放弃本次拖拽（吞掉动作不冒泡）；
-            // 松手后（Idle/Selected）= 不处理，冒泡到 main.rs 的全局兜底 → 退出
-            // 两段 Esc（就地处理，不指望冒泡）：
-            // 实测 gpui 窗口内 dispatch_action 的动作沿焦点路径走完就停，
-            // 不会到达 App::on_action——退出必须在这里做
+            // Two-stage Esc: while dragging = abandon this drag only (swallow
+            // the action, no bubbling); after release (Idle/Selected) =
+            // unhandled, bubbles to main.rs's global backstop → exit.
+            // Two-stage Esc (handled in place, no reliance on bubbling):
+            // measured: dispatch_action inside a gpui window stops at the
+            // focus path and never reaches App::on_action — exiting must
+            // happen here
             .on_action(cx.listener(|this, _: &QuitOverlay, _, cx| {
                 if this.selection.is_dragging() {
-                    this.selection.cancel_drag(); // 第一段：放弃本次拖拽
+                    this.selection.cancel_drag(); // stage one: abandon this drag
                 } else {
-                    cx.quit(); // 第二段：退出
+                    cx.quit(); // stage two: exit
                 }
                 cx.stop_propagation();
                 cx.notify();
             }))
-            // ── 选区交互（事件 → 状态机）─────────────────────
+            // ── Selection interaction (events → state machine) ─────────
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, ev: &MouseDownEvent, _, cx| {
@@ -281,14 +290,15 @@ impl Render for Overlay {
                     cx.notify();
                 }),
             )
-            // ── 图层堆栈（从底到顶）───────────────────────────
-            // ① 冻结的屏幕画面（不透明，铺满）
+            // ── Layer stack (bottom to top) ─────────────────────────────
+            // ① The frozen screen image (opaque, filling the window)
             .child(img(self.frozen.clone()).size_full())
-            // ② 变暗层：无选区=全屏；有选区=四条边带（选区"透视"）
+            // ② Dim layer: no selection = whole screen; with a selection =
+            // four strips around it (the selection "sees through")
             .children(dim_strips(sel, ws))
-            // ③ 选区边框 + 尺寸标签（拖拽中实时显示）
+            // ③ Selection border + size label (live while dragging)
             .children(sel.map(selection_chrome))
-            // ④ 工具条：只在松手定型后出现（拖拽中不闪）
+            // ④ Toolbar: appears only after release (no flicker while dragging)
             .children(
                 if let Selection::Selected { bounds } = self.selection {
                     Some(selection_toolbar(bounds, ws))
@@ -296,22 +306,24 @@ impl Render for Overlay {
                     None
                 },
             )
-            // ⑤ 底部提示条
+            // ⑤ Bottom hint bar
             .child(hint_bar())
     }
 }
 
-// ── 开发后门（自动化 e2e 的入口，正常启动不受影响）───────────────────
+// ── Debug backdoors (entry points for automated e2e; normal launches are
+// unaffected) ─────────────────────────────────────────────────────────
 
-/// 后门是否作用于本覆盖层：SHOTORI_DEBUG_TARGET=<输出名> 限定
-/// （多屏下每个覆盖层都会跑到这里，全开会互相打架）；不设 = 全部生效
+/// Does the backdoor target this overlay? SHOTORI_DEBUG_TARGET=<output name>
+/// (with multiple overlays all running this code, enabling all of them makes
+/// them fight each other); unset = enabled everywhere
 fn debug_targeted(output_name: &str) -> bool {
     std::env::var("SHOTORI_DEBUG_TARGET")
         .map(|t| t == output_name)
         .unwrap_or(true)
 }
 
-/// SHOTORI_DEBUG_SELECTION=x,y,w,h：注入现成选区
+/// SHOTORI_DEBUG_SELECTION=x,y,w,h: inject a ready-made selection
 fn debug_selection(targeted: bool) -> Selection {
     if !targeted {
         return Selection::Idle;
@@ -330,8 +342,9 @@ fn debug_selection(targeted: bool) -> Selection {
         .unwrap_or(Selection::Idle)
 }
 
-/// SHOTORI_DEBUG_ACTION=copy|quit|ocr：1.5s 后自动触发对应动作——无头 e2e 的唯一入口
-/// （虚拟指针在 niri 上不可用，见 ROADMAP）。quit/ocr 走 dispatch_action 真实管线
+/// SHOTORI_DEBUG_ACTION=copy|quit|ocr: fire the action automatically after
+/// 1.5s — the only entry point for headless e2e (the virtual pointer is dead
+/// on niri, see ROADMAP). quit/ocr go through the real dispatch_action pipeline
 fn spawn_debug_action(window: &mut Window, cx: &mut Context<Overlay>) {
     let Some(action) = std::env::var("SHOTORI_DEBUG_ACTION")
         .ok()

@@ -1,13 +1,14 @@
-//! # 覆盖层 HUD：选区相关的纯视觉元素
+//! # Overlay HUD: pure visual elements tied to the selection
 //!
-//! 变暗边带 / 选区边框 + 尺寸标签 / 底部提示条。无状态，全函数式；
-//! 装配在 [`crate::overlay::Overlay::render`]。
+//! Dim strips / selection border + size label / bottom hint bar.
+//! Stateless, all functional; assembled in [`crate::overlay::Overlay::render`].
 
 use gpui_kit::*;
 
 use crate::theme::{ACCENT, CHIP_BG, DIM, HINT_TEXT};
 
-/// 变暗层：无选区时整屏一块；有选区时挖空选区（四条边带）
+/// Dim layer: one full-screen block when nothing is selected; when a
+/// selection exists, four strips around it (the selection "sees through")
 pub(crate) fn dim_strips(sel: Option<Bounds<Pixels>>, ws: Size<Pixels>) -> Vec<AnyElement> {
     let mut els = Vec::new();
     let mut strip = |x: Pixels, y: Pixels, w: Pixels, h: Pixels| {
@@ -28,16 +29,16 @@ pub(crate) fn dim_strips(sel: Option<Bounds<Pixels>>, ws: Size<Pixels>) -> Vec<A
     match sel {
         None => strip(px(0.), px(0.), ws.width, ws.height),
         Some(b) => {
-            strip(px(0.), px(0.), ws.width, b.top()); // 上
-            strip(px(0.), b.bottom(), ws.width, ws.height - b.bottom()); // 下
-            strip(px(0.), b.top(), b.left(), b.size.height); // 左
-            strip(b.right(), b.top(), ws.width - b.right(), b.size.height); // 右
+            strip(px(0.), px(0.), ws.width, b.top()); // top
+            strip(px(0.), b.bottom(), ws.width, ws.height - b.bottom()); // bottom
+            strip(px(0.), b.top(), b.left(), b.size.height); // left
+            strip(b.right(), b.top(), ws.width - b.right(), b.size.height); // right
         }
     }
     els
 }
 
-/// 选区边框 + 尺寸标签（标签放选区上方，空间不够放下方）
+/// Selection border + size label (label above the selection; below when no room)
 pub(crate) fn selection_chrome(b: Bounds<Pixels>) -> impl IntoElement {
     let label_y = if b.top() >= px(34.) {
         b.top() - px(30.)
@@ -72,7 +73,7 @@ pub(crate) fn selection_chrome(b: Bounds<Pixels>) -> impl IntoElement {
         )
 }
 
-/// 底部操作提示条
+/// Bottom hint bar
 pub(crate) fn hint_bar() -> impl IntoElement {
     div()
         .absolute()
@@ -93,12 +94,13 @@ pub(crate) fn hint_bar() -> impl IntoElement {
         )
 }
 
-/// 提示文案按 feature 裁剪：非 ocr 构建不宣传不存在的快捷键
+/// Hint text is trimmed per feature set: builds without `ocr` must not
+/// advertise a shortcut that does not exist
 #[cfg(feature = "ocr")]
 fn hint_text() -> &'static str {
-    "拖拽框选 · Enter 复制 · Ctrl+S 保存 · Ctrl+O OCR · Esc 退出"
+    "Drag to select · Enter copy · Ctrl+S save · Ctrl+O OCR · Esc exit"
 }
 #[cfg(not(feature = "ocr"))]
 fn hint_text() -> &'static str {
-    "拖拽框选 · Enter 复制 · Ctrl+S 保存 · Esc 退出"
+    "Drag to select · Enter copy · Ctrl+S save · Esc exit"
 }

@@ -229,3 +229,24 @@ overlay 只剩装配。首批 12 个单元测试（不需要合成器）。
 - 失败路径（断网/坏文件/重试）是懒加载设计的必修课，成功路径 e2e 不够
 - "wl-paste -l 突然少了 MIME"→ 先怀疑自己，再怀疑 compositor，最后想起
   用户也在用电脑（他们的复制会顶掉测试态）
+
+## v0.6.2 工具条 OCR 按钮 + 代码全英文化（2026-09-26）
+
+### 功能
+- 工具条加 [OCR] 按钮：[Copy][Save][OCR][Cancel]，与键盘同管线
+  dispatch_action；ocr feature 裁掉时按钮编译期消失（`.children(Option)`）
+- 提示条/按钮/日志全部英文（UI 面向 crates.io/AUR 的国际用户）
+
+### 英文化范围与原则
+- src/ 全部 16 文件：doc 注释、行内注释、字符串字面量、测试函数名
+- 翻译保留全部"战史"知识（wayland-rs 三坑、gpui 坑、grim 对拍校准等），
+  只换语言不删内容
+- ROADMAP.md 保持中文（项目活文档，不是代码）
+- 两个 feature 组合 build/test/clippy 全绿；OCR/复制 e2e 回归通过
+
+### 小坑记录
+- `#[cfg]` 不能挂在方法链表达式中间（`.child()` 链里插属性不是合法
+  Rust）——用 `.children(Option<E>)` 收编（children 吃 IntoIterator，
+  Option 天然是）
+- gpui-kit 没给 Option<impl IntoElement> 实现 IntoElement（上游 gpui 有），
+  Infallible 也没有——非 ocr 桩返回 Option<&'static str> 最省事

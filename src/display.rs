@@ -1,25 +1,31 @@
-//! # display 匹配：把每块捕获钉回"它截的那块屏"
+//! # Display matching: pin each capture back to "the output it came from"
 //!
-//! **为什么需要匹配**：layer surface 不指定 output 时 compositor 自选落点
-//! （多屏 = 抽签，即"240Hz 隐形"的真凶）；gpui 的 `WindowOptions.display_id`
-//! 可以钉屏，但 id 在 gpui 的连接里，与捕获连接的 wl_output 无直接对应——
-//! 只能靠几何信息对号入座。
+//! **Why matching is needed**: without an explicit output, the compositor
+//! picks a landing spot for a layer surface (multi-monitor = lottery; this
+//! was the real culprit behind the "240Hz invisibility" bug). gpui's
+//! `WindowOptions.display_id` can pin the window, but the id lives in gpui's
+//! connection with no direct correspondence to the wl_output of the capture
+//! connection — geometry is the only way to line them up.
 //!
-//! **匹配算法（只有一条规则，务必别加复杂度）**：
-//! gpui 的 display bounds origin = 输出逻辑位置 ÷ wl_output 整数 scale
-//! （backend 自己除的，对拍实测：eDP 1920,0→960,0；DP-2 -720,-100→-360,-50）。
-//! 位置在多屏布局里唯一 → 只比位置，尺寸弃用（分数 scale 拿不到真值，见
-//! [`crate::capture::Capture::scale`]）。
+//! **Matching algorithm (one rule only — resist adding complexity)**:
+//! gpui's display bounds origin = the output's logical position ÷ the
+//! wl_output integer scale (the backend does the division itself; measured
+//! by comparison: eDP 1920,0→960,0; DP-2 -720,-100→-360,-50).
+//! Positions are unique in a multi-monitor layout → match on position only,
+//! ignore sizes (fractional scales report no true value, see
+//! [`crate::capture::Capture::scale`]).
 //!
-//! **时机**：displays() 在同步启动阶段恒为空（上游 zed#46378），事件循环
-//! 首圈后可用 → [`await_display_ids`] 在异步任务里轮询（上限 1s）。
+//! **Timing**: displays() is always empty during synchronous startup
+//! (upstream zed#46378) and becomes available after the first event-loop
+//! pass → [`await_display_ids`] polls inside an async task (1s cap).
 
 use gpui_kit::*;
 
 use crate::capture::Capture;
 
-/// 等 displays() 可用并逐屏匹配。超时（1s）的屏返回 None——
-/// 沿用 compositor 自选落点的旧行为，至少能开窗。
+/// Wait until displays() is usable and match each capture. Outputs that time
+/// out (1s) get None — falling back to the old "compositor picks" behavior,
+/// at least a window opens.
 pub async fn await_display_ids(
     caps: Vec<Capture>,
     cx: &AsyncApp,
@@ -38,7 +44,8 @@ pub async fn await_display_ids(
     targets
 }
 
-/// 一轮匹配；`final_round` 时才打印诊断（避免 50ms 一条刷屏）
+/// One matching round; diagnostics are only printed on `final_round`
+/// (avoid spamming one line every 50ms)
 fn match_all(cx: &App, targets: &mut [(Capture, Option<DisplayId>)], final_round: bool) -> bool {
     let displays = cx.displays();
     if displays.is_empty() {
@@ -53,7 +60,7 @@ fn match_all(cx: &App, targets: &mut [(Capture, Option<DisplayId>)], final_round
                 .map(|d| d.id());
             if did.is_none() {
                 diag.push(format!(
-                    "{} 在 gpui 坐标应为 {:?}，实际 displays={:?}",
+                    "{}: expected gpui origin {:?}, actual displays={:?}",
                     cap.output_name,
                     expected_origin(cap),
                     displays
@@ -69,13 +76,14 @@ fn match_all(cx: &App, targets: &mut [(Capture, Option<DisplayId>)], final_round
     }
     if final_round {
         for d in &diag {
-            eprintln!("[shotori] 未匹配：{d}");
+            eprintln!("[shotori] unmatched: {d}");
         }
     }
     targets.iter().all(|(_, d)| d.is_some())
 }
 
-/// 捕获的输出在 gpui 坐标系里应有的 origin（逻辑位置 ÷ 整数 scale）
+/// The origin this capture should have in gpui coordinates
+/// (logical position ÷ integer scale)
 fn expected_origin(cap: &Capture) -> (f32, f32) {
     (
         cap.logical_pos.0 as f32 / cap.scale,
@@ -83,15 +91,17 @@ fn expected_origin(cap: &Capture) -> (f32, f32) {
     )
 }
 
-/// 匹配谓词：origin 对上（±2px 容差防浮点毛刺）即认定同一块屏
+/// Match predicate: origins equal (±2px tolerance for float jitter)
+/// → same output
 fn display_matches(bounds: &Bounds<Pixels>, cap: &Capture) -> bool {
     let (ex, ey) = expected_origin(cap);
     (f32::from(bounds.origin.x) - ex).abs() < 2.0
         && (f32::from(bounds.origin.y) - ey).abs() < 2.0
 }
 
-// tests 模块不用 `use super::*`：父模块顶部的 `use gpui_kit::*` 会把 gpui 的
-// test 宏带进来遮蔽内建 #[test]（宏展开爆递归，详见 selection.rs 注释）
+// tests deliberately avoids `use super::*`: the parent module's
+// `use gpui_kit::*` pulls gpui's test macro in and shadows the built-in
+// #[test] (see the comment in selection.rs)
 #[cfg(test)]
 mod tests {
     use super::{display_matches, expected_origin};
@@ -110,8 +120,9 @@ mod tests {
     }
 
     #[test]
-    fn 匹配_三屏实测定坐标() {
-        // 用户三屏：HDMI (0,0)@1x；eDP (1920,0)@2x→gpui(960,0)；DP-2 (-720,-100)@2.0(报整数)→(-360,-50)
+    fn matches_real_triple_monitor_coordinates() {
+        // The user's three monitors: HDMI (0,0)@1x; eDP (1920,0)@2x→gpui(960,0);
+        // DP-2 (-720,-100)@2.0(integer-reported)→(-360,-50)
         let hdmi = cap((0, 0), 1.);
         let edp = cap((1920, 0), 2.);
         let dp2 = cap((-720, -100), 2.);
@@ -120,21 +131,22 @@ mod tests {
         assert!(display_matches(&bounds(960., 0.), &edp));
         assert!(display_matches(&bounds(-360., -50.), &dp2));
 
-        // 互相不能匹配错
+        // must not cross-match
         assert!(!display_matches(&bounds(960., 0.), &hdmi));
         assert!(!display_matches(&bounds(-360., -50.), &edp));
     }
 
     #[test]
-    fn 匹配_容差2px() {
+    fn matches_within_2px_tolerance() {
         let hdmi = cap((0, 0), 1.);
-        assert!(display_matches(&bounds(1.5, -1.5), &hdmi)); // ±1.5px 内
-        assert!(!display_matches(&bounds(2.5, 0.), &hdmi)); // 超界
+        assert!(display_matches(&bounds(1.5, -1.5), &hdmi)); // within ±1.5px
+        assert!(!display_matches(&bounds(2.5, 0.), &hdmi)); // beyond
     }
 
     #[test]
-    fn 匹配_负坐标除法() {
-        // -720/2 = -360；-100/2 = -50（负数整除方向不影响 f32 除法）
+    fn negative_coordinate_division() {
+        // -720/2 = -360; -100/2 = -50 (negative integer division direction
+        // does not affect f32 division)
         let dp2 = cap((-720, -100), 2.);
         assert_eq!(expected_origin(&dp2), (-360., -50.));
     }

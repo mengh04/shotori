@@ -1,44 +1,50 @@
-//! # 屏幕捕获库：wlr-screencopy 的封装（多输出版）
+//! # Screen capture library: a multi-output wrapper over wlr-screencopy
 //!
-//! 子模块：
-//! - [`pixels`]：纯像素处理（格式转换/transform 旋转），带单元测试
-//! - [`wayland`]：wayland 事件状态机（Dispatch 全家）
+//! Submodules:
+//! - [`pixels`]: pure pixel processing (format conversion / transform
+//!   rotation), unit-tested
+//! - [`wayland`]: the wayland event state machine (the Dispatch family)
 //!
-//! 一次性同步捕获：独立 Wayland 连接，单屏 ~15ms，三屏 ~350ms（含编码）。
-//! 与 gpui 的 Wayland 连接互不干扰。
+//! One-shot synchronous capture on a dedicated Wayland connection: ~15ms for
+//! a single output, ~350ms for three (including encoding). Does not interfere
+//! with gpui's Wayland connection.
 
 mod pixels;
 mod wayland;
 
-/// 一次成功的捕获（一块屏）
+/// One successful capture (one output)
 pub struct Capture {
     pub output_name: String,
-    /// 输出的全局逻辑位置（wl_output::Geometry）
+    /// Global logical position of the output (wl_output::Geometry)
     pub logical_pos: (i32, i32),
-    /// wl_output 报的 scale——**整数版**（1.5x 屏会报 2）。gpui 的 display
-    /// bounds origin = 逻辑位置 ÷ 这个值（backend 自己除的，对拍实测），
-    /// 匹配时必须用同一套算法（见 crate::display）
+    /// The scale reported by wl_output — **the integer version** (a 1.5x
+    /// output reports 2). gpui's display bounds origin = logical position ÷
+    /// this value (the backend does the division; verified by comparison),
+    /// so matching must use the same algorithm (see crate::display)
     pub scale: f32,
-    /// 输出几何 transform（DP-2 是 90°：物理 buffer 横的，屏幕竖的）
+    /// Output geometry transform (DP-2 is 90°: the physical buffer is
+    /// landscape while the panel is portrait)
     pub transform: wayland::OutputTransform,
-    /// 物理尺寸（**已按 transform 旋转后**，与屏幕所见方向一致）
+    /// Physical size (**already rotated per transform**, matching what the
+    /// screen shows)
     pub width: u32,
     pub height: u32,
-    /// 已经转成 RGBA8、已处理 Y 翻转、已按 transform 旋转的像素
+    /// Pixels already converted to RGBA8, Y-flip applied, rotated per transform
     pub rgba: Vec<u8>,
 }
 
 impl Capture {
-    /// 输出是否带旋转变换（日志/调试用）
+    /// Whether the output has a rotation transform (for logs/debugging)
     pub fn rotated(&self) -> bool {
         self.transform != wayland::OutputTransform::Normal
     }
 
-    /// 仅供其他模块的单元测试构造（正常路径走 [`capture_all_outputs`]）
+    /// Constructor for unit tests in other modules (the normal path is
+    /// [`capture_all_outputs`])
     #[cfg(test)]
     pub(crate) fn for_test(logical_pos: (i32, i32), scale: f32) -> Self {
         Self {
-            output_name: "测试屏".into(),
+            output_name: "test-output".into(),
             logical_pos,
             scale,
             transform: wayland::OutputTransform::Normal,
@@ -49,7 +55,7 @@ impl Capture {
     }
 }
 
-/// 捕获所有输出（至少要有一块，否则报错）
+/// Capture all outputs (at least one is required, otherwise error)
 pub fn capture_all_outputs() -> anyhow::Result<Vec<Capture>> {
     use wayland::*;
 
@@ -59,41 +65,41 @@ pub fn capture_all_outputs() -> anyhow::Result<Vec<Capture>> {
     conn.display().get_registry(&qh, ());
 
     let mut app = App::default();
-    queue.roundtrip(&mut app)?; // globals 到手（含全部 wl_output）
+    queue.roundtrip(&mut app)?; // globals in hand (including all wl_outputs)
 
-    let manager = app
-        .manager
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("compositor 不支持 zwlr_screencopy_manager_v1"))?;
+    let manager = app.manager.take().ok_or_else(|| {
+        anyhow::anyhow!("compositor does not support zwlr_screencopy_manager_v1")
+    })?;
     if app.outputs.is_empty() {
-        anyhow::bail!("没有可用的 wl_output");
+        anyhow::bail!("no wl_output available");
     }
-    queue.roundtrip(&mut app)?; // 各输出的 name/geometry/scale 到手
+    queue.roundtrip(&mut app)?; // each output's name/geometry/scale in hand
 
-    // 每块屏各开一个捕获帧
+    // One capture frame per output
     for i in 0..app.outputs.len() {
         let output = app.outputs[i].output.clone();
         let frame = manager.capture_output(0, &output, &qh, i);
         app.outputs[i].frame = Some(FrameState::new(frame));
     }
-    queue.roundtrip(&mut app)?; // buffer 事件 → 各自建 shm buffer 并请求拷贝
+    queue.roundtrip(&mut app)?; // buffer events → create shm buffers, request copy
 
     while !app.all_frames_done() {
         queue.blocking_dispatch(&mut app)?;
     }
 
-    // 收集成功的那部分（单屏失败不拖累其他屏）
+    // Collect the successes (one output failing must not sink the others)
     let mut caps = Vec::new();
     for o in &mut app.outputs {
         let Some(f) = o.frame.as_mut() else { continue };
         if f.failed {
-            eprintln!("[shotori] {} 捕获失败，跳过", o.name);
+            eprintln!("[shotori] capture failed for {}, skipping", o.name);
             continue;
         }
         let (format, w, h, stride, y_invert) =
-            f.take_frame_info().expect("ready 了必有 buffer 信息");
-        let mmap = f.mmap.take().expect("没有 mmap");
-        // 物理 buffer 是"躺"的，按输出 transform 旋成屏幕所见方向
+            f.take_frame_info().expect("a ready frame always has buffer info");
+        let mmap = f.mmap.take().expect("no mmap");
+        // The physical buffer "lies flat"; rotate it per the output transform
+        // into the orientation the screen shows
         let rgba = pixels::convert_to_rgba(&mmap[..], format, w, h, stride, y_invert);
         let rgba = pixels::rotate_rgba(rgba, w as u32, h as u32, o.transform);
         let (rw, rh) = pixels::rotated_size(w as u32, h as u32, o.transform);
@@ -108,7 +114,7 @@ pub fn capture_all_outputs() -> anyhow::Result<Vec<Capture>> {
         });
     }
     if caps.is_empty() {
-        anyhow::bail!("所有输出的捕获都失败了");
+        anyhow::bail!("all output captures failed");
     }
     Ok(caps)
 }

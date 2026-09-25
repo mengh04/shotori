@@ -1,7 +1,8 @@
-//! # wayland 事件状态机：多输出 screencopy 的 Dispatch 全家
+//! # Wayland event state machine: the Dispatch family for multi-output screencopy
 //!
-//! 编排在 [`super::capture_all_outputs`]；这里只有"接线"：
-//! 每个绑定的协议对象一个 [`Dispatch`] 实现，输出状态按 registry 索引关联。
+//! Orchestration lives in [`super::capture_all_outputs`]; this file is pure
+//! "wiring": one [`Dispatch`] impl per bound protocol object, output state
+//! keyed by registry index.
 
 use std::fs::File;
 use std::os::fd::AsFd;
@@ -21,7 +22,7 @@ pub(super) use wl_output::Transform as OutputTransform;
 pub(super) struct App {
     pub shm: Option<wl_shm::WlShm>,
     pub manager: Option<ZwlrScreencopyManagerV1>,
-    /// registry 顺序的全部输出（索引即各处 udata）
+    /// All outputs in registry order (the index doubles as udata everywhere)
     pub outputs: Vec<OutputState>,
 }
 
@@ -70,7 +71,7 @@ impl FrameState {
 }
 
 impl App {
-    /// 所有帧都完成（成功或失败）了吗
+    /// Are all frames done (succeeded or failed)?
     pub fn all_frames_done(&self) -> bool {
         self.outputs
             .iter()
@@ -81,9 +82,11 @@ impl App {
         self.outputs.get_mut(idx)?.frame.as_mut()
     }
 
-    /// Buffer 事件的完整处理：记录元信息 → 建 shm 池/缓冲 → 请求拷贝 → 资源挂回。
-    /// （建池要只读借用 self.shm、挂回要可变借用——拆成独立方法分段借用）
-    #[allow(clippy::too_many_arguments)] // wayland 事件字段本来就这么多
+    /// Full Buffer-event handling: record metadata → create shm pool/buffer →
+    /// request copy → attach resources back.
+    /// (Split into its own method for borrow splitting: creating the pool
+    /// needs a shared borrow of self.shm while attaching needs a mutable one)
+    #[allow(clippy::too_many_arguments)] // wayland event fields are just this many
     fn handle_buffer(
         &mut self,
         frame: &ZwlrScreencopyFrameV1,
@@ -99,11 +102,11 @@ impl App {
         }
         let size = (stride as i64 * h as i64) as u64;
 
-        let file = tempfile::tempfile().expect("创建临时文件");
-        file.set_len(size).expect("设定文件长度");
+        let file = tempfile::tempfile().expect("create temp file");
+        file.set_len(size).expect("set file length");
         let mmap = unsafe { memmap2::MmapMut::map_mut(&file).expect("mmap") };
 
-        let shm = self.shm.as_ref().expect("没有 wl_shm？");
+        let shm = self.shm.as_ref().expect("no wl_shm?");
         let pool = shm.create_pool(file.as_fd(), size as i32, qh, ());
         let buffer = pool.create_buffer(0, w, h, stride, fmt, qh, ());
         frame.copy(&buffer);
@@ -137,7 +140,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for App {
                     state.manager = Some(registry.bind(name, version.min(3), qh, ()))
                 }
                 "wl_output" => {
-                    // 绑全部输出；udata = 索引
+                    // Bind all outputs; udata = index
                     let idx = state.outputs.len();
                     let output = registry.bind(name, version.min(4), qh, idx);
                     state.outputs.push(OutputState {
@@ -239,7 +242,8 @@ impl Dispatch<ZwlrScreencopyFrameV1, usize> for App {
         qh: &QueueHandle<Self>,
     ) {
         match event {
-            // compositor 告知这帧的格式/尺寸/行距 → 造 shm buffer 并请求拷贝
+            // The compositor announces this frame's format/size/stride →
+            // create the shm buffer and request the copy
             zwlr_screencopy_frame_v1::Event::Buffer {
                 format,
                 width,

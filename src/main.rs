@@ -1,14 +1,14 @@
-//! # Shotori 入口：装配、键位、开窗
+//! # Shotori entry point: assembly, keybindings, window creation
 //!
-//! 模块结构（避免 god file）：
-//! - `capture`：screencopy 捕获（多输出，独立 wayland 连接）
-//! - `display`：捕获 ↔ gpui display 的匹配与等待
-//! - `clipboard`：剪贴板复制（zwlr_data_control + 后台分身驻留）
-//! - `overlay`：覆盖层装配（每屏一个窗口）
-//! - `hud` / `toolbar`：覆盖层的视觉件
-//! - `selection` / `export` / `image_util`：纯逻辑
-//! - `ocr`：选区 OCR（rapidocr-core + PP-OCRv6 模型，默认 feature）
-//! - `theme`：视觉常量
+//! Module layout (avoiding a god file):
+//! - `capture`: screencopy capture (multi-output, dedicated wayland connection)
+//! - `display`: capture ↔ gpui display matching and waiting
+//! - `clipboard`: clipboard copy (zwlr_data_control + resident background daemon)
+//! - `overlay`: overlay assembly (one window per screen)
+//! - `hud` / `toolbar`: the overlay's visual pieces
+//! - `selection` / `export` / `image_util`: pure logic
+//! - `ocr`: selection OCR (rapidocr-core + PP-OCRv6 models, default feature)
+//! - `theme`: visual constants
 
 use gpui_kit::*;
 
@@ -20,25 +20,26 @@ use shotori::overlay::{CopySelection, Overlay, QuitOverlay, SaveSelection};
 use shotori::overlay::OcrSelection;
 
 fn main() {
-    // 剪贴板分身：复制动作的后台驻留进程（见 clipboard.rs 的驻留 offer 模型）
+    // Clipboard daemon: the background resident process behind the copy
+    // action (see the resident-offer model in clipboard.rs)
     if std::env::args().nth(1).as_deref() == Some(clipboard::DAEMON_ARG) {
         if let Err(e) = clipboard::daemon_main() {
-            eprintln!("[shotori] 剪贴板分身退场：{e:#}");
+            eprintln!("[shotori] clipboard daemon exiting: {e:#}");
             std::process::exit(1);
         }
         return;
     }
 
-    // ① 冻结全部屏幕（必须在覆盖层出现之前完成）
+    // ① Freeze all screens (must complete before the overlays appear)
     let caps = match capture::capture_all_outputs() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[shotori] 捕获失败：{e:#}");
+            eprintln!("[shotori] capture failed: {e:#}");
             std::process::exit(1);
         }
     };
     println!(
-        "[shotori] 已冻结 {} 块屏：{}",
+        "[shotori] frozen {} screen(s): {}",
         caps.len(),
         caps.iter()
             .map(|c| format!(
@@ -46,49 +47,54 @@ fn main() {
                 c.output_name,
                 c.width,
                 c.height,
-                if c.rotated() { "(旋转)" } else { "" }
+                if c.rotated() { " (rotated)" } else { "" }
             ))
             .collect::<Vec<_>>()
             .join(" · ")
     );
 
-    // ② 覆盖层（每屏一个）
+    // ② Overlays (one per screen)
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::base::init(cx);
 
-            // 键位按 key_context 分域
+            // Keybindings are scoped by key_context
             cx.bind_keys([
                 KeyBinding::new("escape", QuitOverlay, Some("ShotoriOverlay")),
                 KeyBinding::new("enter", CopySelection, Some("ShotoriOverlay")),
                 KeyBinding::new("ctrl-c", CopySelection, Some("ShotoriOverlay")),
                 KeyBinding::new("ctrl-s", SaveSelection, Some("ShotoriOverlay")),
-                // OCR feature 默认开启；轻构建（--no-default-features）不绑
+                // The ocr feature is on by default; slim builds
+                // (--no-default-features) skip this binding
                 #[cfg(feature = "ocr")]
                 KeyBinding::new("ctrl-o", OcrSelection, Some("ShotoriOverlay")),
             ]);
-            // 兜底：覆盖层焦点意外丢失时 Esc 仍能退出。
-            // 注意：实测窗口内 dispatch_action 不会冒泡到这里（动作止步于焦点路径），
-            // 覆盖层的 QuitOverlay 处理器才是真正的退出实现；这行只防焦点丢失的极端情况
+            // Backstop: Esc still exits if the overlay somehow loses focus.
+            // Note: dispatch_action inside a window does NOT bubble up here
+            // (actions stop at the focus path — measured); the overlay's own
+            // QuitOverlay handler is the real exit implementation; this line
+            // only guards the rare focus-loss case
             cx.on_action(|_: &QuitOverlay, cx| cx.quit());
 
-            // 开窗放进异步任务：displays() 在同步启动阶段恒为空（上游 zed#46378），
-            // 事件循环首圈后即可用——在这里给每块捕获匹配 display_id 并开窗
+            // Window creation lives in an async task: displays() is always
+            // empty during synchronous startup (upstream zed#46378) and
+            // becomes usable after the first event-loop pass — match each
+            // capture to a display_id and open windows here
             cx.spawn(async move |cx| {
                 let targets = display::await_display_ids(caps, cx).await;
                 cx.update(|cx| {
                     for (cap, did) in targets {
                         if did.is_none() {
                             eprintln!(
-                                "[shotori] 警告：{} 没匹配到 display，落点交给 compositor",
+                                "[shotori] warning: {} matched no display, placement left to the compositor",
                                 cap.output_name
                             );
                         }
                         cx.open_window(Overlay::window_options(did), |window, cx| {
                             cx.new(|cx| Overlay::new(cap, window, cx))
                         })
-                        .expect("打开 layer-shell 窗口失败");
+                        .expect("failed to open layer-shell window");
                     }
                 });
             })

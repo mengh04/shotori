@@ -1,21 +1,26 @@
-//! Shotori：Wayland 优先的截图套件（区域截图 / 贴图 / OCR / 长截图）
+//! # Shotori — a Wayland-first screenshot tool built with gpui-kit
 //!
-//! 模块地图（装配在 `main.rs`：键位分域绑定 + 开窗）：
-//! - [`capture`]：wlr-screencopy 捕获（多输出；子模块 pixels 纯像素处理 + 测试、
-//!   wayland 事件状态机）
-//! - [`display`]：捕获 ↔ gpui display 匹配（位置制；含 zed#46378 的异步等待）
-//! - [`clipboard`]：复制到剪贴板（zwlr_data_control + 后台分身驻留）
-//! - [`selection`]：选区状态机（纯逻辑 + 单元测试）
-//! - [`export`]：裁剪 → PNG 编码 → 剪贴板/落盘（纯函数 + 单元测试）
-//! - [`image_util`]：RGBA → RenderImage（BGRA 契约集中地）
-//! - [`overlay`]：覆盖层装配（layer-shell Overlay 层，每屏一个）
-//! - [`hud`]：覆盖层视觉件（变暗边带/选区边框/提示条）
-//! - [`toolbar`]：选区工具条（按钮与键盘同管线 dispatch_action）
-//! - [`theme`]：视觉常量（自绘设计系统种子）
-//! - [`ocr`]：选区 OCR（rapidocr-core + PP-OCRv6 模型，默认 feature）
+//! Module map (assembled in `main.rs`: scoped keybinding + window creation):
+//! - [`capture`]: wlr-screencopy capture (multi-output; the pixels submodule
+//!   is pure pixel processing + tests, wayland is the event state machine)
+//! - [`display`]: capture ↔ gpui display matching (position-based; includes
+//!   the async wait for upstream zed#46378)
+//! - [`clipboard`]: copy to clipboard (zwlr_data_control + resident
+//!   background daemon)
+//! - [`selection`]: selection state machine (pure logic + unit tests)
+//! - [`export`]: crop → PNG encoding → clipboard/disk (pure functions +
+//!   unit tests)
+//! - [`image_util`]: RGBA → RenderImage (the BGRA contract lives here)
+//! - [`overlay`]: overlay assembly (layer-shell Overlay layer, one per screen)
+//! - [`hud`]: overlay visuals (dim strips / selection border / hint bar)
+//! - [`toolbar`]: selection toolbar (buttons share the keyboard action
+//!   pipeline via dispatch_action)
+//! - [`theme`]: visual constants (the seed of a homegrown design system)
+//! - [`ocr`]: selection OCR (rapidocr-core + PP-OCRv6 models, default feature)
 //!
-//! 贴图（pin）功能在 `pin` 分支保存（依赖 vendor 的 set_layer_margin 补丁，
-//! 上游合并前无法发布 crates.io）。
+//! The pin (floating image) feature lives on the `pin` branch (it depends on
+//! the vendored set_layer_margin patch; can't ship on crates.io until
+//! upstream merges it).
 
 pub mod capture;
 pub mod clipboard;
