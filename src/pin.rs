@@ -9,9 +9,8 @@ use std::sync::Arc;
 
 use gpui_kit::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui_kit::*;
-use image::{Frame, ImageBuffer};
-use smallvec::SmallVec;
 
+use crate::image_util;
 use crate::theme::{ACCENT, PIN_BORDER};
 
 gpui_kit::actions!([ClosePin]);
@@ -35,13 +34,8 @@ impl PinWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        // RenderImage 契约：BGRA（gpui Vulkan 后端要求）
-        let mut bgra = rgba;
-        for px in bgra.chunks_exact_mut(4) {
-            px.swap(0, 2);
-        }
-        let buf = ImageBuffer::from_raw(w, h, bgra).expect("像素尺寸不一致");
-        let image = Arc::new(RenderImage::new(SmallVec::from_elem(Frame::new(buf), 1)));
+        // BGRA 契约见 image_util（原手写 R/B 交换 v0.2 收口统一，行为不变）
+        let image = image_util::rgba_to_render_image(rgba, w, h);
 
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);

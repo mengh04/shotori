@@ -4,9 +4,7 @@ use std::fs::File;
 use std::io::BufWriter;
 
 fn main() -> anyhow::Result<()> {
-    let out_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/tmp/opencode/saccade_spike2.png".into());
+    let out_path = std::env::args().nth(1).unwrap_or_else(|| "/tmp/screencap.png".into());
     let t0 = std::time::Instant::now();
 
     let cap = saccade::capture::capture_first_output()?;

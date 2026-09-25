@@ -23,6 +23,9 @@ png = "0.17"
 image = "0.25"
 smallvec = "1"
 
+# 保存文件名的人类可读时间戳（gpui 生态已在依赖树中，零新增编译）
+chrono = "0.4"
+
 # 本地 vendor fork（上游 review 慢，先用补丁；上游合并后删除此段即可）
 # - set_layer_margin：layer-shell 表面运行时改 margin（贴图拖动原语）
 [patch.crates-io]

@@ -9,8 +9,8 @@
 use gpui_kit::*;
 
 use saccade::capture;
-use saccade::overlay::{ConfirmSelection, PinSelection, QuitOverlay, Overlay};
-use saccade::pin::{ClosePin, PinWindow};
+use saccade::overlay::{ConfirmSelection, Overlay, PinSelection, QuitOverlay};
+use saccade::pin::ClosePin;
 
 fn main() {
     // ① 冻结屏幕（必须在覆盖层出现之前完成）

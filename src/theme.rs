@@ -9,3 +9,9 @@ pub const ACCENT: u32 = 0xFF6A00FF;
 pub const PIN_BORDER: u32 = 0xFF6A0099;
 /// 提示条/卡片底色：深灰蓝 90%
 pub const CHIP_BG: u32 = 0x16161DE6;
+/// 提示条文字：浅灰
+pub const HINT_TEXT: u32 = 0xAAAAAAFF;
+/// 工具条按钮文字：近白
+pub const BTN_TEXT: u32 = 0xEEEEEEFF;
+/// 工具条按钮 hover 底色：15% 白
+pub const BTN_HOVER_BG: u32 = 0xFFFFFF26;

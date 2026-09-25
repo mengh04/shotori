@@ -91,7 +91,9 @@ fn convert_to_rgba(
         let src_row = &bytes[y * stride as usize..][..(w * 4) as usize];
         let dst_y = if y_invert { h as usize - 1 - y } else { y };
         let dst_row = &mut rgba[dst_y * (w * 4) as usize..][..(w * 4) as usize];
-        for (px, chunk) in src_row.chunks_exact(4).zip(dst_row.chunks_exact_mut(4)) {
+        let (src_chunks, _) = src_row.as_chunks::<4>();
+        let (dst_chunks, _) = dst_row.as_chunks_mut::<4>();
+        for (px, chunk) in src_chunks.iter().zip(dst_chunks) {
             if is_xrgb {
                 // B,G,R,(A) → R,G,B,A
                 chunk[0] = px[2];
