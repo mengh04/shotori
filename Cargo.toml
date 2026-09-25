@@ -22,3 +22,9 @@ png = "0.17"
 # 必须与 gpui-pre 同版本，当前 0.25.10）
 image = "0.25"
 smallvec = "1"
+
+# 本地 vendor fork（上游 review 慢，先用补丁；上游合并后删除此段即可）
+# - set_layer_margin：layer-shell 表面运行时改 margin（贴图拖动原语）
+[patch.crates-io]
+gpui-pre = { path = "/home/mengh04/Workspace/vendor/gpui-pre" }
+gpui-pre-linux = { path = "/home/mengh04/Workspace/vendor/gpui-pre-linux" }
