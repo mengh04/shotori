@@ -159,6 +159,7 @@ impl Overlay {
             "[shotori] copied {w}x{h} (from {}) to clipboard",
             self.capture.output_name
         );
+        crate::notify::send("Shotori", &format!("Copied {w}×{h} → clipboard"));
         cx.quit();
     }
 

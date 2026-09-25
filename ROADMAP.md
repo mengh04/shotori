@@ -326,7 +326,7 @@ overlay 只剩装配。首批 12 个单元测试（不需要合成器）。
   process::exit 杀死，通知发一半就丢
 - notify-rust 4（zbus/D-Bus）；子进程失败静默（stderr 报一句），
   没 daemon 绝不影响截图功能
-- 纯图片复制不通知（覆盖层消失本身就是反馈）
+- 图片复制也通知（用户拍板：三类出口反馈统一——Copied WxH → clipboard）
 
 ### 备注
 - debug 后门 +save 动作（e2e 通知链路用）
