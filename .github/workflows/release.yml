@@ -33,8 +33,7 @@ jobs:
           strip target/release/shotori
           mkdir dist
           cp target/release/shotori LICENSE dist/
-          VERSION="${GITHUB_REF_NAME#v}"
-          tar -C dist -czf "shotori-${VERSION}-x86_64.tar.gz" shotori LICENSE
+          tar -C dist -czf "shotori-${GITHUB_REF_NAME}-x86_64.tar.gz" shotori LICENSE
 
       - uses: actions/upload-artifact@v4
         with:
@@ -80,7 +79,6 @@ jobs:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
           pacman -Sy --noconfirm git openssh >/dev/null
           install -dm700 /root/.ssh
           printf '%s\n' "$AUR_SSH_KEY" > /root/.ssh/aur
@@ -99,8 +97,8 @@ jobs:
           git config --global user.email "mengh04@users.noreply.github.com"
           git clone ssh://aur@aur.archlinux.org/shotori.git aur
           cd aur
-          SHA=$(sha256sum "../artifact/shotori-${VERSION}-x86_64.tar.gz" | cut -d' ' -f1)
-          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" PKGBUILD
+          SHA=$(sha256sum "../artifact/shotori-${GITHUB_REF_NAME}-x86_64.tar.gz" | cut -d' ' -f1)
+          sed -i "s/^pkgver=.*/pkgver=${GITHUB_REF_NAME#v}/" PKGBUILD
           sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
           sed -i "s/^sha256sums=.*/sha256sums=('${SHA}')/" PKGBUILD
           # makepkg refuses to run as root (exit 10); printsrcinfo only
@@ -110,7 +108,7 @@ jobs:
           cp PKGBUILD /home/builder/work/
           su builder -s /bin/bash -c "cd ~/work && makepkg --printsrcinfo" > .SRCINFO
           git add PKGBUILD .SRCINFO
-          git commit -m "shotori ${VERSION}-1"
+          git commit -m "shotori ${GITHUB_REF_NAME#v}-1"
           git push
 
   crates-io:
