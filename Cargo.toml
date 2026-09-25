@@ -7,37 +7,39 @@ license = "MIT"
 repository = "https://github.com/mengh04/shotori"
 keywords = ["screenshot", "wayland", "gpui", "screencopy", "clipboard"]
 categories = ["graphics", "multimedia::images", "command-line-utilities"]
-# 有多个 bin（shotori / screencap）时，裸 `cargo run` 默认跑主程序
+# With multiple bins (shotori / screencap), bare `cargo run` runs the main one
 default-run = "shotori"
 
 [dependencies]
 gpui-kit = "0.6"
 anyhow = "1.0"
 
-# screencopy 截图 + wlr-data-control 剪贴板（裸 wayland-client）
+# screencopy capture + wlr-data-control clipboard (raw wayland-client)
 wayland-client = "0.31"
 wayland-protocols-wlr = "0.3"
 memmap2 = "0.9"
 tempfile = "3"
 png = "0.18"
 
-# 内存图像 → gpui 显示（RenderImage 由 image crate 的 Frame 构成，
-# 必须与 gpui-pre 同版本，当前 0.25.10）
+# In-memory pixels → gpui display (RenderImage is built from the image
+# crate's Frames; must match gpui-pre's version, currently 0.25.10)
 image = "0.25"
 smallvec = "1"
 
-# 保存文件名的人类可读时间戳（gpui 生态已在依赖树中，零新增编译）
+# Human-readable timestamp for save filenames (chrono is already in the
+# gpui dep tree — zero extra compile)
 chrono = "0.4"
 
-# 桌面通知（org.freedesktop.Notifications over D-Bus）。
-# 从独立子进程发送（见 src/notify.rs）——cx.quit() 快速退出
-# 永远杀不掉一条已派发的通知
+# Desktop notifications (org.freedesktop.Notifications over D-Bus).
+# Sent from a detached child process (see src/notify.rs) so a quick
+# cx.quit() can never cut a notification off
 notify-rust = "4"
 
-# 贴图功能（依赖 vendor 的 set_layer_margin 补丁）在 `pin` 分支保存；
-# 上游合并补丁后可合回主干并恢复此处 [patch.crates-io] 或直接用上游版本
+# The pin (floating image) feature lives on the `pin` branch (it needs the
+# vendored set_layer_margin patch); once upstream merges it, the branch can
+# return to main without a [patch.crates-io] section
 #
-# ── 可选功能 ────────────────────────────────────────────────────────
+# ── Optional features ───────────────────────────────────────────────
 [features]
 # OCR is on by default (a core product feature; models auto-download to
 # ~/.local/share/shotori/ocr-models on first use, with a confirm dialog,
