@@ -61,6 +61,7 @@ fn main() {
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::base::init(cx);
+            shotori::ocr_setup::init(cx);
 
             // Keybindings are scoped by key_context
             cx.bind_keys([

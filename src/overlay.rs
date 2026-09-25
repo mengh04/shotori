@@ -31,6 +31,7 @@ pub struct Overlay {
     selection: Selection,
     /// First-run OCR setup (confirm → download progress), open while active
     ocr_setup: Option<Box<crate::ocr_setup::OcrSetup>>,
+    setup_focus: crate::ocr_setup::SetupFocus,
     /// OCR inference in flight → show the busy badge (spinner)
     ocr_busy: bool,
 }
@@ -62,6 +63,7 @@ impl Overlay {
             capture,
             selection: debug_selection(debug_targeted),
             ocr_setup: None,
+            setup_focus: crate::ocr_setup::SetupFocus::new(cx),
             ocr_busy: false,
         }
     }
@@ -209,6 +211,7 @@ impl Overlay {
 
         if crate::ocr::models_missing() {
             self.ocr_setup = Some(Box::new(crate::ocr_setup::OcrSetup::new(snapshot)));
+            self.setup_focus.focus_confirm(window, cx);
             cx.notify();
         } else {
             self.spawn_ocr(snapshot, window, cx);
@@ -239,7 +242,7 @@ impl Overlay {
     /// and the completion transition. The loop holds an Arc clone of the
     /// progress and the entity handle — no shared state mutation races with
     /// the UI thread.
-    fn ocr_setup_confirm(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn ocr_setup_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Retry after a failure needs a fresh progress arc
         let fresh = std::sync::Arc::new(crate::ocr::DownloadProgress::default());
         if let Some(setup) = self.ocr_setup.as_mut() {
@@ -257,11 +260,12 @@ impl Overlay {
             return;
         };
         let progress = setup.progress.clone();
+        self.setup_focus.focus_cancel(window, cx);
         crate::ocr::spawn_download(progress.clone());
         cx.notify();
 
         let entity = cx.entity();
-        let window_handle = _window.window_handle();
+        let window_handle = window.window_handle();
 
         cx.spawn(async move |_, cx| {
             let mut last = (0u64, 0u64, 0u8);
@@ -305,17 +309,24 @@ impl Overlay {
                     }
                 });
                 if let Some(crate::ocr_setup::Snapshot { w, h, rgba }) = snap {
+                    let _ = window_handle.update(cx, |_, window, cx| {
+                        let focus = entity.read(cx).focus_handle.clone();
+                        window.focus(&focus, cx);
+                    });
                     ocr_to_clipboard(w, h, rgba, window_handle, entity, cx).await;
                 }
             } else {
                 let err = progress.error();
-                entity.update(cx, |this, cx| {
-                    if let Some(setup) = this.ocr_setup.as_mut()
-                        && setup.owns_download(&progress)
-                    {
-                        setup.stage = crate::ocr_setup::Stage::Failed(err);
-                        cx.notify();
-                    }
+                let _ = window_handle.update(cx, |_, window, cx| {
+                    entity.update(cx, |this, cx| {
+                        if let Some(setup) = this.ocr_setup.as_mut()
+                            && setup.owns_download(&progress)
+                        {
+                            setup.stage = crate::ocr_setup::Stage::Failed(err);
+                            this.setup_focus.focus_confirm(window, cx);
+                            cx.notify();
+                        }
+                    });
                 });
             }
         })
@@ -324,7 +335,7 @@ impl Overlay {
 
     /// Setup dialog [Cancel]/[Close] and Esc: abort the download, clean up,
     /// back to plain selection mode.
-    fn ocr_setup_cancel(&mut self, cx: &mut Context<Self>) {
+    fn ocr_setup_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(setup) = self.ocr_setup.as_ref() {
             setup
                 .progress
@@ -332,6 +343,7 @@ impl Overlay {
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         self.ocr_setup = None;
+        window.focus(&self.focus_handle, cx);
         cx.notify();
     }
 }
@@ -417,7 +429,11 @@ impl Render for Overlay {
         // chain (see ROADMAP v0.6.2 pitfall notes)
         let base = div()
             .id("shotori-overlay")
-            .key_context("ShotoriOverlay")
+            .key_context(if self.ocr_setup.is_some() {
+                "ShotoriOcrSetup"
+            } else {
+                "ShotoriOverlay"
+            })
             .size_full()
             .relative()
             .track_focus(&self.focus_handle)
@@ -442,8 +458,9 @@ impl Render for Overlay {
                 }),
             )
             .on_action(
-                cx.listener(|this, _: &crate::ocr_setup::OcrSetupCancel, _, cx| {
-                    this.ocr_setup_cancel(cx);
+                cx.listener(|this, _: &crate::ocr_setup::OcrSetupCancel, window, cx| {
+                    this.ocr_setup_cancel(window, cx);
+                    cx.stop_propagation();
                 }),
             );
 
@@ -451,7 +468,7 @@ impl Render for Overlay {
         let setup_el: Option<AnyElement> = self
             .ocr_setup
             .as_ref()
-            .map(|s| crate::ocr_setup::setup_card(s).into_any_element());
+            .map(|s| crate::ocr_setup::setup_card(s, &self.setup_focus).into_any_element());
 
         // OCR-in-flight spinner badge, centered on the selection
         let busy_el: Option<AnyElement> = self
@@ -464,9 +481,9 @@ impl Render for Overlay {
             // focus path and never reaches App::on_action — exiting must
             // happen here. With the setup dialog open, Esc cancels the
             // dialog instead (aborting any download).
-            .on_action(cx.listener(|this, _: &QuitOverlay, _, cx| {
+            .on_action(cx.listener(|this, _: &QuitOverlay, window, cx| {
                 if this.ocr_setup.is_some() {
-                    this.ocr_setup_cancel(cx);
+                    this.ocr_setup_cancel(window, cx);
                     cx.stop_propagation();
                     return;
                 }
@@ -512,11 +529,15 @@ impl Render for Overlay {
             // selection_chrome)
             .children(sel.map(selection_chrome).unwrap_or_default())
             // ④ Toolbar: appears only after release (no flicker while dragging)
-            .children(if let Selection::Selected { bounds } = self.selection {
-                Some(selection_toolbar(round_px(bounds), ws))
-            } else {
-                None
-            })
+            .children(
+                if let Selection::Selected { bounds } = self.selection
+                    && self.ocr_setup.is_none()
+                {
+                    Some(selection_toolbar(round_px(bounds), ws))
+                } else {
+                    None
+                },
+            )
             // ⑤ Bottom hint bar
             .child(hint_bar())
             // ⑥ OCR busy badge (spinner on the selection)

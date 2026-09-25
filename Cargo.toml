@@ -52,3 +52,6 @@ default-features = false
 # Post-download integrity check (expected hashes ship in the model spec)
 [dependencies.sha2]
 version = "0.11"
+
+[dev-dependencies]
+gpui-kit = { version = "0.6", features = ["test-support"] }

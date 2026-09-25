@@ -81,6 +81,10 @@ A toolbar with equivalent buttons appears below the selection after release.
   reaches its 10-second timeout. Already verified models are kept for retry.
   They live in `~/.local/share/shotori/ocr-models/` and are reused from
   then on.
+- In the setup dialog, `←` / `→` or `h` / `l` cycles through buttons and
+  `Enter` activates the focused button. `Esc` cancels or closes
+  setup and returns to the selection. Download/Retry receives initial focus;
+  while downloading, focus moves to Cancel.
 - The engine prewarms while you draw the selection, so recognition
   typically finishes within a few hundred milliseconds of pressing
   `Ctrl+O`; a spinner badge marks the wait.
