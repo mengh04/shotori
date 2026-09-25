@@ -64,8 +64,30 @@
 ### 开发后门
 - `SACCADE_DEBUG_SELECTION=x,y,w,h`：注入现成选区（自动化验证选区 UI 用）
 - `SACCADE_DEBUG_ACTION=copy`：启动 1.5s 后自动触发复制动作——无头 e2e 的唯一入口
-  （验证套路：`SACCADE_DEBUG_SELECTION=... SACCADE_DEBUG_ACTION=copy ./saccade & sleep 4;
+  （验证套路：`SACCADE_DEBUG_TARGET=HDMI-A-1 SACCADE_DEBUG_SELECTION=... SACCADE_DEBUG_ACTION=copy ./saccade & sleep 4;
   wl-paste --type image/png | 尺寸断言`）
+- `SACCADE_DEBUG_TARGET=<输出名>`：多屏下限定后门只作用于目标屏（全开会打架）
+
+## v0.3 多屏支持（2026-09-26 凌晨）
+
+### 功能
+- capture_all_outputs()：一条连接捕获全部输出（三屏 ~350ms 含编码），每屏一个 Capture
+- **每块输出一个覆盖层窗口**（display_id 钉屏），选区/裁剪/复制独立，
+  Enter/Esc 作用于"你交互的那块屏"（niri 的 exclusive layer 键盘焦点跟随焦点输出——**待用户实测**）
+- 裁剪的自算 scale 天然兼容各屏不同 scale（eDP 2.0 / DP-2 1.5 / HDMI 1.0）
+- screencap --all：每屏一张调试图
+
+### 结案记录（多屏篇）
+- **gpui 的 display bounds 坐标 = 输出逻辑位置 ÷ wl_output 整数 scale**（backend 自己除的，
+  对拍实测：eDP 1920,0→960,0；DP-2 -720,-100→-360,-50）。匹配 display 时必须用同一套算法
+- **wl_output.scale 是整数**：1.5x 屏报 2（ceil），真值要走 fractional 协议（输出级拿不到）。
+  所以尺寸匹配不可行，改用位置匹配（多屏布局 origin 唯一）
+- **transform 语义实测**：niri "90° counter-clockwise"（Transform::_90）= 把 buffer **顺时针**转
+  90° 填进面板，与协议字面相反。rotate_rgba 按 grim 对拍校准；Flipped 系罕见未处理
+- **教训：壁纸轮播毁对拍**——DP-2 的照片壁纸会换方向，跨时间的 grim 对比相关性可乱到 0.54；
+  验证姿势：grim→screencap→grim 一秒窗口内三方对比
+- 剩余限制：选区不能跨屏；旋转+翻转组合（Flipped90 等）未实现；非 niri 合成器多 Exclusive
+  覆盖层的键盘行为未知
 
 ## v0.2.1 剪贴板复制（2026-09-25 深夜）
 

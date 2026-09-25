@@ -1,10 +1,10 @@
-//! # 屏幕捕获库：wlr-screencopy 的封装
+//! # 屏幕捕获库：wlr-screencopy 的封装（多输出版）
 //!
-//! 独立 Wayland 连接 → 绑 global → 申请一帧 → 共享内存收像素 → 转 RGBA8。
-//! 与 gpui 的 Wayland 连接互不干扰（一次性同步捕获，~15ms）。
+//! 独立 Wayland 连接 → 绑 global → 每块屏一个 frame → 共享内存收像素 → 转 RGBA8。
+//! 与 gpui 的 Wayland 连接互不干扰（一次性同步捕获，单屏 ~15ms，三屏 ~30ms）。
 //!
-//! v1 限制：只捕获 registry 里第一个 wl_output（与覆盖层落点一致性靠 compositor
-//! 的选择，多屏场景待 ext-image-copy-capture / display_id 方案，见 ROADMAP）。
+//! 每个 [`Capture`] 自带输出的全局逻辑位置与 scale——这是把覆盖层窗口
+//! 钉回"它截的那块屏"的匹配依据（见 main.rs）。
 
 use std::fs::File;
 use std::os::fd::AsFd;
@@ -18,58 +18,112 @@ use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_manager_v1::{self, ZwlrScreencopyManagerV1},
 };
 
-/// 一次成功的捕获
+/// 一次成功的捕获（一块屏）
 pub struct Capture {
     pub output_name: String,
+    /// 输出的全局逻辑位置（wl_output::Geometry）
+    pub logical_pos: (i32, i32),
+    /// wl_output 报的 scale——**整数版**（1.5x 屏会报 2）。gpui 的 display
+    /// bounds origin = 逻辑位置 ÷ 这个值（backend 自己除的，对拍实测），
+    /// 匹配时必须用同一套算法
+    pub scale: f32,
+    /// 输出几何 transform（DP-2 是 90°：物理 buffer 横的，屏幕竖的）
+    pub transform: wl_output::Transform,
+    /// 物理尺寸（**已按 transform 旋转后**，与屏幕所见方向一致）
     pub width: u32,
     pub height: u32,
-    /// 已经转成 RGBA8、已处理 Y 翻转的像素（可直接喂给 gpui 的 RenderImage）
+    /// 已经转成 RGBA8、已处理 Y 翻转、已按 transform 旋转的像素
     pub rgba: Vec<u8>,
 }
 
-/// 捕获第一个输出（整屏）
-pub fn capture_first_output() -> anyhow::Result<Capture> {
+impl Capture {
+    /// 输出是否带旋转变换（日志/调试用）
+    pub fn rotated(&self) -> bool {
+        self.transform != wl_output::Transform::Normal
+    }
+}
+
+/// 捕获所有输出（至少要有一块，否则报错）
+pub fn capture_all_outputs() -> anyhow::Result<Vec<Capture>> {
     let conn = Connection::connect_to_env()?;
     let mut queue = conn.new_event_queue();
     let qh = queue.handle();
     conn.display().get_registry(&qh, ());
 
     let mut app = App::default();
-    queue.roundtrip(&mut app)?; // globals 到手
+    queue.roundtrip(&mut app)?; // globals 到手（含全部 wl_output）
 
     let manager = app
         .manager
         .take()
         .ok_or_else(|| anyhow::anyhow!("compositor 不支持 zwlr_screencopy_manager_v1"))?;
-    let output = app
-        .output
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("没有可用的 wl_output"))?
-        .clone();
+    if app.outputs.is_empty() {
+        anyhow::bail!("没有可用的 wl_output");
+    }
+    queue.roundtrip(&mut app)?; // 各输出的 name/geometry/scale 到手
 
-    let _frame = manager.capture_output(0, &output, &qh, ());
-    queue.roundtrip(&mut app)?; // buffer 事件 → copy 请求
+    // 每块屏各开一个捕获帧
+    for i in 0..app.outputs.len() {
+        let output = app.outputs[i].output.clone();
+        let frame = manager.capture_output(0, &output, &qh, i);
+        app.outputs[i].frame = Some(FrameState {
+            proxy: frame,
+            info: None,
+            y_invert: false,
+            ready: false,
+            failed: false,
+            mmap: None,
+            buffer: None,
+            file: None,
+        });
+    }
+    queue.roundtrip(&mut app)?; // buffer 事件 → 各自建 shm buffer 并请求拷贝
 
-    while !app.ready && !app.failed {
+    while !app
+        .outputs
+        .iter()
+        .all(|o| o.frame.as_ref().is_some_and(|f| f.ready || f.failed))
+    {
         queue.blocking_dispatch(&mut app)?;
     }
-    if app.failed {
-        anyhow::bail!("compositor 拒绝了这次截图（failed 事件）");
+
+    // 收集成功的那部分（单屏失败不拖累其他屏）
+    let mut caps = Vec::new();
+    for o in &mut app.outputs {
+        let Some(f) = o.frame.as_mut() else { continue };
+        if f.failed {
+            eprintln!("[saccade] {} 捕获失败，跳过", o.name);
+            continue;
+        }
+        let (format, w, h, stride, y_invert) =
+            f.take_frame_info().expect("ready 了必有 buffer 信息");
+        let mmap = f.mmap.take().expect("没有 mmap");
+        let rgba = convert_to_rgba(&mmap[..], format, w, h, stride, y_invert);
+        // 物理 buffer 是"躺"的，按输出 transform 旋成屏幕所见方向（见 rotate_rgba）
+        let rgba = rotate_rgba(rgba, w as u32, h as u32, o.transform);
+        let (rw, rh) = rotated_size(w as u32, h as u32, o.transform);
+        caps.push(Capture {
+            output_name: o.name.clone(),
+            logical_pos: o.logical_pos,
+            scale: o.scale,
+            transform: o.transform,
+            width: rw,
+            height: rh,
+            rgba,
+        });
     }
+    if caps.is_empty() {
+        anyhow::bail!("所有输出的捕获都失败了");
+    }
+    Ok(caps)
+}
 
-    let (format, w, h, stride, y_invert, output_name) = app
-        .take_frame_info(app.output_name.clone())
-        .expect("没收到 buffer 事件");
-
-    let mmap = app.mmap.take().expect("没有 mmap");
-    let rgba = convert_to_rgba(&mmap[..], format, w, h, stride, y_invert);
-
-    Ok(Capture {
-        output_name,
-        width: w as u32,
-        height: h as u32,
-        rgba,
-    })
+/// 兼容入口：只取第一块屏（screencap 调试前端用）
+pub fn capture_first_output() -> anyhow::Result<Capture> {
+    capture_all_outputs()?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("没有任何输出"))
 }
 
 /// wl_shm 格式名描述 32 位字的位序（MSB→LSB），小端内存字节序正好相反：
@@ -112,20 +166,69 @@ fn convert_to_rgba(
     rgba
 }
 
+/// transform 后的尺寸（90/270 交换宽高）
+fn rotated_size(w: u32, h: u32, t: wl_output::Transform) -> (u32, u32) {
+    use wl_output::Transform::*;
+    match t {
+        Normal | Flipped | Flipped180 => (w, h),
+        _ => (h, w),
+    }
+}
+
+/// 按 wl_output transform 旋转像素，使方向与屏幕所见一致。
+/// 物理 buffer 是未变换方向。注意：niri 的 "90° counter-clockwise"（Transform::_90）
+/// 实测是把 buffer **顺时针**转 90° 填进面板（与 grim 对拍定位）。
+#[allow(clippy::just_underscores_and_digits)] // _90/_180/_270 是协议生成的枚举名
+fn rotate_rgba(rgba: Vec<u8>, w: u32, h: u32, t: wl_output::Transform) -> Vec<u8> {
+    use wl_output::Transform::*;
+    let (rw, _rh) = rotated_size(w, h, t);
+    let mut out = vec![0u8; rgba.len()];
+    for y in 0..h {
+        for x in 0..w {
+            let src = ((y * w + x) * 4) as usize;
+            let (dx, dy) = match t {
+                Normal | Flipped => (x, y),
+                // 注意：niri 的 "90° counter-clockwise"（Transform::_90）实测是把
+                // buffer **顺时针**转 90° 填进面板（与 grim 对拍定位，180° 差）
+                _90 => (h - 1 - y, x),
+                _180 | Flipped180 => (w - 1 - x, h - 1 - y),
+                _270 => (y, w - 1 - x),
+                // Flipped90/Flipped270 等罕见组合：先按 _90 处理（回头遇到再补）
+                _ => (h - 1 - y, x),
+            };
+            let dst = ((dy * rw + dx) * 4) as usize;
+            out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+        }
+    }
+    out
+}
+
 // ── Wayland 事件处理（每个绑定的协议对象一个 Dispatch 实现）──────────
 
 #[derive(Default)]
 struct App {
     shm: Option<wl_shm::WlShm>,
     manager: Option<ZwlrScreencopyManagerV1>,
-    output: Option<wl_output::WlOutput>,
-    output_name: String,
+    /// registry 顺序的全部输出（索引即各处 udata）
+    outputs: Vec<OutputState>,
+}
 
-    frame_info: Option<(wl_shm::Format, i32, i32, i32)>, // (format, w, h, stride)
+struct OutputState {
+    output: wl_output::WlOutput,
+    name: String,
+    logical_pos: (i32, i32),
+    scale: f32,
+    transform: wl_output::Transform,
+    frame: Option<FrameState>,
+}
+
+struct FrameState {
+    #[allow(dead_code)]
+    proxy: ZwlrScreencopyFrameV1,
+    info: Option<(wl_shm::Format, i32, i32, i32)>, // (format, w, h, stride)
     y_invert: bool,
     ready: bool,
     failed: bool,
-
     mmap: Option<memmap2::MmapMut>,
     #[allow(dead_code)]
     buffer: Option<wl_buffer::WlBuffer>,
@@ -133,14 +236,11 @@ struct App {
     file: Option<File>,
 }
 
-impl App {
-    fn take_frame_info(
-        &mut self,
-        output_name: String,
-    ) -> Option<(wl_shm::Format, i32, i32, i32, bool, String)> {
-        self.frame_info
+impl FrameState {
+    fn take_frame_info(&mut self) -> Option<(wl_shm::Format, i32, i32, i32, bool)> {
+        self.info
             .take()
-            .map(|(f, w, h, s)| (f, w, h, s, self.y_invert, output_name))
+            .map(|(f, w, h, s)| (f, w, h, s, self.y_invert))
     }
 }
 
@@ -164,8 +264,18 @@ impl Dispatch<wl_registry::WlRegistry, ()> for App {
                 "zwlr_screencopy_manager_v1" => {
                     state.manager = Some(registry.bind(name, version.min(3), qh, ()))
                 }
-                "wl_output" if state.output.is_none() => {
-                    state.output = Some(registry.bind(name, version.min(4), qh, ()))
+                "wl_output" => {
+                    // 绑全部输出；udata = 索引
+                    let idx = state.outputs.len();
+                    let output = registry.bind(name, version.min(4), qh, idx);
+                    state.outputs.push(OutputState {
+                        output,
+                        name: String::new(),
+                        logical_pos: (0, 0),
+                        scale: 1.,
+                        transform: wl_output::Transform::Normal,
+                        frame: None,
+                    });
                 }
                 _ => {}
             }
@@ -173,17 +283,28 @@ impl Dispatch<wl_registry::WlRegistry, ()> for App {
     }
 }
 
-impl Dispatch<wl_output::WlOutput, ()> for App {
+impl Dispatch<wl_output::WlOutput, usize> for App {
     fn event(
         state: &mut Self,
         _: &wl_output::WlOutput,
         event: wl_output::Event,
-        _: &(),
+        idx: &usize,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_output::Event::Name { name } = event {
-            state.output_name = name;
+        let Some(o) = state.outputs.get_mut(*idx) else {
+            return;
+        };
+        match event {
+            wl_output::Event::Name { name } => o.name = name,
+            wl_output::Event::Geometry {
+                x, y, transform, ..
+            } => {
+                o.logical_pos = (x, y);
+                o.transform = transform.into_result().unwrap_or(wl_output::Transform::Normal);
+            }
+            wl_output::Event::Scale { factor } => o.scale = factor as f32,
+            _ => {}
         }
     }
 }
@@ -236,17 +357,57 @@ impl Dispatch<wl_buffer::WlBuffer, ()> for App {
     }
 }
 
-impl Dispatch<ZwlrScreencopyFrameV1, ()> for App {
+impl App {
+    fn frame_mut(&mut self, idx: usize) -> Option<&mut FrameState> {
+        self.outputs.get_mut(idx)?.frame.as_mut()
+    }
+
+    /// Buffer 事件的完整处理：记录元信息 → 建 shm 池/缓冲 → 请求拷贝 → 资源挂回
+    #[allow(clippy::too_many_arguments)]
+    fn handle_buffer(
+        state: &mut Self,
+        frame: &ZwlrScreencopyFrameV1,
+        idx: usize,
+        qh: &QueueHandle<Self>,
+        fmt: wl_shm::Format,
+        w: i32,
+        h: i32,
+        stride: i32,
+    ) {
+        if let Some(f) = state.frame_mut(idx) {
+            f.info = Some((fmt, w, h, stride));
+        }
+        let size = (stride as i64 * h as i64) as u64;
+
+        let file = tempfile::tempfile().expect("创建临时文件");
+        file.set_len(size).expect("设定文件长度");
+        let mmap = unsafe { memmap2::MmapMut::map_mut(&file).expect("mmap") };
+
+        let shm = state.shm.as_ref().expect("没有 wl_shm？");
+        let pool = shm.create_pool(file.as_fd(), size as i32, qh, ());
+        let buffer = pool.create_buffer(0, w, h, stride, fmt, qh, ());
+        frame.copy(&buffer);
+
+        if let Some(f) = state.frame_mut(idx) {
+            f.file = Some(file);
+            f.mmap = Some(mmap);
+            f.buffer = Some(buffer);
+        }
+    }
+}
+
+impl Dispatch<ZwlrScreencopyFrameV1, usize> for App {
     fn event(
         state: &mut Self,
         frame: &ZwlrScreencopyFrameV1,
         event: zwlr_screencopy_frame_v1::Event,
-        _: &(),
+        idx: &usize,
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
         match event {
-            // compositor 告知这帧的格式/尺寸/行距 → 造 shm buffer 并请求拷贝
+            // compositor 告知这帧的格式/尺寸/行距 → 造 shm buffer 并请求拷贝。
+            // 建池要只读借用 state.shm，与上面的可变借用冲突 → 挪进独立方法分段借用
             zwlr_screencopy_frame_v1::Event::Buffer {
                 format,
                 width,
@@ -254,37 +415,34 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for App {
                 stride,
             } => {
                 let fmt = format.into_result().unwrap_or(wl_shm::Format::Xrgb8888);
-                state.frame_info = Some((fmt, width as i32, height as i32, stride as i32));
-                let size = (stride as i64 * height as i64) as u64;
-
-                let file = tempfile::tempfile().expect("创建临时文件");
-                file.set_len(size).expect("设定文件长度");
-                let mmap = unsafe { memmap2::MmapMut::map_mut(&file).expect("mmap") };
-
-                let shm = state.shm.as_ref().expect("没有 wl_shm？");
-                let pool = shm.create_pool(file.as_fd(), size as i32, qh, ());
-                let buffer = pool.create_buffer(
-                    0,
+                Self::handle_buffer(
+                    state,
+                    frame,
+                    *idx,
+                    qh,
+                    fmt,
                     width as i32,
                     height as i32,
                     stride as i32,
-                    fmt,
-                    qh,
-                    (),
                 );
-                frame.copy(&buffer);
-
-                state.file = Some(file);
-                state.mmap = Some(mmap);
-                state.buffer = Some(buffer);
             }
             zwlr_screencopy_frame_v1::Event::Flags { flags } => {
-                state.y_invert = flags
-                    .into_result()
-                    .is_ok_and(|f| f.contains(zwlr_screencopy_frame_v1::Flags::YInvert));
+                if let Some(f) = state.frame_mut(*idx) {
+                    f.y_invert = flags
+                        .into_result()
+                        .is_ok_and(|f| f.contains(zwlr_screencopy_frame_v1::Flags::YInvert));
+                }
             }
-            zwlr_screencopy_frame_v1::Event::Ready { .. } => state.ready = true,
-            zwlr_screencopy_frame_v1::Event::Failed => state.failed = true,
+            zwlr_screencopy_frame_v1::Event::Ready { .. } => {
+                if let Some(f) = state.frame_mut(*idx) {
+                    f.ready = true;
+                }
+            }
+            zwlr_screencopy_frame_v1::Event::Failed => {
+                if let Some(f) = state.frame_mut(*idx) {
+                    f.failed = true;
+                }
+            }
             _ => {}
         }
     }

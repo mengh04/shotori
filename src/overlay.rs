@@ -47,9 +47,17 @@ impl Overlay {
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
 
+        // 开发后门仅作用于目标屏（多屏下每个覆盖层都会跑到这里，全开会互相打架）：
+        // SACCADE_DEBUG_TARGET=<输出名> 限定；不设 = 全部生效
+        let debug_targeted = std::env::var("SACCADE_DEBUG_TARGET")
+            .map(|t| t == capture.output_name)
+            .unwrap_or(true);
+
         // 开发后门：SACCADE_DEBUG_ACTION=copy，1.5s 后自动触发复制——
         // 无头 e2e 的唯一入口（虚拟指针在 niri 上不可用，见 ROADMAP）
-        if std::env::var("SACCADE_DEBUG_ACTION").ok().as_deref() == Some("copy") {
+        if debug_targeted
+            && std::env::var("SACCADE_DEBUG_ACTION").ok().as_deref() == Some("copy")
+        {
             let win = window.window_handle();
             cx.spawn(async move |this, cx| {
                 cx.background_executor()
@@ -67,23 +75,25 @@ impl Overlay {
             frozen,
             capture,
             display_id,
-            // 开发后门：SACCADE_DEBUG_SELECTION=x,y,w,h 注入现成选区
-            // （自动化验证工具条/选区渲染用，正常启动不受影响）
-            selection: std::env::var("SACCADE_DEBUG_SELECTION")
-                .ok()
-                .and_then(|s| {
-                    let v: Vec<f32> = s
-                        .split(',')
-                        .filter_map(|n| n.trim().parse().ok())
-                        .collect();
-                    (v.len() == 4).then(|| Selection::Selected {
-                        bounds: Bounds {
-                            origin: point(px(v[0]), px(v[1])),
-                            size: size(px(v[2]), px(v[3])),
-                        },
+            selection: if debug_targeted {
+                std::env::var("SACCADE_DEBUG_SELECTION")
+                    .ok()
+                    .and_then(|s| {
+                        let v: Vec<f32> = s
+                            .split(',')
+                            .filter_map(|n| n.trim().parse().ok())
+                            .collect();
+                        (v.len() == 4).then(|| Selection::Selected {
+                            bounds: Bounds {
+                                origin: point(px(v[0]), px(v[1])),
+                                size: size(px(v[2]), px(v[3])),
+                            },
+                        })
                     })
-                })
-                .unwrap_or(Selection::Idle),
+                    .unwrap_or(Selection::Idle)
+            } else {
+                Selection::Idle
+            },
         }
     }
 
