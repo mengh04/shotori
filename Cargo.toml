@@ -7,8 +7,6 @@ license = "MIT"
 repository = "https://github.com/mengh04/shotori"
 keywords = ["screenshot", "wayland", "gpui", "screencopy", "clipboard"]
 categories = ["graphics", "multimedia::images", "command-line-utilities"]
-# With multiple bins (shotori / screencap), bare `cargo run` runs the main one
-default-run = "shotori"
 
 [dependencies]
 gpui-kit = "0.6"

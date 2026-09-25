@@ -1,53 +1,53 @@
 # Shotori
 
-**A Wayland-first screenshot tool with built-in OCR, drawn entirely by hand with [gpui-kit](https://crates.io/crates/gpui-kit).**
+[![Crates.io](https://img.shields.io/crates/v/shotori.svg)](https://crates.io/crates/shotori)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Wayland-8892bf)
 
-[English](README.md) · [简体中文](README.zh-CN.md)
+A Wayland-native screenshot tool with built-in, on-device OCR — the entire UI
+hand-drawn with [gpui-kit](https://crates.io/crates/gpui-kit).
 
 Freeze the screen, drag a selection, then copy it, save it, or read the text
 out of it — all without leaving the keyboard.
 
-![workflow](https://img.shields.io/badge/platform-Linux%20%2F%20Wayland-8892bf) ![license](https://img.shields.io/badge/license-MIT-blue)
+**[简体中文](README.zh-CN.md)**
 
 ## Features
 
-- **Region screenshot** — drag to select; the rest of the screen dims and the
-  selection "sees through". A size label follows the selection live.
-- **Multi-monitor done right** — one overlay per output, pinned to the screen
-  it captured. Mixed scales (1.0 / 1.5 / 2.0) and rotated outputs (portrait
-  panels) are handled; tested on a three-monitor niri setup.
-- **Copy** (`Enter` / `Ctrl+C`) — PNG to the Wayland clipboard via a resident
-  background daemon (the wl-copy model), so the clipboard outlives the tool.
-- **Save** (`Ctrl+S`) — timestamped PNG into `~/Pictures/Shotori/`, automatic
-  suffixes on name collisions.
-- **OCR** (`Ctrl+O`) — on-device text recognition (PP-OCRv6 small via ONNX
-  Runtime), text straight to the clipboard. Chinese/English mixed content
-  works. The engine prewarms while you draw the selection; a spinner badge
-  shows while inferring.
-  - First use shows a confirm card, a byte-accurate progress bar, and a
-    cancel button. Models (~31 MB, from ModelScope) are verified by sha256
-    and written atomically — a cancelled download never leaves garbage.
-    Cached in `~/.local/share/shotori/ocr-models/`.
+- **Region selection** — the screen freezes, everything outside your
+  selection dims, and a live size label follows the drag.
+- **Multi-monitor aware** — one overlay per output, pinned to the screen it
+  captured. Mixed scales (1× / 1.5× / 2×) and rotated (portrait) outputs are
+  handled.
+- **Copy to clipboard** (`Enter` / `Ctrl+C`) — PNG served by a resident
+  background daemon (the `wl-copy` model), so the clipboard outlives the
+  process that filled it.
+- **Save to disk** (`Ctrl+S`) — timestamped PNGs in `~/Pictures/Shotori/`,
+  with automatic suffixes on name collisions.
+- **OCR** (`Ctrl+O`) — on-device text recognition (PP-OCRv6 via ONNX
+  Runtime) straight to the clipboard. Works on mixed Chinese/English
+  content, runs fully offline after a one-time model download.
 - **Desktop notifications** — every exit (copy / save / OCR) reports back
-  with a thumbnail of the screenshot, via `org.freedesktop.Notifications`.
-- No selection + `Enter` = full-screen capture. Everything works from a
-  keybinding; notifications mean you never needed a terminal.
+  with a thumbnail of the screenshot.
+- **No-terminal friendly** — everything works from a keybinding;
+  notifications are the feedback channel.
 
 ## Requirements
 
-- Linux + a wlroots-adjacent Wayland compositor (niri, sway, Hyprland, …)
+- Linux with a wlroots-adjacent Wayland compositor (niri, sway, Hyprland, …)
   exposing `zwlr_screencopy-unstable-v1` and `zwlr-data-control-v1`.
-- A notification daemon is optional (copy/save/OCR work fine without one).
-- OCR adds ONNX Runtime at build time (a prebuilt library is downloaded
-  automatically by the build script).
+- A notification daemon (dunst, mako, swaync, …) is optional — copy, save
+  and OCR work fine without one.
+- Building with the default features downloads a prebuilt ONNX Runtime
+  during compilation.
 
-## Install
+## Installation
 
 ```bash
 cargo install shotori
 ```
 
-Then bind it, e.g. in niri's `binds.kdl`:
+Bind it to a key, e.g. in niri:
 
 ```kdl
 Mod+Shift+S { spawn "shotori"; }
@@ -55,51 +55,56 @@ Mod+Shift+S { spawn "shotori"; }
 
 ## Usage
 
-```
-shotori            # freeze all screens, select, act
-```
+Run `shotori`; every screen freezes and a selection overlay appears.
 
-| Key | Action |
-|-----|--------|
-| drag | select a region (press again to re-select) |
-| `Enter` / `Ctrl+C` | copy selection (or full screen) to clipboard |
-| `Ctrl+S` | save selection as PNG |
-| `Ctrl+O` | OCR selection → text to clipboard |
-| `Esc` (while dragging) | abandon this drag |
-| `Esc` (otherwise) | exit |
+| Key              | Action                                        |
+| ---------------- | --------------------------------------------- |
+| drag             | select a region                               |
+| `Enter` / `Ctrl+C` | copy the selection (or the full screen) to the clipboard |
+| `Ctrl+S`         | save the selection as PNG                     |
+| `Ctrl+O`         | OCR the selection → text to the clipboard     |
+| `Esc` (dragging) | abandon the current drag                      |
+| `Esc`            | exit                                          |
 
-A toolbar with the same actions appears under the selection after release.
+A toolbar with equivalent buttons appears below the selection after release.
 
-### OCR notes
+### OCR
 
 - The engine is PP-OCRv6 small (detection + orientation + recognition),
-  running fully offline once the one-time model download is done.
-- Small text (< ~16 px on a 1080p screen) struggles; HiDPI screens do
-  better (more physical pixels).
-- OCR is a default feature. For a slimmer binary without it:
-  `cargo install shotori --no-default-features`.
+  running locally through ONNX Runtime.
+- First use opens a confirmation card, then a progress bar with a cancel
+  button. Models (~31 MB, fetched from ModelScope) are verified with sha256
+  and installed atomically — a cancelled download leaves nothing behind.
+  They live in `~/.local/share/shotori/ocr-models/` and are reused from
+  then on.
+- The engine prewarms while you draw the selection, so recognition
+  typically finishes within a few hundred milliseconds of pressing
+  `Ctrl+O`; a spinner badge marks the wait.
+- Small text (< ~16 px on a 1080p-class screen) strains the model; HiDPI
+  screens fare better.
+- OCR is a default feature. For a lighter binary without it:
+
+  ```bash
+  cargo install shotori --no-default-features
+  ```
 
 ## Building from source
 
 ```bash
+git clone https://github.com/mengh04/shotori
+cd shotori
 cargo build --release
-cargo test                        # 21 unit tests, no compositor needed
-cargo build --no-default-features # slim build without OCR
-```
-
-Also ships `screencap`, a small debugging front end for the capture code:
-
-```bash
-cargo run --bin screencap -- --all
+cargo test                          # unit tests, no compositor needed
+cargo build --no-default-features   # slim build without OCR
 ```
 
 ## Design notes
 
-The interesting bits — the resident-offer clipboard model, display matching
-under mixed scales, transform semantics that contradict the protocol
-wording, pixel-forensics on a 1 px seam bug — are written up in
+The resident-offer clipboard model, display matching under mixed scales,
+output transforms that contradict their protocol names, and a pixel-level
+forensics story about a 1 px seam bug are written up in
 [ROADMAP.md](ROADMAP.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](LICENSE)

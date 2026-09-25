@@ -571,3 +571,12 @@ fight the virtual mouse.
 - Knock-on: the lock re-resolution bumped sha2 to the hybrid-array
   version whose finalize() output no longer implements LowerHex — digest
   formatting is now manual and version-agnostic
+
+## v0.7.0 addendum: screencap removed (2026-09-26)
+
+- The spike-era debug front end (`screencap --all`) is gone from the
+  package: the user prefers a single-purpose crate, and it had no runtime
+  role. Its calibration history (grim cross-checks) stays recorded above.
+- README restructured to the standard layout (badges, features,
+  requirements, install, usage, OCR notes, build, license); Chinese
+  README mirrors it.

@@ -1,40 +1,38 @@
 # Shotori
 
-**Wayland 优先的截图工具，内置 OCR，UI 全部用 [gpui-kit](https://crates.io/crates/gpui-kit) 自绘。**
+[![Crates.io](https://img.shields.io/crates/v/shotori.svg)](https://crates.io/crates/shotori)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Wayland-8892bf)
 
-[English](README.md) · [简体中文](README.zh-CN.md)
+Wayland 原生的截图工具，内置本地 OCR——整套 UI 用
+[gpui-kit](https://crates.io/crates/gpui-kit) 手绘。
 
-冻结屏幕、拖框选区，然后复制、保存，或者把图里的文字直接读出来——全程不用碰鼠标。
+冻结屏幕、拖框选区，然后复制、保存，或者把图里的文字直接读出来——
+全程不用碰鼠标。
 
-![workflow](https://img.shields.io/badge/platform-Linux%20%2F%20Wayland-8892bf) ![license](https://img.shields.io/badge/license-MIT-blue)
+**[English](README.md)**
 
 ## 功能
 
-- **区域截图**——拖拽框选，四周变暗、选区"透视"，实时尺寸标签跟随。
-- **多屏正确处理**——每块输出一个覆盖层窗口，钉在它截获的那块屏上。
-  混合缩放（1.0 / 1.5 / 2.0）与旋转输出（竖屏面板）都支持；在三屏
-  niri 环境实测。
-- **复制**（`Enter` / `Ctrl+C`）——PNG 经驻留后台分身进 Wayland 剪贴板
-  （wl-copy 同款模型），剪贴板内容活得比工具本身久。
-- **保存**（`Ctrl+S`）——带时间戳的 PNG 落到 `~/Pictures/Shotori/`，
-  同秒重名自动加后缀。
-- **OCR**（`Ctrl+O`）——本地文字识别（PP-OCRv6 small，ONNX Runtime），
-  文本直接进剪贴板，中英混排可用。你画选区时引擎在后台预热；推理期间
-  选区中心显示转圈徽章。
-  - 首次使用弹确认卡片、字节级进度条、可随时取消。模型（~31MB，来自
-    ModelScope）下载后经 sha256 校验、原子落盘——取消的下载不留垃圾。
-    缓存位置：`~/.local/share/shotori/ocr-models/`。
-- **桌面通知**——复制 / 保存 / OCR 三个出口都带截图缩略图反馈
-  （`org.freedesktop.Notifications`）。
-- 无选区按 `Enter` = 全屏截图。从键位启动一切正常工作；有通知就永远
-  不需要终端。
+- **区域选择**——屏幕冻结，选区之外变暗，实时尺寸标签跟随拖拽。
+- **多屏感知**——每块输出一个覆盖层，钉在它截获的那块屏上。混合缩放
+  （1× / 1.5× / 2×）与旋转（竖屏）输出都能正确处理。
+- **复制到剪贴板**（`Enter` / `Ctrl+C`）——PNG 由驻留后台分身伺服
+  （`wl-copy` 同款模型），剪贴板内容活得比填充它的进程久。
+- **保存到磁盘**（`Ctrl+S`）——带时间戳的 PNG 存入
+  `~/Pictures/Shotori/`，重名自动加后缀。
+- **OCR**（`Ctrl+O`）——本地文字识别（PP-OCRv6，ONNX Runtime），文本
+  直接进剪贴板。中英混排可用，一次性下载模型后完全离线。
+- **桌面通知**——复制 / 保存 / OCR 每个出口都带截图缩略图反馈。
+- **无需终端**——从键位启动一切正常；通知就是反馈通道。
 
 ## 环境要求
 
 - Linux + wlroots 系 Wayland 合成器（niri、sway、Hyprland……），需要
   `zwlr_screencopy-unstable-v1` 和 `zwlr-data-control-v1`。
-- 通知 daemon 可选（没有也不影响复制/保存/OCR）。
-- OCR 在构建期引入 ONNX Runtime（构建脚本自动下载预编译库）。
+- 通知 daemon（dunst、mako、swaync……）可选——没有也不影响复制、
+  保存和 OCR。
+- 默认 feature 构建时会在编译期下载预编译的 ONNX Runtime。
 
 ## 安装
 
@@ -42,7 +40,7 @@
 cargo install shotori
 ```
 
-然后绑键位，比如 niri 的 `binds.kdl`：
+绑到键位上，比如 niri：
 
 ```kdl
 Mod+Shift+S { spawn "shotori"; }
@@ -50,48 +48,50 @@ Mod+Shift+S { spawn "shotori"; }
 
 ## 用法
 
-```
-shotori            # 冻结全部屏幕 → 框选 → 动作
-```
+运行 `shotori`，所有屏幕冻结并出现选区覆盖层。
 
-| 按键 | 动作 |
-|------|------|
-| 拖拽 | 框选区域（再次按下可重选） |
-| `Enter` / `Ctrl+C` | 选区（或全屏）复制到剪贴板 |
-| `Ctrl+S` | 选区保存为 PNG |
-| `Ctrl+O` | 选区 OCR → 文本进剪贴板 |
-| `Esc`（拖拽中） | 放弃本次拖拽 |
-| `Esc`（其余状态） | 退出 |
+| 按键              | 动作                                   |
+| ----------------- | -------------------------------------- |
+| 拖拽              | 框选区域                               |
+| `Enter` / `Ctrl+C` | 选区（或全屏）复制到剪贴板             |
+| `Ctrl+S`          | 选区保存为 PNG                         |
+| `Ctrl+O`          | 选区 OCR → 文本进剪贴板                |
+| `Esc`（拖拽中）   | 放弃本次拖拽                           |
+| `Esc`             | 退出                                   |
 
-松手后选区下方会出现工具条（同款动作）。
+松手后选区下方会出现等效按钮的工具条。
 
-### OCR 说明
+### OCR
 
-- 引擎为 PP-OCRv6 small（检测 + 方向 + 识别），一次性下载后完全离线。
-- 1080p 屏上小于 ~16px 的小字吃力；HiDPI 屏更好（物理像素多）。
-- OCR 是默认 feature。想要不带 OCR 的轻量二进制：
-  `cargo install shotori --no-default-features`。
+- 引擎为 PP-OCRv6 small（检测 + 方向 + 识别），经 ONNX Runtime 本地运行。
+- 首次使用弹出确认卡片，随后是带取消按钮的进度条。模型（~31MB，取自
+  ModelScope）经 sha256 校验、原子安装——取消的下载不留任何残留。
+  存放于 `~/.local/share/shotori/ocr-models/`，之后一直复用。
+- 你画选区的同时引擎在后台预热，按下 `Ctrl+O` 后通常几百毫秒内出结果；
+  等待期间有转圈徽章提示。
+- 1080p 级屏幕上小于 ~16px 的文字吃力；HiDPI 屏表现更好。
+- OCR 是默认 feature。想要不带它的轻量二进制：
+
+  ```bash
+  cargo install shotori --no-default-features
+  ```
 
 ## 源码构建
 
 ```bash
+git clone https://github.com/mengh04/shotori
+cd shotori
 cargo build --release
-cargo test                        # 21 个单元测试，无需合成器
-cargo build --no-default-features # 不带 OCR 的轻量构建
-```
-
-附带 `screencap`：捕获代码的调试前端：
-
-```bash
-cargo run --bin screencap -- --all
+cargo test                          # 单元测试，无需合成器
+cargo build --no-default-features   # 不带 OCR 的轻量构建
 ```
 
 ## 设计笔记
 
-有意思的部分——驻留 offer 剪贴板模型、混合缩放下的 display 匹配、与
-协议字面相反的 transform 语义、1px 接缝 bug 的像素取证——都写在
+驻留 offer 剪贴板模型、混合缩放下的 display 匹配、与协议字面相反的
+输出 transform、以及一个 1px 接缝 bug 的像素级取证，都写在
 [ROADMAP.md](ROADMAP.md)（英文）里。
 
 ## 许可
 
-MIT——见 [LICENSE](LICENSE)。
+[MIT](LICENSE)
