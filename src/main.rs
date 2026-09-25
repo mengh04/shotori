@@ -18,6 +18,9 @@
 //! 预期：整个屏幕盖上一层半透明黑，中央有提示卡片，按 Esc 退出。
 
 use gpui_kit::*;
+// layer-shell 类型不在根命名空间（根上的 Anchor 是另一个无关枚举——踩过的坑），
+// 必须从模块路径显式导入
+use gpui_kit::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 
 // gpui 的键盘处理模型是"键位 → 动作 → 处理器"三段式，
 // 不在窗口里裸监听按键。先声明动作：
@@ -44,11 +47,7 @@ impl Render for Overlay {
             .id("saccade-overlay")
             .size_full()
             .track_focus(&self.focus_handle)
-            // 动作处理器：绑定在这个可聚焦元素上，Esc 命中后沿焦点路径到达这里
-            .on_action(cx.listener(|_, _: &QuitOverlay, cx| {
-                println!("[saccade] 收到 QuitOverlay 动作，退出");
-                cx.quit();
-            }))
+            // （Esc 的处理器挂在 App 全局 on_action 上，见 main——spike 从简）
             // ── 变暗层 ──────────────────────────────────────────────
             // 关键认知：compositor 没有"把桌面变暗"的功能。
             // 我们自己就是那层半透明黑——盖在所有窗口上面的 RGBA 表面。
@@ -61,7 +60,7 @@ impl Render for Overlay {
                 div()
                     .px_6()
                     .py_4()
-                    .rounded(px(10.))
+                    .rounded_lg()
                     .bg(rgba(0x16161DE6))
                     .border_1()
                     .border_color(rgba(0xFF6A00FF))

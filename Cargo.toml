@@ -26,7 +26,6 @@ smol = { opt-level = 3 }
 gpui-pre = { opt-level = 3 }
 gpui-pre-platform = { opt-level = 3 }
 gpui-pre-macros = { opt-level = 3 }
-tree-sitter = { opt-level = 3 }
 gpui-pre-sum-tree = { opt-level = 3 }
 ropey = { opt-level = 3 }
 lsp-types = { opt-level = 3 }
