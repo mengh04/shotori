@@ -129,3 +129,14 @@ overlay 只剩装配。首批 12 个单元测试（不需要合成器）。
 ### 待人工验收（用户回到屏幕后）
 - 两段 Esc 手感、点击清空、无选区 Enter 全屏、新文件名
 - 工具条按钮点击（此前虚拟指针点"贴图"未触发，坐标已修正为按钮文字簇中心 x≈298——待复核）
+
+## v0.3.1 重构：反屎山（2026-09-26 凌晨）
+
+- capture.rs(449行) 拆为 capture/{mod,wayland,pixels}：编排/事件状态机/纯像素
+- display.rs 新建：display 匹配从 main.rs 挪出，匹配谓词单测锁定"gpui 坐标=位置÷整数scale"
+- hud.rs 新建：dim_strips/selection_chrome/hint_bar 从 overlay.rs 移出
+- overlay.rs 后门拆成 debug_targeted/debug_selection/spawn_debug_copy 私有函数
+- **单测抓到真 bug**：rotated_size 的 _180 落进 catch-all（180° 会错误交换宽高；
+  此前靠未写内存假通过）——已修 + 四角断言锁死
+- pin_selection 裁剪改走自算 scale（原 scale_factor() 错报路径的漏网之鱼）
+- 删除死代码 capture_first_output；测试 12 → 21
