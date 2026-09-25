@@ -33,6 +33,7 @@ pub mod notify;
 pub mod overlay;
 pub mod save_dialog;
 pub mod selection;
+pub mod session;
 pub mod theme;
 pub mod toolbar;
 

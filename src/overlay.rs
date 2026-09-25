@@ -27,8 +27,9 @@ pub struct Overlay {
     /// The frozen screen image (displayed by the img element)
     frozen: Arc<RenderImage>,
     /// Raw pixels (for cropping)
-    capture: Capture,
-    selection: Selection,
+    capture: Arc<Capture>,
+    session: Entity<crate::session::ScreenshotSession>,
+    _subscriptions: Vec<Subscription>,
     /// First-run OCR setup (confirm → download progress), open while active
     ocr_setup: Option<Box<crate::ocr_setup::OcrSetup>>,
     setup_focus: crate::ocr_setup::SetupFocus,
@@ -37,31 +38,47 @@ pub struct Overlay {
 }
 
 impl Overlay {
-    pub fn new(capture: Capture, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        capture: Arc<Capture>,
+        session: Entity<crate::session::ScreenshotSession>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let frozen =
             image_util::rgba_to_render_image(capture.rgba.clone(), capture.width, capture.height);
 
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
 
-        // Pre-warm the OCR engine while the user is still drawing their
-        // selection: the init cost hides behind interaction time.
-        // warmup() skips first-ever runs (no surprise 31MB download).
-        std::thread::Builder::new()
-            .name("shotori-ocr-warmup".into())
-            .spawn(crate::ocr::warmup)
-            .ok();
-
         let debug_targeted = debug_targeted(&capture.output_name);
         if debug_targeted {
             spawn_debug_action(window, cx);
         }
 
+        session.update(cx, |session, cx| {
+            session.set_size(&capture.output_name, window.bounds().size);
+            if let Selection::Selected { bounds } = debug_selection(debug_targeted) {
+                session.begin(&capture.output_name, bounds.origin);
+                session.end(&capture.output_name, bounds.bottom_right());
+            }
+            cx.notify();
+        });
+        let subscriptions = vec![
+            cx.observe_in(&session, window, |_, _, _, cx| cx.notify()),
+            cx.observe_window_bounds(window, |this, window, cx| {
+                this.session.update(cx, |session, cx| {
+                    if session.set_size(&this.capture.output_name, window.bounds().size) {
+                        cx.notify();
+                    }
+                });
+            }),
+        ];
         Self {
             focus_handle,
             frozen,
             capture,
-            selection: debug_selection(debug_targeted),
+            session,
+            _subscriptions: subscriptions,
             ocr_setup: None,
             setup_focus: crate::ocr_setup::SetupFocus::new(cx),
             ocr_busy: false,
@@ -89,45 +106,14 @@ impl Overlay {
         }
     }
 
-    /// This window's "captured physical pixels ÷ logical pixels" ratio.
-    /// Deliberately not window.scale_factor(): under mixed-DPI multi-monitor
-    /// setups gpui reports another output's scale (measured: window pinned
-    /// to HDMI renders at 1.0 while scale_factor() reports DP-2's 1.5).
-    /// Computing it ourselves is naturally consistent with rendering and
-    /// immune to the misreport.
-    fn render_scale(&self, window: &Window) -> f32 {
-        let ws = window.bounds().size;
-        if f32::from(ws.width) > 0. {
-            self.capture.width as f32 / f32::from(ws.width)
-        } else {
-            window.scale_factor()
-        }
-    }
-
-    /// Logical selection → physical-pixel crop; None for an empty selection
-    fn crop(&self, bounds: Bounds<Pixels>, window: &mut Window) -> Option<(u32, u32, Vec<u8>)> {
-        crate::export::crop(
-            &self.capture.rgba,
-            self.capture.width,
-            self.capture.height,
-            bounds,
-            self.render_scale(window),
-        )
-    }
-
-    /// The selection to act on; no selection = the whole window (= the whole
-    /// output), the default behavior of every screenshot tool
-    fn selection_or_full(&self, window: &mut Window) -> Bounds<Pixels> {
-        self.selection.bounds().unwrap_or_else(|| Bounds {
-            origin: Point::default(),
-            size: window.bounds().size,
-        })
+    fn crop(&self, cx: &App) -> Option<(u32, u32, Vec<u8>)> {
+        self.session.read(cx).crop(&self.capture.output_name)
     }
 
     /// Enter / Ctrl+C / toolbar [Copy]: crop → PNG → clipboard (resident
     /// daemon) → exit. The primary exit of daily use.
-    fn copy_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (w, h, rgba) = match self.crop(self.selection_or_full(window), window) {
+    fn copy_selection(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let (w, h, rgba) = match self.crop(cx) {
             Some(x) => x,
             None => {
                 println!("[shotori] empty selection, ignoring");
@@ -166,7 +152,7 @@ impl Overlay {
     /// SaveFile), the write and the notification run on the main thread
     /// afterwards — see [`crate::save_dialog`]
     fn save_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((w, h, rgba)) = self.crop(self.selection_or_full(window), window) else {
+        let Some((w, h, rgba)) = self.crop(cx) else {
             println!("[shotori] empty selection, ignoring");
             return;
         };
@@ -195,15 +181,19 @@ impl Overlay {
     /// the very first use it opens the setup dialog (confirm → progress →
     /// cancel) instead — [`crate::ocr_setup`].
     fn ocr_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.ocr_setup.is_some() || self.ocr_busy {
+        if self.session.read(cx).blocked() {
             return; // dialog open or an OCR already running
         }
-        let Some((w, h, rgba)) = self.crop(self.selection_or_full(window), window) else {
+        let Some((w, h, rgba)) = self.crop(cx) else {
             println!("[shotori] empty selection, ignoring");
             return;
         };
         let snapshot = crate::ocr_setup::Snapshot { w, h, rgba };
 
+        self.session.update(cx, |s, cx| {
+            s.set_blocked(true);
+            cx.notify();
+        });
         if crate::ocr::models_missing() {
             self.ocr_setup = Some(Box::new(crate::ocr_setup::OcrSetup::new(snapshot)));
             self.setup_focus.focus_confirm(window, cx);
@@ -331,13 +321,17 @@ impl Overlay {
     /// Setup dialog [Cancel]/[Close] and Esc: abort the download, clean up,
     /// back to plain selection mode.
     fn ocr_setup_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(setup) = self.ocr_setup.as_ref() {
-            setup
-                .progress
-                .cancel
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-        self.ocr_setup = None;
+        let Some(setup) = self.ocr_setup.take() else {
+            return;
+        };
+        setup
+            .progress
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.session.update(cx, |s, cx| {
+            s.set_blocked(false);
+            cx.notify();
+        });
         window.focus(&self.focus_handle, cx);
         cx.notify();
     }
@@ -402,6 +396,10 @@ async fn ocr_to_clipboard(
     // Clear the busy flag on both paths (failure stays on-screen; a stuck
     // spinner would spin forever otherwise)
     entity.update(cx, |this, cx| {
+        this.session.update(cx, |s, cx| {
+            s.set_blocked(false);
+            cx.notify();
+        });
         this.ocr_busy = false;
         cx.notify();
     });
@@ -411,7 +409,14 @@ impl Render for Overlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Keep display geometry stable while dragging. The backdrop paints
         // shared edges directly so fractional DPI cannot open layout seams.
-        let sel = self.selection.bounds().map(round_px);
+        let shared = self.session.read(cx);
+        let selection = shared.selection();
+        let sel = shared.local_bounds(&self.capture.output_name).map(round_px);
+        let backdrop = shared
+            .backdrop_bounds(&self.capture.output_name)
+            .map(round_px);
+        let active = shared.active_on(&self.capture.output_name);
+        let input_view = cx.entity().downgrade();
         let ws = window.bounds().size; // window logical size (= output logical size)
 
         // Bind the base chain, then attach feature-gated handlers via
@@ -428,13 +433,13 @@ impl Render for Overlay {
             .relative()
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|this, _: &CopySelection, window, cx| {
-                if this.ocr_setup.is_some() {
+                if this.session.read(cx).blocked() {
                     return; // setup dialog is modal
                 }
                 this.copy_selection(window, cx);
             }))
             .on_action(cx.listener(|this, _: &SaveSelection, window, cx| {
-                if this.ocr_setup.is_some() {
+                if this.session.read(cx).blocked() {
                     return; // setup dialog is modal
                 }
                 this.save_selection(window, cx);
@@ -477,8 +482,11 @@ impl Render for Overlay {
                     cx.stop_propagation();
                     return;
                 }
-                if this.selection.is_dragging() {
-                    this.selection.cancel_drag(); // stage one: abandon this drag
+                if this.session.read(cx).selection().is_dragging() {
+                    this.session.update(cx, |s, cx| {
+                        s.cancel_drag();
+                        cx.notify();
+                    }); // stage one: abandon this drag
                 } else {
                     cx.quit(); // stage two: exit
                 }
@@ -489,22 +497,13 @@ impl Render for Overlay {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, ev: &MouseDownEvent, _, cx| {
-                    if this.ocr_setup.is_some() {
+                    if this.session.read(cx).blocked() {
                         return; // modal dialog: no new selections
                     }
-                    this.selection.begin(ev.position);
-                    cx.notify();
-                }),
-            )
-            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
-                if this.selection.drag_to(ev.position) {
-                    cx.notify();
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, ev: &MouseUpEvent, _, cx| {
-                    this.selection.end(ev.position);
+                    this.session.update(cx, |s, cx| {
+                        s.begin(&this.capture.output_name, ev.position);
+                        cx.notify();
+                    });
                     cx.notify();
                 }),
             )
@@ -512,13 +511,53 @@ impl Render for Overlay {
             // ① The frozen screen image (opaque, filling the window)
             .child(img(self.frozen.clone()).size_full())
             // ② Dim layer and selection border share painted edges.
-            .child(selection_backdrop(sel))
+            .child(selection_backdrop(backdrop))
+            // Wayland may keep delivering a drag to its original surface even
+            // outside its bounds. Element hover handlers would drop these events.
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |_, (), window, _| {
+                        let view = input_view.clone();
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                            if phase != DispatchPhase::Bubble {
+                                return;
+                            }
+                            let _ = view.update(cx, |this, cx| {
+                                this.session.update(cx, |s, cx| {
+                                    if s.drag_to(&this.capture.output_name, event.position) {
+                                        cx.notify();
+                                    }
+                                });
+                            });
+                        });
+                        window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                            if phase != DispatchPhase::Bubble || event.button != MouseButton::Left {
+                                return;
+                            }
+                            let _ = input_view.update(cx, |this, cx| {
+                                this.session.update(cx, |s, cx| {
+                                    s.end(&this.capture.output_name, event.position);
+                                    cx.notify();
+                                });
+                            });
+                        });
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
             // ③ Size label stays independent so narrow selections cannot wrap it.
-            .children(sel.map(|b| selection_label(b, ws)))
+            .children(
+                sel.filter(|_| active)
+                    .map(|b| selection_label(b, ws, round_px(selection.bounds().unwrap()).size)),
+            )
             // ④ Toolbar: appears only after release (no flicker while dragging)
             .children(
-                if let Selection::Selected { bounds } = self.selection
+                if selection.is_selected()
+                    && active
                     && self.ocr_setup.is_none()
+                    && let Some(bounds) = sel
                 {
                     Some(selection_toolbar(round_px(bounds), ws))
                 } else {
@@ -622,4 +661,111 @@ fn spawn_debug_action(window: &mut Window, cx: &mut Context<Overlay>) {
         });
     })
     .detach();
+}
+
+#[cfg(test)]
+mod multi_output_tests {
+    use super::Overlay;
+    use crate::{capture::Capture, session::ScreenshotSession};
+    use gpui_kit::{AppContext, MouseButton, TestAppContext, point, px, size};
+    use std::sync::Arc;
+
+    #[gpui_kit::test]
+    fn pointer_events_share_selection_and_handle_release_outside_window(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::base::init);
+        let make_capture = |name: &str, x| {
+            let mut capture = Capture::for_test((x, 0), 1.);
+            capture.output_name = name.into();
+            capture.width = 400;
+            capture.height = 400;
+            capture.rgba = vec![255; 400 * 400 * 4];
+            Arc::new(capture)
+        };
+        let left = make_capture("left", 0);
+        let right = make_capture("right", 400);
+        let session = cx.new(|_| ScreenshotSession::new(vec![left.clone(), right.clone()]));
+        let mut second_context = cx.clone();
+        let (_, left_cx) =
+            cx.add_window_view(|window, cx| Overlay::new(left, session.clone(), window, cx));
+        let (_, right_cx) = second_context
+            .add_window_view(|window, cx| Overlay::new(right, session.clone(), window, cx));
+        for context in [&mut *left_cx, &mut *right_cx] {
+            context.simulate_resize(size(px(400.), px(400.)));
+            context.update(|window, cx| window.draw(cx).clear(cx));
+            context.run_until_parked();
+        }
+        left_cx.simulate_mouse_down(
+            point(px(300.), px(80.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        left_cx.simulate_mouse_move(
+            point(px(450.), px(180.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        left_cx.simulate_mouse_up(
+            point(px(450.), px(180.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        left_cx.update(|_, cx| {
+            let shared = session.read(cx);
+            assert!(shared.selection().is_selected());
+            assert_eq!(
+                shared.local_bounds("right").unwrap().size,
+                size(px(50.), px(100.))
+            );
+            assert_eq!(shared.crop("right").unwrap().0, 150);
+        });
+        right_cx.run_until_parked();
+        right_cx.simulate_mouse_down(
+            point(px(100.), px(80.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        right_cx.simulate_mouse_move(
+            point(px(200.), px(180.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        right_cx.simulate_mouse_up(
+            point(px(200.), px(180.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        left_cx.run_until_parked();
+        left_cx.update(|_, cx| {
+            let shared = session.read(cx);
+            assert!(shared.local_bounds("left").is_none());
+            assert!(shared.active_on("right"));
+            assert_eq!(shared.crop("left").unwrap().0, 100);
+        });
+        // Some compositors transfer pointer events to the destination surface.
+        // Convert its local coordinates using that output's desktop origin.
+        left_cx.simulate_mouse_down(
+            point(px(350.), px(80.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        right_cx.simulate_mouse_move(
+            point(px(50.), px(180.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        right_cx.simulate_mouse_up(
+            point(px(50.), px(180.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        right_cx.update(|_, cx| {
+            let shared = session.read(cx);
+            assert!(shared.selection().is_selected());
+            assert_eq!(
+                shared.selection().bounds().unwrap().size,
+                size(px(100.), px(100.))
+            );
+            assert_eq!(shared.crop("right").unwrap().0, 100);
+        });
+    }
 }

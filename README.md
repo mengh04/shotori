@@ -46,6 +46,10 @@ Mod+Shift+S { spawn "shotori"; }
 
 Run `shotori`; every screen freezes and a selection overlay appears. A
 toolbar with equivalent buttons shows up below the selection after release.
+All screens share one selection: dragging on another screen replaces it, and a
+selection can span screens. Cross-screen exports use the highest participating
+pixel density; gaps between screens are transparent. Single-screen exports keep
+the screen's native resolution.
 
 | Key              | Action                                        |
 | ---------------- | --------------------------------------------- |

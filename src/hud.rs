@@ -20,6 +20,7 @@ pub(crate) fn selection_backdrop(sel: Option<Bounds<Pixels>>) -> impl IntoElemen
                 return;
             };
             b.origin += viewport.origin;
+            let border = b;
             b = b.intersect(&viewport);
             let strips = [
                 Bounds::from_corners(viewport.origin, point(viewport.right(), b.top())),
@@ -35,7 +36,7 @@ pub(crate) fn selection_backdrop(sel: Option<Bounds<Pixels>>) -> impl IntoElemen
                     window.paint_quad(fill(strip, rgba(DIM)));
                 }
             }
-            window.paint_quad(outline(b, rgba(ACCENT), BorderStyle::default()));
+            window.paint_quad(outline(border, rgba(ACCENT), BorderStyle::default()));
         },
     )
     .absolute()
@@ -51,7 +52,11 @@ pub(crate) fn selection_backdrop(sel: Option<Bounds<Pixels>>) -> impl IntoElemen
 /// narrow selection would clamp the label's width to the selection's,
 /// wrapping "W × H" into a one-character-per-line tower. As a sibling
 /// anchored to the overlay root it stays content-sized.
-pub(crate) fn selection_label(b: Bounds<Pixels>, ws: Size<Pixels>) -> AnyElement {
+pub(crate) fn selection_label(
+    b: Bounds<Pixels>,
+    ws: Size<Pixels>,
+    selected_size: Size<Pixels>,
+) -> AnyElement {
     let (label_x, label_y) = label_anchor(&b, ws);
 
     div()
@@ -66,8 +71,8 @@ pub(crate) fn selection_label(b: Bounds<Pixels>, ws: Size<Pixels>) -> AnyElement
         .text_color(rgba(0xFFFFFFFF))
         .child(format!(
             "{} × {}",
-            f32::from(b.size.width).round() as i32,
-            f32::from(b.size.height).round() as i32
+            f32::from(selected_size.width).round() as i32,
+            f32::from(selected_size.height).round() as i32
         ))
         .into_any_element()
 }
@@ -270,6 +275,10 @@ mod tests {
                 Some(bounds(0., 0., 200., 230.)),
                 Some(bounds(200., 170., 200., 230.)),
                 Some(bounds(0., 0., 400., 400.)),
+                // A global selection can continue beyond this output. Its
+                // border must stay at the real edges, not the monitor seam.
+                Some(bounds(-100., 10., 600., 380.)),
+                Some(bounds(10., -100., 380., 600.)),
             ];
             for selection in selections {
                 view.update(cx, |view, cx| {

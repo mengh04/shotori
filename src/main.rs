@@ -56,6 +56,12 @@ fn main() {
             .join(" · ")
     );
 
+    // Warm the shared OCR engine once per screenshot session.
+    std::thread::Builder::new()
+        .name("shotori-ocr-warmup".into())
+        .spawn(shotori::ocr::warmup)
+        .ok();
+
     // ② Overlays (one per screen)
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
@@ -85,6 +91,14 @@ fn main() {
             cx.spawn(async move |cx| {
                 let targets = display::await_display_ids(caps, cx).await;
                 cx.update(|cx| {
+                    let targets: Vec<_> = targets.into_iter()
+                        .map(|(cap, did)| (std::sync::Arc::new(cap), did))
+                        .collect();
+                    let session = cx.new(|_| {
+                        shotori::session::ScreenshotSession::new(
+                            targets.iter().map(|(cap, _)| cap.clone()).collect(),
+                        )
+                    });
                     for (cap, did) in targets {
                         if did.is_none() {
                             eprintln!(
@@ -94,7 +108,7 @@ fn main() {
                         }
                         let handle = cx
                             .open_window(Overlay::window_options(did), |window, cx| {
-                                cx.new(|cx| Overlay::new(cap, window, cx))
+                                cx.new(|cx| Overlay::new(cap, session.clone(), window, cx))
                             })
                             .expect("failed to open layer-shell window");
                         // Needed by the save flow to unmap every overlay
