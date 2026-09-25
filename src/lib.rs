@@ -17,7 +17,7 @@
 //! - [`toolbar`]: selection toolbar (buttons share the keyboard action
 //!   pipeline via dispatch_action)
 //! - [`theme`]: visual constants (the seed of a homegrown design system)
-//! - [`ocr`]: selection OCR (rapidocr-core + PP-OCRv6 models, default feature)
+//! - [`ocr`]: selection OCR (rapidocr-core + PP-OCRv6 models)
 //!
 //! The pin (floating image) feature lives on the `pin` branch (it depends on
 //! the vendored set_layer_margin patch; can't ship on crates.io until
@@ -35,7 +35,5 @@ pub mod selection;
 pub mod theme;
 pub mod toolbar;
 
-#[cfg(feature = "ocr")]
 pub mod ocr;
-#[cfg(feature = "ocr")]
 pub mod ocr_setup;

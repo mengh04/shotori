@@ -7,7 +7,7 @@
 //! - `overlay`: overlay assembly (one window per screen)
 //! - `hud` / `toolbar`: the overlay's visual pieces
 //! - `selection` / `export` / `image_util`: pure logic
-//! - `ocr`: selection OCR (rapidocr-core + PP-OCRv6 models, default feature)
+//! - `ocr`: selection OCR (rapidocr-core + PP-OCRv6 models)
 //! - `theme`: visual constants
 
 use gpui_kit::*;
@@ -15,9 +15,7 @@ use gpui_kit::*;
 use shotori::capture;
 use shotori::clipboard;
 use shotori::display;
-#[cfg(feature = "ocr")]
-use shotori::overlay::OcrSelection;
-use shotori::overlay::{CopySelection, Overlay, QuitOverlay, SaveSelection};
+use shotori::overlay::{CopySelection, OcrSelection, Overlay, QuitOverlay, SaveSelection};
 
 fn main() {
     // Notification child: `shotori --notify <summary> <body>` (see notify.rs)
@@ -70,9 +68,6 @@ fn main() {
                 KeyBinding::new("enter", CopySelection, Some("ShotoriOverlay")),
                 KeyBinding::new("ctrl-c", CopySelection, Some("ShotoriOverlay")),
                 KeyBinding::new("ctrl-s", SaveSelection, Some("ShotoriOverlay")),
-                // The ocr feature is on by default; slim builds
-                // (--no-default-features) skip this binding
-                #[cfg(feature = "ocr")]
                 KeyBinding::new("ctrl-o", OcrSelection, Some("ShotoriOverlay")),
             ]);
             // Backstop: Esc still exits if the overlay somehow loses focus.

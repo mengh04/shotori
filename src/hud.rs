@@ -103,20 +103,14 @@ pub(crate) fn hint_bar() -> impl IntoElement {
 
 /// Hint text is trimmed per feature set: builds without `ocr` must not
 /// advertise a shortcut that does not exist
-#[cfg(feature = "ocr")]
 fn hint_text() -> &'static str {
     "Drag to select · Enter copy · Ctrl+S save · Ctrl+O OCR · Esc exit"
-}
-#[cfg(not(feature = "ocr"))]
-fn hint_text() -> &'static str {
-    "Drag to select · Enter copy · Ctrl+S save · Esc exit"
 }
 
 // ── OCR busy badge (spinner) ──────────────────────────────────────────
 
 /// The busy badge: a spinner + label, centered on the selection (or the
 /// window when nothing is selected), clamped on-screen.
-#[cfg(feature = "ocr")]
 pub(crate) fn ocr_busy_badge(sel: Option<Bounds<Pixels>>, ws: Size<Pixels>) -> AnyElement {
     const BADGE_W: f32 = 118.;
     const BADGE_H: f32 = 40.;
@@ -156,7 +150,6 @@ pub(crate) fn ocr_busy_badge(sel: Option<Bounds<Pixels>>, ws: Size<Pixels>) -> A
 /// Spinner: a faint ring with one accent dot orbiting inside. Pure element
 /// properties animated via `with_animation` (respects reduce_motion;
 /// max_fps caps the redraw rate).
-#[cfg(feature = "ocr")]
 fn spinner() -> impl IntoElement {
     const R: f32 = 7.; // orbit radius
     const BOX: f32 = 2. * R + 5.; // container edge

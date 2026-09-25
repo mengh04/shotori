@@ -30,14 +30,8 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
-      - name: Clippy (default features)
+      - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Clippy (slim, no OCR)
-        run: cargo clippy --all-targets --no-default-features -- -D warnings
-
-      - name: Test (default features)
+      - name: Test
         run: cargo test
-
-      - name: Test (slim, no OCR)
-        run: cargo test --no-default-features

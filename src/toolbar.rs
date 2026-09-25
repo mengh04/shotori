@@ -8,9 +8,7 @@
 use gpui_kit::base::Button;
 use gpui_kit::*;
 
-#[cfg(feature = "ocr")]
-use crate::overlay::OcrSelection;
-use crate::overlay::{CopySelection, QuitOverlay, SaveSelection};
+use crate::overlay::{CopySelection, OcrSelection, QuitOverlay, SaveSelection};
 use crate::theme;
 
 /// Toolbar: placed 8px below the selection's bottom-left corner (above the
@@ -18,10 +16,7 @@ use crate::theme;
 /// [Copy][Save][OCR][Cancel]
 pub fn selection_toolbar(b: Bounds<Pixels>, ws: Size<Pixels>) -> impl IntoElement {
     // Rough size estimate (buttons + gaps + padding), good enough for now
-    #[cfg(feature = "ocr")]
     const TB_W: f32 = 320.;
-    #[cfg(not(feature = "ocr"))]
-    const TB_W: f32 = 245.;
     const TB_H: f32 = 40.;
     let y = if f32::from(b.bottom()) + TB_H + 8. <= f32::from(ws.height) {
         b.bottom() + px(8.)
@@ -57,23 +52,12 @@ pub fn selection_toolbar(b: Bounds<Pixels>, ws: Size<Pixels>) -> impl IntoElemen
         }))
         // .children() takes an IntoIterator — Option works as "0 or 1 child",
         // letting the OCR button compile away in slim builds
-        .children(ocr_button())
+        .child(toolbar_button("tb-ocr", "OCR", |window, cx| {
+            window.dispatch_action(Box::new(OcrSelection), cx);
+        }))
         .child(toolbar_button("tb-cancel", "Cancel", |window, cx| {
             window.dispatch_action(Box::new(QuitOverlay), cx);
         }))
-}
-
-/// The OCR button; `None` when the `ocr` feature is compiled out
-/// (`.children()` takes an IntoIterator, so Option works as "0 or 1 child").
-#[cfg(feature = "ocr")]
-fn ocr_button() -> Option<impl IntoElement> {
-    Some(toolbar_button("tb-ocr", "OCR", |window, cx| {
-        window.dispatch_action(Box::new(OcrSelection), cx);
-    }))
-}
-#[cfg(not(feature = "ocr"))]
-fn ocr_button() -> Option<&'static str> {
-    None
 }
 
 /// Hand-drawn toolbar button: the base `Button` provides behavior (click /

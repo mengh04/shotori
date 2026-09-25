@@ -37,19 +37,10 @@ notify-rust = "4"
 # vendored set_layer_margin patch); once upstream merges it, the branch can
 # return to main without a [patch.crates-io] section
 #
-# ── Optional features ───────────────────────────────────────────────
-[features]
-# OCR is on by default (a core product feature; models auto-download to
-# ~/.local/share/shotori/ocr-models on first use, with a confirm dialog,
-# progress bar and cancellation). Slim build: --no-default-features
-default = ["ocr"]
-ocr = ["dep:rapidocr-core", "dep:reqwest", "dep:sha2"]
-
 [dependencies.rapidocr-core]
 version = "0.2"
 default-features = false
 features = ["model-download"]
-optional = true
 
 # First-run model download with progress + cancel (same reqwest version as
 # rapidocr-core's, features unify)
@@ -57,9 +48,7 @@ optional = true
 version = "0.12"
 features = ["blocking", "rustls-tls"]
 default-features = false
-optional = true
 
 # Post-download integrity check (expected hashes ship in the model spec)
 [dependencies.sha2]
 version = "0.11"
-optional = true

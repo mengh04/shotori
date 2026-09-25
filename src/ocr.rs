@@ -5,8 +5,6 @@
 //! Downloads and cache repair share a cross-process lock; verified files are
 //! installed atomically, and initialization failures are never cached.
 //!
-//! Compiled under the `ocr` feature (on by default; `--no-default-features`
-//! trims it).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};

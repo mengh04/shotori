@@ -30,10 +30,8 @@ pub struct Overlay {
     capture: Capture,
     selection: Selection,
     /// First-run OCR setup (confirm → download progress), open while active
-    #[cfg(feature = "ocr")]
     ocr_setup: Option<Box<crate::ocr_setup::OcrSetup>>,
     /// OCR inference in flight → show the busy badge (spinner)
-    #[cfg(feature = "ocr")]
     ocr_busy: bool,
 }
 
@@ -48,7 +46,6 @@ impl Overlay {
         // Pre-warm the OCR engine while the user is still drawing their
         // selection: the init cost hides behind interaction time.
         // warmup() skips first-ever runs (no surprise 31MB download).
-        #[cfg(feature = "ocr")]
         std::thread::Builder::new()
             .name("shotori-ocr-warmup".into())
             .spawn(crate::ocr::warmup)
@@ -64,9 +61,7 @@ impl Overlay {
             frozen,
             capture,
             selection: debug_selection(debug_targeted),
-            #[cfg(feature = "ocr")]
             ocr_setup: None,
-            #[cfg(feature = "ocr")]
             ocr_busy: false,
         }
     }
@@ -206,7 +201,6 @@ impl Overlay {
     /// Ctrl+O / toolbar [OCR]. With cached models this runs immediately; on
     /// the very first use it opens the setup dialog (confirm → progress →
     /// cancel) instead — [`crate::ocr_setup`].
-    #[cfg(feature = "ocr")]
     fn ocr_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.ocr_setup.is_some() || self.ocr_busy {
             return; // dialog open or an OCR already running
@@ -229,7 +223,6 @@ impl Overlay {
     /// first-run setup once models are in): background inference → text to
     /// clipboard → quit. Free of `self` so both the action handler and the
     /// download poll loop can call it.
-    #[cfg(feature = "ocr")]
     fn spawn_ocr(
         &mut self,
         snapshot: crate::ocr_setup::Snapshot,
@@ -250,7 +243,6 @@ impl Overlay {
     /// and the completion transition. The loop holds an Arc clone of the
     /// progress and the entity handle — no shared state mutation races with
     /// the UI thread.
-    #[cfg(feature = "ocr")]
     fn ocr_setup_confirm(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         // Retry after a failure needs a fresh progress arc
         let fresh = std::sync::Arc::new(crate::ocr::DownloadProgress::default());
@@ -336,7 +328,6 @@ impl Overlay {
 
     /// Setup dialog [Cancel]/[Close] and Esc: abort the download, clean up,
     /// back to plain selection mode.
-    #[cfg(feature = "ocr")]
     fn ocr_setup_cancel(&mut self, cx: &mut Context<Self>) {
         if let Some(setup) = self.ocr_setup.as_ref() {
             setup
@@ -352,7 +343,6 @@ impl Overlay {
 /// Background OCR → text to clipboard → quit. Shared by the Ctrl+O action
 /// path and the post-download handover. Flips `ocr_busy` on the view for the
 /// duration (spinner badge).
-#[cfg(feature = "ocr")]
 async fn ocr_to_clipboard(
     w: u32,
     h: u32,
@@ -436,29 +426,20 @@ impl Render for Overlay {
             .relative()
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|this, _: &CopySelection, window, cx| {
-                #[cfg(feature = "ocr")]
                 if this.ocr_setup.is_some() {
                     return; // setup dialog is modal
                 }
                 this.copy_selection(window, cx);
             }))
             .on_action(cx.listener(|this, _: &SaveSelection, window, cx| {
-                #[cfg(feature = "ocr")]
                 if this.ocr_setup.is_some() {
                     return; // setup dialog is modal
                 }
                 this.save_selection(window, cx);
             }))
             .on_action(cx.listener(|this, _: &OcrSelection, window, cx| {
-                #[cfg(feature = "ocr")]
                 this.ocr_selection(window, cx);
-                #[cfg(not(feature = "ocr"))]
-                {
-                    let _ = (this, window, cx);
-                }
-            }));
-        #[cfg(feature = "ocr")]
-        let base = base
+            }))
             .on_action(
                 cx.listener(|this, _: &crate::ocr_setup::OcrSetupConfirm, window, cx| {
                     this.ocr_setup_confirm(window, cx);
@@ -470,23 +451,16 @@ impl Render for Overlay {
                 }),
             );
 
-        // ⑥ First-run OCR setup dialog (confirm / progress), topmost.
-        // Computed before the chain — cfg attrs are illegal mid-chain
-        #[cfg(feature = "ocr")]
+        // ⑥ First-run OCR setup dialog (confirm / progress), topmost
         let setup_el: Option<AnyElement> = self
             .ocr_setup
             .as_ref()
             .map(|s| crate::ocr_setup::setup_card(s).into_any_element());
-        #[cfg(not(feature = "ocr"))]
-        let setup_el: Option<AnyElement> = None;
 
         // OCR-in-flight spinner badge, centered on the selection
-        #[cfg(feature = "ocr")]
         let busy_el: Option<AnyElement> = self
             .ocr_busy
             .then(|| crate::hud::ocr_busy_badge(sel, ws).into_any_element());
-        #[cfg(not(feature = "ocr"))]
-        let busy_el: Option<AnyElement> = None;
 
         base
             // Two-stage Esc (handled in place, no reliance on bubbling):
@@ -495,7 +469,6 @@ impl Render for Overlay {
             // happen here. With the setup dialog open, Esc cancels the
             // dialog instead (aborting any download).
             .on_action(cx.listener(|this, _: &QuitOverlay, _, cx| {
-                #[cfg(feature = "ocr")]
                 if this.ocr_setup.is_some() {
                     this.ocr_setup_cancel(cx);
                     cx.stop_propagation();
@@ -513,7 +486,6 @@ impl Render for Overlay {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, ev: &MouseDownEvent, _, cx| {
-                    #[cfg(feature = "ocr")]
                     if this.ocr_setup.is_some() {
                         return; // modal dialog: no new selections
                     }
@@ -611,13 +583,10 @@ fn debug_selection(targeted: bool) -> Selection {
 /// OcrSelection at 1.5s (opens the dialog since models are missing), then
 /// OcrSetupConfirm at 6s (starts the download) — exercise the whole UI path.
 fn spawn_debug_action(window: &mut Window, cx: &mut Context<Overlay>) {
-    let Some(action) = std::env::var("SHOTORI_DEBUG_ACTION").ok().filter(|a| {
-        a == "copy"
-            || a == "quit"
-            || a == "save"
-            || (a == "ocr" && cfg!(feature = "ocr"))
-            || (a == "ocrsetup" && cfg!(feature = "ocr"))
-    }) else {
+    let Some(action) = std::env::var("SHOTORI_DEBUG_ACTION")
+        .ok()
+        .filter(|a| a == "copy" || a == "quit" || a == "save" || a == "ocr" || a == "ocrsetup")
+    else {
         return;
     };
     let win = window.window_handle();
@@ -626,27 +595,22 @@ fn spawn_debug_action(window: &mut Window, cx: &mut Context<Overlay>) {
             .timer(std::time::Duration::from_millis(1500))
             .await;
         if action == "ocrsetup" {
-            // Only reachable with the ocr feature (see the filter above)
-            #[cfg(feature = "ocr")]
-            {
-                // phase 1: open the setup dialog (models must be missing)
-                let _ = win.update(cx, |_, window, cx| {
-                    window.dispatch_action(Box::new(crate::overlay::OcrSelection), cx);
-                });
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(4500))
-                    .await;
-                let _ = win.update(cx, |_, window, cx| {
-                    window.dispatch_action(Box::new(crate::ocr_setup::OcrSetupConfirm), cx);
-                });
-            }
+            // phase 1: open the setup dialog (models must be missing)
+            let _ = win.update(cx, |_, window, cx| {
+                window.dispatch_action(Box::new(crate::overlay::OcrSelection), cx);
+            });
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(4500))
+                .await;
+            let _ = win.update(cx, |_, window, cx| {
+                window.dispatch_action(Box::new(crate::ocr_setup::OcrSetupConfirm), cx);
+            });
             return;
         }
         let _ = win.update(cx, |_, window, cx| {
             let action: Box<dyn gpui_kit::Action> = match action.as_str() {
                 "copy" => Box::new(CopySelection),
                 "save" => Box::new(SaveSelection),
-                #[cfg(feature = "ocr")]
                 "ocr" => Box::new(OcrSelection),
                 _ => Box::new(QuitOverlay),
             };
