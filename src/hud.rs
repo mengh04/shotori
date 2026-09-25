@@ -38,17 +38,15 @@ pub(crate) fn dim_strips(sel: Option<Bounds<Pixels>>, ws: Size<Pixels>) -> Vec<A
     els
 }
 
-/// Selection border + size label (label above the selection; below when no
-/// room). Returns TWO window-anchored elements: the label must NOT live
-/// inside the border box — a narrow selection would clamp the label's width
-/// to the selection's, wrapping "W × H" into a one-character-per-line
-/// tower. As a sibling anchored to the overlay root it is content-sized.
-pub(crate) fn selection_chrome(b: Bounds<Pixels>) -> Vec<AnyElement> {
-    let label_y = if b.top() >= px(34.) {
-        b.top() - px(30.)
-    } else {
-        b.bottom() + px(6.)
-    };
+/// Selection border + size label. The label tries above the selection,
+/// then below, and when neither fits (a selection spanning the screen
+/// height) it is drawn INSIDE the selection box — overlaid beats
+/// off-screen. It must NOT live inside the border box when avoidable: a
+/// narrow selection would clamp the label's width to the selection's,
+/// wrapping "W × H" into a one-character-per-line tower. As a sibling
+/// anchored to the overlay root it stays content-sized.
+pub(crate) fn selection_chrome(b: Bounds<Pixels>, ws: Size<Pixels>) -> Vec<AnyElement> {
+    let (label_x, label_y) = label_anchor(&b, ws);
 
     let border = div()
         .absolute()
@@ -62,8 +60,8 @@ pub(crate) fn selection_chrome(b: Bounds<Pixels>) -> Vec<AnyElement> {
 
     let label = div()
         .absolute()
-        .left(b.left())
-        .top(label_y)
+        .left(px(label_x))
+        .top(px(label_y))
         .px_2()
         .py(px(2.))
         .rounded(px(4.))
@@ -78,6 +76,23 @@ pub(crate) fn selection_chrome(b: Bounds<Pixels>) -> Vec<AnyElement> {
         .into_any_element();
 
     vec![border, label]
+}
+
+/// Label geometry, pure for tests. Rough width covers the widest
+/// "3072 × 1920" + padding; the height matches the rendered chip.
+fn label_anchor(b: &Bounds<Pixels>, ws: Size<Pixels>) -> (f32, f32) {
+    const LABEL_W: f32 = 110.;
+    const LABEL_H: f32 = 24.;
+    let x = f32::from(b.left()).clamp(4., (f32::from(ws.width) - LABEL_W - 4.).max(4.));
+    let y = if f32::from(b.top()) >= LABEL_H + 10. {
+        f32::from(b.top()) - LABEL_H - 6.
+    } else if f32::from(b.bottom()) + LABEL_H + 6. <= f32::from(ws.height) {
+        f32::from(b.bottom()) + 6.
+    } else {
+        // No room above or below: inside the box, pinned to its top edge
+        f32::from(b.top()) + 4.
+    };
+    (x, y)
 }
 
 /// Bottom hint bar
@@ -189,4 +204,53 @@ fn spinner() -> impl IntoElement {
                     },
                 ),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    // Explicit imports (same reason as selection.rs: avoid gpui's test macro
+    // shadowing the built-in #[test])
+    use super::label_anchor;
+    use gpui_kit::{Bounds, Pixels, point, px, size};
+
+    fn bounds(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
+        Bounds {
+            origin: point(px(x), px(y)),
+            size: size(px(w), px(h)),
+        }
+    }
+
+    fn ws(w: f32, h: f32) -> gpui_kit::Size<Pixels> {
+        size(px(w), px(h))
+    }
+
+    #[test]
+    fn label_prefers_above() {
+        // selection at y=100 → label above at 100 - 24 - 6
+        let (x, y) = label_anchor(&bounds(50., 100., 300., 200.), ws(1920., 1080.));
+        assert_eq!((x, y), (50., 70.));
+    }
+
+    #[test]
+    fn label_falls_back_to_below_when_touching_the_top() {
+        // selection hugging the top edge → below
+        let (_, y) = label_anchor(&bounds(50., 0., 300., 200.), ws(1920., 1080.));
+        assert_eq!(y, 200. + 6.);
+    }
+
+    #[test]
+    fn label_goes_inside_when_both_edges_taken() {
+        // selection spanning the full screen height: above and below are
+        // both off-screen → inside, pinned to the top edge
+        let (_, y) = label_anchor(&bounds(50., 0., 300., 1080.), ws(1920., 1080.));
+        assert_eq!(y, 4.);
+    }
+
+    #[test]
+    fn label_clamps_near_the_right_edge() {
+        // narrow selection hugging the right edge: the chip (wider than the
+        // selection) is pinned into the screen instead of overflowing
+        let (x, _) = label_anchor(&bounds(1900., 100., 20., 200.), ws(1920., 1080.));
+        assert_eq!(x, 1920. - 110. - 4.);
+    }
 }

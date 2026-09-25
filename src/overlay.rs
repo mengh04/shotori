@@ -522,7 +522,7 @@ impl Render for Overlay {
             // ③ Selection border + size label (live while dragging);
             // Vec: the label is a separate window-anchored element (see
             // selection_chrome)
-            .children(sel.map(selection_chrome).unwrap_or_default())
+            .children(sel.map(|b| selection_chrome(b, ws)).unwrap_or_default())
             // ④ Toolbar: appears only after release (no flicker while dragging)
             .children(
                 if let Selection::Selected { bounds } = self.selection

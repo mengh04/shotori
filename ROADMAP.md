@@ -629,3 +629,13 @@ Merged resolution: the millisecond stamp lives on in the dialog's suggested
 name (`..._%3f`), while the atomic writer itself has no caller anymore —
 with a picker in front, overwrite confirmation is the dialog's business and
 `save_png` writes the chosen path plainly.
+
+## Label / toolbar: never off-screen (2026-09-26)
+
+A selection touching the top and bottom of the screen had nowhere to put
+the size label (below) or the toolbar (below/above) — both ran off-screen
+(user-reported with screenshots). Both now have a third fallback state:
+drawn INSIDE the selection box, pinned to its top edge. Geometry extracted
+into pure anchor functions (`label_anchor`, `toolbar_anchor`) with unit
+tests for all three states plus horizontal clamping (which also gained a
+max() guard against a clamp(min, max) panic on very narrow windows).
