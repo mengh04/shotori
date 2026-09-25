@@ -1,6 +1,6 @@
 [package]
 name = "shotori"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 description = "Shotori — Wayland-first screenshot tool with optional OCR (gpui-kit)"
 license = "MIT"
