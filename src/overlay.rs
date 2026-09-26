@@ -31,6 +31,7 @@ gpui_kit::actions!([
     ToggleArrow,
     ToggleNumber,
     TogglePencil,
+    ToggleHighlighter,
     TogglePolyline,
     FinishPolyline,
     UndoAnnotation,
@@ -44,6 +45,7 @@ pub fn init_annotation_keybindings(cx: &mut App) {
         KeyBinding::new("e", ToggleEllipse, Some("ShotoriOverlay")),
         KeyBinding::new("l", ToggleLine, Some("ShotoriOverlay")),
         KeyBinding::new("a", ToggleArrow, Some("ShotoriOverlay")),
+        KeyBinding::new("h", ToggleHighlighter, Some("ShotoriOverlay")),
         KeyBinding::new("b", TogglePencil, Some("ShotoriOverlay")),
         KeyBinding::new("n", ToggleNumber, Some("ShotoriOverlay")),
         KeyBinding::new("p", TogglePolyline, Some("ShotoriOverlay")),
@@ -58,6 +60,7 @@ pub struct Overlay {
     focus_handle: FocusHandle,
     /// The frozen screen image (displayed by the img element)
     frozen: Arc<RenderImage>,
+    highlighter_cache: std::rc::Rc<std::cell::RefCell<crate::annotation::HighlighterCache>>,
     number_cache: std::rc::Rc<std::cell::RefCell<crate::annotation::NumberCache>>,
     /// Raw pixels (for cropping)
     capture: Arc<Capture>,
@@ -117,6 +120,7 @@ impl Overlay {
             focus_handle,
             frozen,
             number_cache: Default::default(),
+            highlighter_cache: Default::default(),
             capture,
             session,
             _subscriptions: subscriptions,
@@ -470,6 +474,7 @@ impl Render for Overlay {
             .map(round_px);
         let shapes = shared.local_annotations(&self.capture.output_name);
         let number_cache = self.number_cache.clone();
+        let highlighter_cache = self.highlighter_cache.clone();
         let drawing_polyline = shared.annotations().is_drawing_polyline();
         let active_tool = shared.annotations().tool();
         let active = shared.active_on(&self.capture.output_name);
@@ -530,6 +535,13 @@ impl Render for Overlay {
                 window.focus(&this.focus_handle, cx);
                 this.session.update(cx, |s, cx| {
                     s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Pencil));
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &ToggleHighlighter, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Highlighter));
                     cx.notify();
                 });
             }))
@@ -661,9 +673,10 @@ impl Render for Overlay {
             .child(selection_backdrop(backdrop))
             .child(
                 canvas(
-                    move |_, window, _| {
+                    move |bounds, window, _| {
+                        let highlights = highlighter_cache.borrow_mut().prepare(&shapes, window.scale_factor(), Bounds::new(point(px(0.), px(0.)), bounds.size));
                         let images = number_cache.borrow_mut().prepare(&shapes, window.scale_factor());
-                        shapes.into_iter().zip(images).collect::<Vec<_>>()
+                        shapes.into_iter().zip(images).zip(highlights).collect::<Vec<_>>()
                     },
                     move |viewport, shapes, window, _| {
                         if let Some(mut clip) = sel {
@@ -671,7 +684,16 @@ impl Render for Overlay {
                             window.with_content_mask(
                                 Some(ContentMask { bounds: clip }),
                                 |window| {
-                                    for (shape, number_image) in shapes {
+                                    for ((shape, number_image), highlight) in shapes {
+                                        if shape.kind == crate::annotation::ShapeKind::Highlighter {
+                                            if let Some(mut highlight) = highlight {
+                                                highlight.bounds.origin += viewport.origin;
+                                                if let Err(error) = window.paint_image(highlight.bounds, highlight.bounds, Corners::default(), highlight.image, 0, false) {
+                                                    eprintln!("[shotori] highlighter preview failed: {error}");
+                                                }
+                                            }
+                                            continue;
+                                        }
                                         if let Some(mut number_image) = number_image {
                                             number_image.bounds.origin += viewport.origin;
                                             if let Err(error) = window.paint_image(number_image.bounds, number_image.bounds, Corners::default(), number_image.image, 0, false) {
@@ -782,6 +804,7 @@ impl Render for Overlay {
                 Some(crate::annotation::ShapeKind::Number) => Some("Click to add a number · Drag to position · Ctrl+Z undo · Esc leave tool"),
                 Some(crate::annotation::ShapeKind::Arrow) => Some("Drag to draw an arrow · Shift 45° · Esc leave tool"),
                 Some(crate::annotation::ShapeKind::Line) => Some("Drag to draw a line · Shift 45° · Esc leave tool"),
+                Some(crate::annotation::ShapeKind::Highlighter) => Some("Drag to highlight · Esc cancel"),
                 Some(crate::annotation::ShapeKind::Pencil) => Some("Drag to draw · Click for a dot · Esc cancel"),
                 Some(crate::annotation::ShapeKind::Polyline) => Some("Click to add nodes · Double-click / Right-click / Enter finish · Shift 45° · Esc cancel"),
                 _ => None,
@@ -1018,6 +1041,11 @@ mod multi_output_tests {
         stroke_and_polyline_workflows(cx, crate::annotation::ShapeKind::Pencil);
     }
 
+    #[gpui_kit::test]
+    fn highlighter_toolbar_and_curve_share_history(cx: &mut TestAppContext) {
+        stroke_and_polyline_workflows(cx, crate::annotation::ShapeKind::Highlighter);
+    }
+
     fn stroke_and_polyline_workflows(cx: &mut TestAppContext, kind: crate::annotation::ShapeKind) {
         cx.update(|cx| {
             gpui_kit::base::init(cx);
@@ -1055,6 +1083,7 @@ mod multi_output_tests {
                 crate::annotation::ShapeKind::Arrow => "tb-arrow",
                 crate::annotation::ShapeKind::Number => "tb-number",
                 crate::annotation::ShapeKind::Pencil => "tb-pencil",
+                crate::annotation::ShapeKind::Highlighter => "tb-highlighter",
                 _ => "tb-line",
             })
             .unwrap();
@@ -1084,7 +1113,10 @@ mod multi_output_tests {
             MouseButton::Left,
             Default::default(),
         );
-        if kind == crate::annotation::ShapeKind::Pencil {
+        if matches!(
+            kind,
+            crate::annotation::ShapeKind::Pencil | crate::annotation::ShapeKind::Highlighter
+        ) {
             cx.simulate_mouse_move(
                 point(px(90.), px(90.)),
                 MouseButton::Left,
@@ -1108,7 +1140,10 @@ mod multi_output_tests {
                 kind
             )
         });
-        if kind == crate::annotation::ShapeKind::Pencil {
+        if matches!(
+            kind,
+            crate::annotation::ShapeKind::Pencil | crate::annotation::ShapeKind::Highlighter
+        ) {
             cx.update(|_, cx| {
                 let marks = session.read(cx).annotations();
                 assert_eq!(
@@ -1120,9 +1155,14 @@ mod multi_output_tests {
                     ]
                 );
             });
-            cx.simulate_keystrokes("b");
+            let key = if kind == crate::annotation::ShapeKind::Highlighter {
+                "h"
+            } else {
+                "b"
+            };
+            cx.simulate_keystrokes(key);
             cx.update(|_, cx| assert!(!session.read(cx).annotations().enabled()));
-            cx.simulate_keystrokes("b");
+            cx.simulate_keystrokes(key);
         }
         cx.simulate_keystrokes("p");
         cx.update(|window, cx| window.draw(cx).clear(cx));

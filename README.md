@@ -133,6 +133,18 @@ stroke. Supports cross-screen drawing and antialiased export.
 Straight-segment mode, wheel width adjustment and configurable smoothing remain
 follow-ups.
 
+### Highlighter annotations
+
+Click the highlighter icon or press `H` to draw translucent strokes over text.
+The default color is yellow, with 12, 20 and 32 logical-pixel widths; highlighter
+color and width are remembered separately from pencil/shape styles. Opacity is
+fixed at approximately 38%. Retracing or crossing within one stroke keeps an even
+coat, while separate strokes stack. Supports whole-stroke undo/redo, cross-screen
+preview and antialiased export; OCR still uses the original image.
+
+Rectangle highlighting, multiply blending, adjustable opacity and wheel width
+adjustment remain follow-ups.
+
 ### OCR
 
 The first `Ctrl+O` asks before downloading the models (~31 MB, one time);

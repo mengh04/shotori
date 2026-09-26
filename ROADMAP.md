@@ -690,7 +690,9 @@ time, with shared desktop coordinates, preview, history, and PNG export.
 6. Implemented: pencil — freehand strokes and click dots, shared colors/widths,
    whole-stroke history, cross-output preview and antialiased export. Straight-segment
    mode, wheel width adjustment and configurable smoothing remain follow-ups.
-7. Highlighter.
+7. Implemented: highlighter — translucent freehand strokes, independent color/width,
+   uniform coverage within each stroke, shared history and cross-output preview/export.
+   Rectangle mode, multiply blending, adjustable opacity and wheel width remain follow-ups.
 8. Mosaic and blur (smart erasing requires a separate feasibility review).
 9. Text.
 10. Eraser.

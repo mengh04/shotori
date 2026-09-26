@@ -4,16 +4,16 @@ use gpui_kit::{assets::IconName, base::Button, *};
 use crate::{
     overlay::{
         CopySelection, OcrSelection, QuitOverlay, SaveSelection, ToggleArrow, ToggleEllipse,
-        ToggleLine, ToggleNumber, TogglePencil, TogglePolyline, ToggleRectangle,
+        ToggleHighlighter, ToggleLine, ToggleNumber, TogglePencil, TogglePolyline, ToggleRectangle,
     },
     session::ScreenshotSession,
     theme,
 };
 
 // The default GPUI asset bundle does not include every toolbar icon.
-gpui_kit::assets::icon_assets!(pub ToolbarAssets, [Pencil, Square, Circle, Slash, Waypoints, ArrowUpRight, ListOrdered, ScanText, Save, X, Copy]);
+gpui_kit::assets::icon_assets!(pub ToolbarAssets, [Highlighter, Pencil, Square, Circle, Slash, Waypoints, ArrowUpRight, ListOrdered, ScanText, Save, X, Copy]);
 
-const TB_W: f32 = 396.;
+const TB_W: f32 = 428.;
 const ROW_H: f32 = 38.;
 pub(crate) const TB_H: f32 = ROW_H * 2. + 6.;
 const EDGE_B: f32 = 12.;
@@ -28,6 +28,7 @@ pub(crate) fn selection_toolbar(
     let height = if annotations.enabled() { TB_H } else { ROW_H };
     let (x, y) = toolbar_anchor(&b, ws, height);
     let selected_color = annotations.color().0;
+    let highlighter_tool = annotations.tool() == Some(crate::annotation::ShapeKind::Highlighter);
     let number_tool = annotations.tool() == Some(crate::annotation::ShapeKind::Number);
     let selected_width = if number_tool {
         annotations.number_size()
@@ -132,6 +133,20 @@ pub(crate) fn selection_toolbar(
                     )
                     .selected(annotations.tool() == Some(crate::annotation::ShapeKind::Pencil)),
                 )
+                .child(
+                    icon_button(
+                        "tb-highlighter",
+                        "Highlighter · H",
+                        IconName::Highlighter,
+                        focus.clone(),
+                        |window, cx| {
+                            window.dispatch_action(Box::new(ToggleHighlighter), cx);
+                        },
+                    )
+                    .selected(
+                        annotations.tool() == Some(crate::annotation::ShapeKind::Highlighter),
+                    ),
+                )
                 .child(div().flex_1())
                 .child(icon_button(
                     "tb-ocr",
@@ -175,6 +190,8 @@ pub(crate) fn selection_toolbar(
             let mut options = bar();
             let sizes = if number_tool {
                 [24., 32., 40.]
+            } else if highlighter_tool {
+                [12., 20., 32.]
             } else {
                 [1., 3., 5.]
             };
@@ -215,7 +232,11 @@ pub(crate) fn selection_toolbar(
                             .into_any_element()
                     } else {
                         div()
-                            .size(px(width + 2.))
+                            .size(px(if highlighter_tool {
+                                4. + ix as f32 * 3.
+                            } else {
+                                width + 2.
+                            }))
                             .rounded_full()
                             .bg(rgba(theme::TOOLBAR_TEXT))
                             .into_any_element()
@@ -369,6 +390,7 @@ mod tests {
     fn toolbar_icons_are_bundled() {
         use gpui_kit::{AssetSource, assets::IconName};
         for icon in [
+            IconName::Highlighter,
             IconName::Pencil,
             IconName::Square,
             IconName::Circle,

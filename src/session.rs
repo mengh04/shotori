@@ -510,6 +510,39 @@ mod tests {
         }
     }
     #[test]
+    fn highlighter_crosses_mixed_dpi_outputs_and_leaves_ocr_unmarked() {
+        let mut s = session();
+        s.begin("left", point(px(80.), px(20.)));
+        s.end("right", point(px(20.), px(60.)));
+        s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Highlighter));
+        s.pointer_down("left", point(px(90.), px(30.)));
+        s.pointer_up("right", point(px(10.), px(50.)), false);
+        assert_eq!(
+            s.local_annotations("right")[0].points[0],
+            point(px(-10.), px(50.))
+        );
+        let (w, h, marked) = s.crop("left").unwrap();
+        let (_, _, original) = s.crop_original("right").unwrap();
+        let png = crate::export::encode_png(w, h, &marked).unwrap();
+        let decoded = image::load_from_memory(&png).unwrap().into_rgba8();
+        let color = s.annotations().color().0.to_be_bytes();
+        for (x, y) in [(25, 20), (55, 20)] {
+            let at = ((y * w + x) * 4) as usize;
+            for channel in 0..3 {
+                let expected = (original[at + channel] as f32 * (159. / 255.)
+                    + color[channel] as f32 * (96. / 255.))
+                    .round() as u8;
+                assert_eq!(decoded.get_pixel(x, y)[channel], expected);
+            }
+            assert_ne!(&marked[at..at + 3], &original[at..at + 3]);
+        }
+        s.edit_annotations(|a| a.undo());
+        assert_eq!(s.crop("left").unwrap().2, original);
+        s.edit_annotations(|a| a.redo());
+        assert_eq!(s.crop("left").unwrap().2, marked);
+    }
+
+    #[test]
     fn sequence_numbers_are_global_across_screens_and_export_across_the_seam() {
         let mut s = session();
         s.begin("left", point(px(80.), px(0.)));

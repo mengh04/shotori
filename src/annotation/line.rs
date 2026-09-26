@@ -94,6 +94,29 @@ pub(super) fn rasterize(
     origin: Point<Pixels>,
     scale: f32,
 ) {
+    let color = shape.color.to_be_bytes();
+    coverage(shape, w, h, origin, scale, |offset, coverage| {
+        if rgba[offset + 3] == 0 {
+            return;
+        }
+        let alpha = coverage * color[3] as f32 / 255.;
+        for channel in 0..3 {
+            rgba[offset + channel] = (rgba[offset + channel] as f32 * (1. - alpha)
+                + color[channel] as f32 * alpha)
+                .round() as u8;
+        }
+    });
+}
+
+/// Union all segments before blending: retracing within one gesture is one coat.
+pub(super) fn coverage(
+    shape: &super::Shape,
+    w: u32,
+    h: u32,
+    origin: Point<Pixels>,
+    scale: f32,
+    mut paint_pixel: impl FnMut(usize, f32),
+) {
     // Build in logical units before scaling so the minimum head size scales too.
     let polygons = geometry(
         &shape.points,
@@ -144,7 +167,6 @@ pub(super) fn rasterize(
         .collect();
     let mut coverage = vec![0_f32; right - left];
     let mut intervals = Vec::with_capacity(polygons.len());
-    let color = shape.color.to_be_bytes();
     for row in top..bottom {
         coverage.fill(0.);
         for sample in 0..8 {
@@ -196,14 +218,8 @@ pub(super) fn rasterize(
         }
         for (ix, coverage) in coverage.iter().copied().enumerate() {
             let offset = (row * w as usize + left + ix) * 4;
-            if coverage == 0. || rgba[offset + 3] == 0 {
-                continue;
-            }
-            let coverage = coverage.min(1.);
-            for channel in 0..3 {
-                rgba[offset + channel] = (rgba[offset + channel] as f32 * (1. - coverage)
-                    + color[channel] as f32 * coverage)
-                    .round() as u8;
+            if coverage > 0. {
+                paint_pixel(offset, coverage.min(1.));
             }
         }
     }

@@ -1,5 +1,7 @@
 //! Geometry annotations in desktop logical coordinates, shared by all outputs.
+mod highlighter;
 mod line;
+pub(crate) use highlighter::HighlighterCache;
 mod number;
 pub(crate) use number::NumberCache;
 
@@ -9,6 +11,7 @@ use gpui_kit::{Bounds, Path, PathBuilder, Pixels, Point, point, px, size};
 pub(crate) enum ShapeKind {
     Number,
     Pencil,
+    Highlighter,
     Rectangle,
     Ellipse,
     Line,
@@ -16,7 +19,7 @@ pub(crate) enum ShapeKind {
     Polyline,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Shape {
     pub(crate) kind: ShapeKind,
     pub(crate) number: Option<u32>,
@@ -160,6 +163,8 @@ pub(crate) struct Annotations {
     color_ix: usize,
     width_ix: usize,
     number_size_ix: usize,
+    highlighter_width_ix: usize,
+    highlighter_color_ix: usize,
     shapes: Vec<Shape>,
     undone: Vec<Shape>,
     draft: Option<Draft>,
@@ -173,6 +178,8 @@ impl Default for Annotations {
             color_ix: 0,
             width_ix: 1,
             number_size_ix: 1,
+            highlighter_width_ix: 1,
+            highlighter_color_ix: 2,
             shapes: Vec::new(),
             undone: Vec::new(),
             draft: None,
@@ -186,10 +193,18 @@ impl Annotations {
         self.tool.is_some()
     }
     pub(crate) fn color(&self) -> (u32, &'static str) {
-        crate::theme::ANNOTATION_COLORS[self.color_ix]
+        crate::theme::ANNOTATION_COLORS[if self.tool == Some(ShapeKind::Highlighter) {
+            self.highlighter_color_ix
+        } else {
+            self.color_ix
+        }]
     }
     pub(crate) fn width(&self) -> f32 {
-        [1., 3., 5.][self.width_ix]
+        if self.tool == Some(ShapeKind::Highlighter) {
+            [12., 20., 32.][self.highlighter_width_ix]
+        } else {
+            [1., 3., 5.][self.width_ix]
+        }
     }
     pub(crate) fn number_size(&self) -> f32 {
         [24., 32., 40.][self.number_size_ix]
@@ -221,12 +236,20 @@ impl Annotations {
     }
     pub(crate) fn set_color(&mut self, ix: usize) {
         if ix < crate::theme::ANNOTATION_COLORS.len() {
-            self.color_ix = ix;
+            if self.tool == Some(ShapeKind::Highlighter) {
+                self.highlighter_color_ix = ix;
+            } else {
+                self.color_ix = ix;
+            }
         }
     }
     pub(crate) fn set_width(&mut self, ix: usize) {
         if ix < 3 {
-            self.width_ix = ix;
+            if self.tool == Some(ShapeKind::Highlighter) {
+                self.highlighter_width_ix = ix;
+            } else {
+                self.width_ix = ix;
+            }
         }
     }
     pub(crate) fn reset(&mut self) {
@@ -260,14 +283,18 @@ impl Annotations {
                 } else {
                     Bounds::new(p, size(px(0.), px(0.)))
                 },
-                color: self.color().0,
+                color: if self.tool == Some(ShapeKind::Highlighter) {
+                    (self.color().0 & 0xffffff00) | 96
+                } else {
+                    self.color().0
+                },
                 width: self.width(),
                 points: if matches!(
                     self.tool,
                     Some(ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Polyline)
                 ) {
                     vec![p, p]
-                } else if self.tool == Some(ShapeKind::Pencil) {
+                } else if matches!(self.tool, Some(ShapeKind::Pencil | ShapeKind::Highlighter)) {
                     vec![p]
                 } else {
                     Vec::new()
@@ -285,7 +312,7 @@ impl Annotations {
         let Some(draft) = self.draft.as_mut() else {
             return false;
         };
-        if draft.shape.kind == ShapeKind::Pencil {
+        if matches!(draft.shape.kind, ShapeKind::Pencil | ShapeKind::Highlighter) {
             let end = line_endpoint(draft.start, p, selection, false);
             if draft.shape.points.last() == Some(&end) {
                 return false;
@@ -366,7 +393,7 @@ impl Annotations {
         if let Some(draft) = self.draft.take() {
             let valid = if matches!(draft.shape.kind, ShapeKind::Line | ShapeKind::Arrow) {
                 distance(draft.shape.points[0], draft.shape.points[1]) >= 2.
-            } else if draft.shape.kind == ShapeKind::Pencil {
+            } else if matches!(draft.shape.kind, ShapeKind::Pencil | ShapeKind::Highlighter) {
                 true
             } else {
                 draft.shape.bounds.size.width >= px(2.) && draft.shape.bounds.size.height >= px(2.)
@@ -451,7 +478,11 @@ impl Annotations {
             }
             if matches!(
                 shape.kind,
-                ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Polyline | ShapeKind::Pencil
+                ShapeKind::Line
+                    | ShapeKind::Arrow
+                    | ShapeKind::Polyline
+                    | ShapeKind::Pencil
+                    | ShapeKind::Highlighter
             ) {
                 line::rasterize(shape, rgba, w, h, origin, scale);
                 continue;
@@ -570,6 +601,33 @@ mod tests {
         a.begin(point(px(10.), px(10.)), selection());
         a.drag_to(point(px(30.), px(40.)), selection(), false);
         a.end();
+    }
+
+    #[test]
+    fn highlighter_has_independent_style_and_whole_stroke_history() {
+        let mut a = Annotations::default();
+        let original_color = a.color();
+        a.toggle(super::ShapeKind::Highlighter);
+        assert_eq!(a.color().1, "Yellow");
+        assert_eq!(a.width(), 20.);
+        a.set_color(4);
+        a.set_width(2);
+        a.begin(point(px(10.), px(30.)), selection());
+        a.drag_to(point(px(60.), px(30.)), selection(), false);
+        a.end();
+        let mark = a.visible().next().unwrap().clone();
+        assert_eq!(mark.color & 255, 96);
+        assert_eq!(mark.width, 32.);
+        a.toggle(super::ShapeKind::Pencil);
+        assert_eq!(a.color(), original_color);
+        assert_eq!(a.width(), 3.);
+        a.undo();
+        assert_eq!(a.visible().count(), 0);
+        a.redo();
+        assert_eq!(a.visible().next().unwrap(), &mark);
+        a.toggle(super::ShapeKind::Highlighter);
+        assert_eq!(a.width(), 32.);
+        assert_eq!(a.color().1, "Blue");
     }
 
     #[test]
