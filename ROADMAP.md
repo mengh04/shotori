@@ -747,10 +747,12 @@ mosaic/pixelate glyph — `grid-2x2`/`grid-3x3` are line grids that read
 as "table", `layout-grid` as "dashboard".
 
 So shotori now maintains its own icons: `assets/icons/mosaic.svg`
-(Mondrian-style blocks of MIXED sizes on a Lucide-convention 24×24
-canvas, `fill="currentColor"` so it follows the toolbar text color like
-every other icon; uniform cells were rejected — they read as a plain
-grid). Wiring follows the gpui-kit-assets composition contract:
+(five rounded cells in the classic checkerboard quincunx — corners +
+center, the dice-five spot — on a Lucide-convention 24×24 canvas,
+`fill="currentColor"` so it follows the toolbar text color like every
+other icon; user-picked from a seven-candidate sheet rendered at real
+toolbar size/color, both normal and selected states). Wiring follows
+the gpui-kit-assets composition contract:
 
 - `rust_embed` (same 8.x line the kit already compiles) embeds
   `assets/icons` as `OwnIcons`

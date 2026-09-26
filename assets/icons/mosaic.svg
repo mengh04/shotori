@@ -11,19 +11,15 @@
   <!-- Mosaic / pixelate. Lucide has no fitting glyph (its grids read as
        "table"), so this is shotori's own icon. Lucide conventions kept
        (24×24 canvas, currentColor) so it tints with the toolbar text
-       color like every other icon; filled rounded blocks of MIXED sizes
-       are the point — uniform cells would read as a plain grid. -->
+       color like every other icon. Five rounded cells in the classic
+       checkerboard quincunx (corners + center, the dice-five spot) —
+       user-picked from the candidate sheet; gaps read as the unfilled
+       checker cells, no second color needed. -->
   <g fill="currentColor">
-    <rect x="1.5" y="1.5" width="10" height="10" rx="1.5" />
-    <rect x="12.5" y="1.5" width="4.5" height="4.5" rx="1" />
-    <rect x="18" y="1.5" width="4.5" height="4.5" rx="1" />
-    <rect x="12.5" y="7" width="4.5" height="4.5" rx="1" />
-    <rect x="18" y="7" width="4.5" height="4.5" rx="1" />
-    <rect x="1.5" y="12.5" width="4.5" height="10" rx="1.5" />
-    <rect x="7" y="12.5" width="4.5" height="4.5" rx="1" />
-    <rect x="7" y="18" width="4.5" height="4.5" rx="1" />
-    <rect x="12.5" y="12.5" width="10" height="4.5" rx="1.5" />
-    <rect x="12.5" y="18" width="4.5" height="4.5" rx="1" />
-    <rect x="18" y="18" width="4.5" height="4.5" rx="1" />
+    <rect x="3" y="3" width="5" height="5" rx="1" />
+    <rect x="16" y="3" width="5" height="5" rx="1" />
+    <rect x="9.5" y="9.5" width="5" height="5" rx="1" />
+    <rect x="3" y="16" width="5" height="5" rx="1" />
+    <rect x="16" y="16" width="5" height="5" rx="1" />
   </g>
 </svg>
