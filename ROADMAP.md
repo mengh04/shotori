@@ -833,3 +833,29 @@ compositors without xdg-output. Same story, three
 compositors-checked-and-matching sizes on a mixed-DPI triple-monitor
 layout. The session's initial screen size uses the same helper, so the
 pre-configure frame is no longer integer-scale-wrong either.
+
+## Theme system (2026-09-26)
+
+Replaced the loose color constants with a `Theme` struct so the look can
+be swapped as a value. Design decisions worth remembering:
+
+- **No gpui-shell, no gpui-base Theme.** gpui-shell is a QuickJS plugin
+  runtime (+13.5 MiB, not even on crates.io yet) aimed at applications
+  with contributor ecosystems; gpui-base's `SemanticThemeTokens` serves a
+  60-component design system. Shotori self-draws ~17 colors — a
+  homegrown struct is the right size. The seed comment in the old
+  `theme.rs` ("grow into a theme system") is where this grew from.
+- **Install-once, read-everywhere.** `OnceLock<Theme>` set during
+  startup, read via `theme::c()`. The overlay lives seconds; there is no
+  hot-swap story to build.
+- **Best-effort resolution.** Bad hex, out-of-range opacity or unknown
+  fields are logged to stderr and the field falls back — a typo in a
+  color file must never cost a screenshot. `--print-theme` is the
+  exception: errors exit non-zero so scripts can catch them.
+- Palette names stay in code (`PALETTE_NAMES`); themes carry colors
+  only. Swatch names are UI copy, and a custom palette has no meaningful
+  per-slot names anyway.
+- JSON has no comments: exactly one `"//"` key is accepted (serde
+  rename); a second one is a duplicate-field error.
+- `--print-theme` writes via `writeln!` and ignores stdout errors —
+  piping into `head` used to panic on the broken pipe.

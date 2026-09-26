@@ -60,6 +60,24 @@ the screen's native resolution.
 | `Esc` (dragging) | abandon the current drag                      |
 | `Esc`            | exit                                          |
 
+### Themes
+
+Three built-in themes ship in the binary: `dark` (default), `light` and
+`high_contrast`:
+
+```sh
+shotori --theme light
+shotori --print-theme   # dump the resolved values and exit
+```
+
+For anything beyond the built-ins, write a JSON override file — copy
+[`docs/theme.example.json`](docs/theme.example.json) to
+`~/.config/shotori/theme.json` (picked up automatically) or point at it
+explicitly with `--theme /path/to/theme.json`. Every field is optional and
+layers on the chosen `base`; bad values are reported to stderr and fall
+back, never blocking a screenshot. The annotation color palette is
+themeable too.
+
 ### Rectangle and ellipse annotations
 
 After selecting a region, click the rectangle icon (`R`) or ellipse icon (`E`),

@@ -6,7 +6,7 @@
 use gpui_kit::*;
 
 use crate::model::placement::label_anchor;
-use crate::ui::theme::{ACCENT, CHIP_BG, DIM, HINT_TEXT};
+use crate::ui::theme;
 
 /// Paint the dim layer and border together. Separate positioned divs snap
 /// their origins and sizes independently during layout; at fractional DPI
@@ -17,7 +17,7 @@ pub(crate) fn selection_backdrop(sel: Option<Bounds<Pixels>>) -> impl IntoElemen
         |_, _, _| (),
         move |viewport, (), window, _| {
             let Some(mut b) = sel else {
-                window.paint_quad(fill(viewport, rgba(DIM)));
+                window.paint_quad(fill(viewport, rgba(theme::c().dim())));
                 return;
             };
             b.origin += viewport.origin;
@@ -34,10 +34,14 @@ pub(crate) fn selection_backdrop(sel: Option<Bounds<Pixels>>) -> impl IntoElemen
             ];
             for strip in strips {
                 if strip.size.width > px(0.) && strip.size.height > px(0.) {
-                    window.paint_quad(fill(strip, rgba(DIM)));
+                    window.paint_quad(fill(strip, rgba(theme::c().dim())));
                 }
             }
-            window.paint_quad(outline(border, rgba(ACCENT), BorderStyle::default()));
+            window.paint_quad(outline(
+                border,
+                rgba(theme::c().accent),
+                BorderStyle::default(),
+            ));
         },
     )
     .absolute()
@@ -58,7 +62,7 @@ pub(crate) fn hover_outline(b: Bounds<Pixels>) -> impl IntoElement {
         .w(b.size.width)
         .h(b.size.height)
         .border_2()
-        .border_color(rgba(ACCENT))
+        .border_color(rgba(theme::c().accent))
 }
 
 /// Selection size label. The label tries above the selection,
@@ -82,7 +86,7 @@ pub(crate) fn selection_label(
         .px_2()
         .py(px(2.))
         .rounded(px(4.))
-        .bg(rgba(ACCENT))
+        .bg(rgba(theme::c().accent))
         .text_size(px(12.))
         .text_color(rgba(0xFFFFFFFF))
         .child(format!(
@@ -107,9 +111,9 @@ pub(crate) fn hint_bar(text: Option<&'static str>) -> impl IntoElement {
                 .px_4()
                 .py_1()
                 .rounded_lg()
-                .bg(rgba(CHIP_BG))
+                .bg(rgba(theme::c().chip_bg))
                 .text_size(px(13.))
-                .text_color(rgba(HINT_TEXT))
+                .text_color(rgba(theme::c().hint_text))
                 .child(text.unwrap_or_else(hint_text)),
         )
 }
@@ -147,14 +151,14 @@ pub(crate) fn ocr_busy_badge(sel: Option<Bounds<Pixels>>, ws: Size<Pixels>) -> A
         .px_3()
         .py_2()
         .rounded_lg()
-        .bg(rgba(CHIP_BG))
+        .bg(rgba(theme::c().chip_bg))
         .border_1()
-        .border_color(rgba(ACCENT))
+        .border_color(rgba(theme::c().accent))
         .child(spinner())
         .child(
             div()
                 .text_size(px(13.))
-                .text_color(rgba(HINT_TEXT))
+                .text_color(rgba(theme::c().hint_text))
                 .child("OCR…"),
         )
         .into_any_element()
@@ -180,7 +184,7 @@ fn spinner() -> impl IntoElement {
                 .inset_0()
                 .rounded(px(CENTER))
                 .border_1()
-                .border_color(rgba(crate::ui::theme::PIN_BORDER)),
+                .border_color(rgba(crate::ui::theme::c().pin_border)),
         )
         // the orbiting dot
         .child(
@@ -188,7 +192,7 @@ fn spinner() -> impl IntoElement {
                 .absolute()
                 .size(px(DOT))
                 .rounded(px(DOT / 2.))
-                .bg(rgba(crate::ui::theme::ACCENT))
+                .bg(rgba(crate::ui::theme::c().accent))
                 .with_animation(
                     "shotori-spin",
                     Animation::new(std::time::Duration::from_millis(900))

@@ -198,11 +198,15 @@ impl Annotations {
         self.tool.is_some()
     }
     pub(crate) fn color(&self) -> (u32, &'static str) {
-        crate::ui::theme::ANNOTATION_COLORS[if self.tool == Some(ShapeKind::Highlighter) {
+        let ix = if self.tool == Some(ShapeKind::Highlighter) {
             self.highlighter_color_ix
         } else {
             self.color_ix
-        }]
+        };
+        (
+            crate::ui::theme::c().annotation_colors[ix],
+            crate::ui::theme::PALETTE_NAMES[ix],
+        )
     }
     pub(crate) fn width(&self) -> f32 {
         if matches!(self.tool, Some(ShapeKind::Mosaic | ShapeKind::Blur)) {
@@ -242,7 +246,7 @@ impl Annotations {
         };
     }
     pub(crate) fn set_color(&mut self, ix: usize) {
-        if ix < crate::ui::theme::ANNOTATION_COLORS.len() {
+        if ix < crate::ui::theme::c().annotation_colors.len() {
             if self.tool == Some(ShapeKind::Highlighter) {
                 self.highlighter_color_ix = ix;
             } else {

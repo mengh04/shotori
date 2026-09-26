@@ -1,0 +1,27 @@
+{
+  "//": "Shotori theme override. Copy to ~/.config/shotori/theme.json and edit. Every field is optional; unset fields keep the base's values. Colors: #RRGGBB or #RRGGBBAA. Only this one // key is allowed.",
+
+  "base": "dark",
+  "dim_opacity": 0.55,
+  "accent": "#FF6A00",
+  "pin_border": "#FF6A0099",
+
+  "chip_bg": "#16161DE6",
+  "hint_text": "#AAAAAA",
+  "btn_text": "#EEEEEE",
+  "btn_hover_bg": "#FFFFFF26",
+
+  "toolbar_bg": "#FAFAFC",
+  "toolbar_text": "#30343B",
+  "toolbar_border": "#D9DCE2",
+  "toolbar_hover": "#EAEDF2",
+  "toolbar_selected": "#453528",
+  "swatch_border": "#FFFFFF38",
+
+  "mosaic_dark": "#858A93",
+  "mosaic_light": "#CDD0D6",
+
+  "annotation_colors": [
+    "#FF4545", "#FF8A32", "#FFD43B", "#40C878", "#409CFF", "#222222", "#FFFFFF"
+  ]
+}

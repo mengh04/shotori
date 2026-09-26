@@ -238,7 +238,7 @@ pub(crate) fn selection_toolbar(
                                 svg()
                                     .path(IconName::MirrorRectangular.path())
                                     .size(px(18.))
-                                    .text_color(rgba(theme::TOOLBAR_TEXT))
+                                    .text_color(rgba(theme::c().toolbar_text))
                                     .into_any_element()
                             },
                         ),
@@ -265,7 +265,7 @@ pub(crate) fn selection_toolbar(
                             div()
                                 .size(px([4., 7., 10.][ix]))
                                 .rounded(px(1.))
-                                .bg(rgba(theme::TOOLBAR_TEXT)),
+                                .bg(rgba(theme::c().toolbar_text)),
                         ),
                     );
                 }
@@ -322,13 +322,14 @@ pub(crate) fn selection_toolbar(
                                 width + 2.
                             }))
                             .rounded_full()
-                            .bg(rgba(theme::TOOLBAR_TEXT))
+                            .bg(rgba(theme::c().toolbar_text))
                             .into_any_element()
                     }),
                 );
             }
             options = options.child(separator()).child(div().flex_1());
-            for (ix, (color, name)) in theme::ANNOTATION_COLORS.into_iter().enumerate() {
+            for (ix, color) in theme::c().annotation_colors.into_iter().enumerate() {
+                let name = theme::PALETTE_NAMES[ix];
                 let session = session.clone();
                 options = options.child(
                     control(
@@ -350,7 +351,7 @@ pub(crate) fn selection_toolbar(
                             .rounded(px(4.))
                             .bg(rgba(color))
                             .border_1()
-                            .border_color(rgba(theme::TOOLBAR_BORDER)),
+                            .border_color(rgba(theme::c().swatch_border)),
                     ),
                 );
             }
@@ -368,9 +369,9 @@ fn mosaic_icon() -> Div {
             div().flex().children((0..3).map(move |col| {
                 div().size(px(6.)).rounded(px(2.)).flex_shrink_0().bg(rgba(
                     if (row + col) % 2 == 0 {
-                        theme::MOSAIC_DARK
+                        theme::c().mosaic_dark
                     } else {
-                        theme::MOSAIC_LIGHT
+                        theme::c().mosaic_light
                     },
                 ))
             }))
@@ -385,9 +386,9 @@ fn bar() -> Div {
         .h(px(ROW_H))
         .px(px(5.))
         .rounded(px(8.))
-        .bg(rgba(theme::TOOLBAR_BG))
+        .bg(rgba(theme::c().toolbar_bg))
         .border_1()
-        .border_color(rgba(theme::TOOLBAR_BORDER))
+        .border_color(rgba(theme::c().toolbar_border))
         .shadow_md()
 }
 
@@ -396,7 +397,7 @@ fn separator() -> Div {
         .w(px(1.))
         .h(px(18.))
         .mx(px(4.))
-        .bg(rgba(theme::TOOLBAR_BORDER))
+        .bg(rgba(theme::c().toolbar_border))
 }
 
 fn icon_button(
@@ -410,7 +411,7 @@ fn icon_button(
         svg()
             .path(icon.path())
             .size(px(18.))
-            .text_color(rgba(theme::TOOLBAR_TEXT)),
+            .text_color(rgba(theme::c().toolbar_text)),
     )
 }
 
@@ -436,15 +437,15 @@ fn control(
         .size(px(30.))
         .flex_shrink_0()
         .rounded(px(5.))
-        .text_color(rgba(theme::TOOLBAR_TEXT))
-        .hover(|s| s.bg(rgba(theme::TOOLBAR_HOVER)))
-        .focus_visible(|s| s.border_1().border_color(rgba(theme::ACCENT)))
+        .text_color(rgba(theme::c().toolbar_text))
+        .hover(|s| s.bg(rgba(theme::c().toolbar_hover)))
+        .focus_visible(|s| s.border_1().border_color(rgba(theme::c().accent)))
         .styles(|s| {
             s.selected(|s| {
-                s.bg(rgba(theme::TOOLBAR_SELECTED))
-                    .text_color(rgba(theme::ACCENT))
+                s.bg(rgba(theme::c().toolbar_selected))
+                    .text_color(rgba(theme::c().accent))
                     .border_1()
-                    .border_color(rgba(theme::ACCENT))
+                    .border_color(rgba(theme::c().accent))
             })
         })
 }
@@ -456,11 +457,11 @@ impl Render for ToolbarTooltip {
             .px_2()
             .py_1()
             .rounded(px(5.))
-            .bg(rgba(theme::TOOLBAR_BG))
+            .bg(rgba(theme::c().toolbar_bg))
             .border_1()
-            .border_color(rgba(theme::TOOLBAR_BORDER))
+            .border_color(rgba(theme::c().toolbar_border))
             .text_size(px(12.))
-            .text_color(rgba(theme::TOOLBAR_TEXT))
+            .text_color(rgba(theme::c().toolbar_text))
             .child(self.0.clone())
     }
 }

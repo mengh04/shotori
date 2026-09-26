@@ -132,7 +132,7 @@ pub(crate) fn setup_card(setup: &OcrSetup, focus: &SetupFocus) -> impl IntoEleme
         .flex()
         .items_center()
         .justify_center()
-        .bg(rgba(theme::DIM))
+        .bg(rgba(theme::c().dim()))
         // clicks on the backdrop must not start a new selection underneath
         .on_mouse_down(MouseButton::Left, |_, _, cx| {
             cx.stop_propagation();
@@ -200,9 +200,9 @@ fn card_body(setup: &OcrSetup, focus: &SetupFocus) -> impl IntoElement {
     div()
         .w(px(CARD_W))
         .rounded(px(14.))
-        .bg(rgba(theme::CHIP_BG))
+        .bg(rgba(theme::c().chip_bg))
         .border_1()
-        .border_color(rgba(theme::ACCENT))
+        .border_color(rgba(theme::c().accent))
         .p_4()
         .flex()
         .flex_col()
@@ -213,7 +213,7 @@ fn card_body(setup: &OcrSetup, focus: &SetupFocus) -> impl IntoElement {
         .child(
             div()
                 .text_size(px(15.))
-                .text_color(rgba(theme::BTN_TEXT))
+                .text_color(rgba(theme::c().btn_text))
                 .child(title),
         )
         .children(body)
@@ -223,7 +223,7 @@ fn card_body(setup: &OcrSetup, focus: &SetupFocus) -> impl IntoElement {
 fn text_line(s: &str) -> AnyElement {
     div()
         .text_size(px(13.))
-        .text_color(rgba(theme::HINT_TEXT))
+        .text_color(rgba(theme::c().hint_text))
         .line_height(px(19.))
         .child(s.replace('\n', " "))
         .into_any_element()
@@ -234,14 +234,14 @@ fn progress_bar(pct: f32, w: f32) -> AnyElement {
         .w(px(w))
         .h(px(8.))
         .rounded(px(4.))
-        .bg(rgba(theme::BTN_HOVER_BG))
+        .bg(rgba(theme::c().btn_hover_bg))
         .overflow_hidden()
         .child(
             div()
                 .h_full()
                 .w(px(w * pct))
                 .rounded(px(4.))
-                .bg(rgba(theme::ACCENT)),
+                .bg(rgba(theme::c().accent)),
         )
         .into_any_element()
 }
@@ -259,11 +259,11 @@ fn action_button<A: Action + Clone + 'static>(
         .py_1()
         .rounded(px(6.))
         .text_size(px(13.))
-        .text_color(rgba(theme::BTN_TEXT))
+        .text_color(rgba(theme::c().btn_text))
         .border_1()
-        .border_color(rgba(theme::PIN_BORDER))
-        .hover(|s| s.bg(rgba(theme::BTN_HOVER_BG)))
-        .focus_visible(|s| s.border_color(rgba(theme::ACCENT)))
+        .border_color(rgba(theme::c().pin_border))
+        .hover(|s| s.bg(rgba(theme::c().btn_hover_bg)))
+        .focus_visible(|s| s.border_color(rgba(theme::c().accent)))
         .on_mouse_down(MouseButton::Left, |_, _, cx| {
             cx.stop_propagation();
         })

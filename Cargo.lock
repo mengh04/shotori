@@ -6604,6 +6604,7 @@ dependencies = [
  "rapidocr-core",
  "reqwest",
  "rfd",
+ "serde",
  "serde_json",
  "sha2 0.11.0",
  "smallvec",

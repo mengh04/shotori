@@ -34,6 +34,10 @@ fn main() {
         return;
     }
 
+    // ⓪ Theme resolution (--theme / --print-theme / XDG config file);
+    // must run before any window opens
+    shotori::ui::theme::load::init();
+
     // ① Freeze all screens (must complete before the overlays appear)
     let caps = match capture::capture_all_outputs() {
         Ok(c) => c,
