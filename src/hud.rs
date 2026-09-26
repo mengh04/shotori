@@ -106,7 +106,7 @@ fn label_anchor(b: &Bounds<Pixels>, ws: Size<Pixels>) -> (f32, f32) {
 }
 
 /// Bottom hint bar
-pub(crate) fn hint_bar() -> impl IntoElement {
+pub(crate) fn hint_bar(text: Option<&'static str>) -> impl IntoElement {
     div()
         .absolute()
         .bottom(px(24.))
@@ -122,7 +122,7 @@ pub(crate) fn hint_bar() -> impl IntoElement {
                 .bg(rgba(CHIP_BG))
                 .text_size(px(13.))
                 .text_color(rgba(HINT_TEXT))
-                .child(hint_text()),
+                .child(text.unwrap_or_else(hint_text)),
         )
 }
 

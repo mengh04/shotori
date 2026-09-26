@@ -198,9 +198,13 @@ impl ScreenshotSession {
         let origin = self.screen(name).bounds().origin;
         self.annotations
             .visible()
-            .map(|mut rectangle| {
-                rectangle.bounds.origin -= origin;
-                rectangle
+            .cloned()
+            .map(|mut shape| {
+                shape.bounds.origin -= origin;
+                for point in &mut shape.points {
+                    *point -= origin;
+                }
+                shape
             })
             .collect()
     }
@@ -445,8 +449,8 @@ mod tests {
         });
         s.pointer_down("left", point(px(90.), px(25.)));
         s.pointer_up("right", point(px(10.), px(55.)), false);
-        let left = s.local_annotations("left")[0];
-        let right = s.local_annotations("right")[0];
+        let left = s.local_annotations("left")[0].clone();
+        let right = s.local_annotations("right")[0].clone();
         assert_eq!(left.bounds.origin, point(px(90.), px(25.)));
         assert_eq!(right.bounds.origin, point(px(-10.), px(45.)));
         let (w, h, pixels) = s.crop("right").unwrap();
@@ -463,5 +467,44 @@ mod tests {
             &original[(11 * w as usize + 40) * 4..(11 * w as usize + 40) * 4 + 4],
             &[0, 255, 0, 255]
         );
+    }
+    #[test]
+    fn line_and_polyline_cross_outputs_and_export_without_floating_preview() {
+        for kind in [
+            crate::annotation::ShapeKind::Line,
+            crate::annotation::ShapeKind::Polyline,
+        ] {
+            let mut s = session();
+            s.begin("left", point(px(80.), px(20.)));
+            s.end("right", point(px(20.), px(60.)));
+            s.edit_annotations(|a| {
+                a.toggle(kind);
+                a.set_color(4);
+            });
+            s.pointer_down("left", point(px(90.), px(30.)));
+            if kind == crate::annotation::ShapeKind::Polyline {
+                s.pointer_up("left", point(px(90.), px(30.)), false);
+                s.pointer_down("right", point(px(10.), px(50.)));
+            }
+            s.pointer_up("right", point(px(10.), px(50.)), false);
+            s.pointer_move("right", point(px(10.), px(58.)), false);
+            s.edit_annotations(|a| a.finish_polyline());
+            let left = s.local_annotations("left");
+            let right = s.local_annotations("right");
+            assert_eq!(left[0].points[0], point(px(90.), px(30.)));
+            assert_eq!(right[0].points[0], point(px(-10.), px(50.)));
+            let (w, h, pixels) = s.crop("left").unwrap();
+            let png = crate::export::encode_png(w, h, &pixels).unwrap();
+            let decoded = image::load_from_memory(&png).unwrap().into_rgba8();
+            let color = s.annotations().color().0.to_be_bytes();
+            assert_eq!(decoded.get_pixel(25, 20).0, color);
+            assert_eq!(decoded.get_pixel(55, 20).0, color);
+            assert_eq!(decoded.get_pixel(60, 35).0, [0, 255, 0, 255]);
+            let (_, _, original) = s.crop_original("right").unwrap();
+            assert_eq!(
+                &original[(20 * w as usize + 55) * 4..(20 * w as usize + 55) * 4 + 4],
+                &[0, 255, 0, 255]
+            );
+        }
     }
 }

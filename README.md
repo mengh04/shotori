@@ -79,6 +79,21 @@ widths and undo/redo history.
 Rectangle and ellipse outlines are available. Moving, resizing, rotation,
 fill and rounded corners are not implemented yet.
 
+### Line and polyline annotations
+
+- Click the line icon or press `L`, then drag and release to draw a straight line.
+- Click the polyline icon or press `P`, then click to add vertices. Double-click,
+  right-click or press `Enter` to finish the entire polyline.
+- Hold `Shift` to constrain the current segment to 45° increments. Finishing keeps
+  confirmed vertices only, excluding the floating preview segment.
+- Both tools share colors, widths and history, support cross-screen drawing and
+  antialiased export. A complete polyline is one undo step.
+- `Esc` cancels the current drawing, then leaves the tool on the next press.
+  Copy/save finish an active polyline before exporting.
+
+Currently supports solid strokes with round caps and joins. Vertex editing,
+dashes and configurable endpoint styles are planned follow-ups.
+
 ### OCR
 
 The first `Ctrl+O` asks before downloading the models (~31 MB, one time);

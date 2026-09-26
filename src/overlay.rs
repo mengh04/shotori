@@ -27,6 +27,9 @@ gpui_kit::actions!([
     OcrSelection,
     ToggleRectangle,
     ToggleEllipse,
+    ToggleLine,
+    TogglePolyline,
+    FinishPolyline,
     UndoAnnotation,
     RedoAnnotation
 ]);
@@ -36,6 +39,9 @@ pub fn init_annotation_keybindings(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("r", ToggleRectangle, Some("ShotoriOverlay")),
         KeyBinding::new("e", ToggleEllipse, Some("ShotoriOverlay")),
+        KeyBinding::new("l", ToggleLine, Some("ShotoriOverlay")),
+        KeyBinding::new("p", TogglePolyline, Some("ShotoriOverlay")),
+        KeyBinding::new("enter", FinishPolyline, Some("PolylineDrawing")),
         KeyBinding::new("ctrl-z", UndoAnnotation, Some("ShotoriOverlay")),
         KeyBinding::new("ctrl-y", RedoAnnotation, Some("ShotoriOverlay")),
         KeyBinding::new("ctrl-shift-z", RedoAnnotation, Some("ShotoriOverlay")),
@@ -140,6 +146,10 @@ impl Overlay {
     /// Enter / Ctrl+C / toolbar [Copy]: crop → PNG → clipboard (resident
     /// daemon) → exit. The primary exit of daily use.
     fn copy_selection(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.session.update(cx, |s, cx| {
+            s.edit_annotations(|a| a.finish_polyline());
+            cx.notify();
+        });
         let (w, h, rgba) = match self.crop(cx) {
             Some(x) => x,
             None => {
@@ -179,6 +189,10 @@ impl Overlay {
     /// SaveFile), the write and the notification run on the main thread
     /// afterwards — see [`crate::save_dialog`]
     fn save_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.session.update(cx, |s, cx| {
+            s.edit_annotations(|a| a.finish_polyline());
+            cx.notify();
+        });
         let Some((w, h, rgba)) = self.crop(cx) else {
             println!("[shotori] empty selection, ignoring");
             return;
@@ -447,6 +461,8 @@ impl Render for Overlay {
             .backdrop_bounds(&self.capture.output_name)
             .map(round_px);
         let shapes = shared.local_annotations(&self.capture.output_name);
+        let drawing_polyline = shared.annotations().is_drawing_polyline();
+        let active_tool = shared.annotations().tool();
         let active = shared.active_on(&self.capture.output_name);
         let input_view = cx.entity().downgrade();
         let ws = window.bounds().size; // window logical size (= output logical size)
@@ -458,6 +474,8 @@ impl Render for Overlay {
             .id("shotori-overlay")
             .key_context(if self.ocr_setup.is_some() {
                 "ShotoriOcrSetup"
+            } else if drawing_polyline {
+                "ShotoriOverlay PolylineDrawing"
             } else {
                 "ShotoriOverlay"
             })
@@ -475,6 +493,27 @@ impl Render for Overlay {
                 window.focus(&this.focus_handle, cx);
                 this.session.update(cx, |s, cx| {
                     s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Ellipse));
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &ToggleLine, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Line));
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &TogglePolyline, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Polyline));
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &FinishPolyline, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.finish_polyline());
                     cx.notify();
                 });
             }))
@@ -578,6 +617,13 @@ impl Render for Overlay {
                     cx.notify();
                 }),
             )
+            .on_mouse_down(MouseButton::Right, cx.listener(|this, _, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.finish_polyline());
+                    cx.notify();
+                });
+            }))
             // ── Layer stack (bottom to top) ─────────────────────────────
             // ① The frozen screen image (opaque, filling the window)
             .child(img(self.frozen.clone()).size_full())
@@ -593,6 +639,12 @@ impl Render for Overlay {
                                 Some(ContentMask { bounds: clip }),
                                 |window| {
                                     for shape in shapes {
+                                        if matches!(shape.kind, crate::annotation::ShapeKind::Line | crate::annotation::ShapeKind::Polyline) {
+                                            for path in shape.line_paths(viewport.origin) {
+                                                window.paint_path(path, rgba(shape.color));
+                                            }
+                                            continue;
+                                        }
                                         if shape.kind == crate::annotation::ShapeKind::Ellipse {
                                             if let Some(path) = shape.ellipse_path(viewport.origin)
                                             {
@@ -644,11 +696,15 @@ impl Render for Overlay {
                             }
                             let _ = input_view.update(cx, |this, cx| {
                                 this.session.update(cx, |s, cx| {
+                                    let finish = event.click_count >= 2 && s.annotations().is_pressed();
                                     s.pointer_up(
                                         &this.capture.output_name,
                                         event.position,
                                         event.modifiers.shift,
                                     );
+                                    if finish {
+                                        s.edit_annotations(|a| a.finish_polyline());
+                                    }
                                     cx.notify();
                                 });
                             });
@@ -682,7 +738,11 @@ impl Render for Overlay {
                 },
             )
             // ⑤ Bottom hint bar
-            .child(hint_bar())
+            .child(hint_bar(match active_tool {
+                Some(crate::annotation::ShapeKind::Line) => Some("Drag to draw a line · Shift 45° · Esc leave tool"),
+                Some(crate::annotation::ShapeKind::Polyline) => Some("Click to add nodes · Double-click / Right-click / Enter finish · Shift 45° · Esc cancel"),
+                _ => None,
+            }))
             // ⑥ OCR busy badge (spinner on the selection)
             .children(busy_el)
             // ⑦ First-run OCR setup dialog (confirm / progress), topmost
@@ -893,6 +953,145 @@ mod multi_output_tests {
     #[gpui_kit::test]
     fn ellipse_toolbar_keyboard_and_export_share_the_same_state(cx: &mut TestAppContext) {
         geometry_toolbar_keyboard_and_export(cx, crate::annotation::ShapeKind::Ellipse);
+    }
+
+    #[gpui_kit::test]
+    fn line_and_polyline_pointer_keyboard_and_toolbar_workflows(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::base::init(cx);
+            super::init_annotation_keybindings(cx);
+            cx.bind_keys([gpui_kit::KeyBinding::new(
+                "escape",
+                super::QuitOverlay,
+                Some("ShotoriOverlay"),
+            )]);
+        });
+        let mut capture = Capture::for_test((0, 0), 1.);
+        capture.output_name = "screen".into();
+        capture.width = 500;
+        capture.height = 500;
+        capture.rgba = vec![255; 500 * 500 * 4];
+        let capture = Arc::new(capture);
+        let session = cx.new(|_| ScreenshotSession::new(vec![capture.clone()]));
+        let (_, cx) =
+            cx.add_window_view(|window, cx| Overlay::new(capture, session.clone(), window, cx));
+        cx.simulate_resize(size(px(500.), px(500.)));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_mouse_down(
+            point(px(20.), px(20.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.simulate_mouse_up(
+            point(px(350.), px(300.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let line_button = cx.debug_bounds("tb-line").unwrap();
+        cx.simulate_click(line_button.center(), Default::default());
+        cx.simulate_mouse_down(
+            point(px(50.), px(50.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.simulate_mouse_up(
+            point(px(180.), px(50.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.update(|_, cx| {
+            assert_eq!(
+                session
+                    .read(cx)
+                    .annotations()
+                    .visible()
+                    .next()
+                    .unwrap()
+                    .kind,
+                crate::annotation::ShapeKind::Line
+            )
+        });
+        cx.simulate_keystrokes("p");
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        for (x, y) in [(50., 80.), (100., 150.), (180., 80.)] {
+            cx.simulate_click(point(px(x), px(y)), Default::default());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        let color = cx.debug_bounds("tb-color-3").unwrap();
+        cx.simulate_click(color.center(), Default::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_keystrokes("enter");
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let marks = session.read(cx).annotations();
+            assert!(!marks.is_drawing_polyline());
+            assert_eq!(marks.visible().count(), 2);
+            assert_eq!(marks.visible().last().unwrap().points.len(), 3);
+        });
+        cx.simulate_keystrokes("ctrl-z");
+        cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 1));
+        cx.simulate_keystrokes("ctrl-y");
+        cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 2));
+        // A right click commits only confirmed vertices, dropping the preview.
+        cx.simulate_click(point(px(60.), px(190.)), Default::default());
+        cx.simulate_click(point(px(180.), px(190.)), Default::default());
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                gpui_kit::PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                    position: point(px(250.), px(230.)),
+                    ..Default::default()
+                }),
+                cx,
+            );
+        });
+        cx.simulate_mouse_down(
+            point(px(250.), px(230.)),
+            MouseButton::Right,
+            Default::default(),
+        );
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            assert_eq!(
+                session
+                    .read(cx)
+                    .annotations()
+                    .visible()
+                    .last()
+                    .unwrap()
+                    .points
+                    .len(),
+                2
+            );
+        });
+        // Double-click finishes once without adding a duplicate endpoint.
+        cx.simulate_click(point(px(60.), px(240.)), Default::default());
+        cx.simulate_click(point(px(160.), px(240.)), Default::default());
+        cx.simulate_mouse_down(
+            point(px(160.), px(240.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                gpui_kit::PlatformInput::MouseUp(gpui_kit::MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: point(px(160.), px(240.)),
+                    click_count: 2,
+                    ..Default::default()
+                }),
+                cx,
+            );
+            window.draw(cx).clear(cx);
+            let marks = session.read(cx).annotations();
+            assert!(!marks.is_drawing_polyline());
+            assert_eq!(marks.visible().count(), 4);
+            assert_eq!(marks.visible().last().unwrap().points.len(), 2);
+        });
+        cx.simulate_click(point(px(60.), px(260.)), Default::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_keystrokes("escape");
+        cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 4));
     }
 
     fn geometry_toolbar_keyboard_and_export(

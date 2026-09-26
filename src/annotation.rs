@@ -1,23 +1,32 @@
 //! Geometry annotations in desktop logical coordinates, shared by all outputs.
+mod line;
+
 use gpui_kit::{Bounds, Path, PathBuilder, Pixels, Point, point, px, size};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ShapeKind {
     Rectangle,
     Ellipse,
+    Line,
+    Polyline,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Shape {
     pub(crate) kind: ShapeKind,
     pub(crate) bounds: Bounds<Pixels>,
     pub(crate) color: u32,
     pub(crate) width: f32,
+    pub(crate) points: Vec<Point<Pixels>>,
 }
 
 impl Shape {
+    pub(crate) fn line_paths(&self, offset: Point<Pixels>) -> Vec<Path<Pixels>> {
+        line::paths(&self.points, self.width, offset)
+    }
+
     /// Match export's inward ellipse ring; reverse the inner contour to cut a hole.
-    pub(crate) fn ellipse_path(self, offset: Point<Pixels>) -> Option<Path<Pixels>> {
+    pub(crate) fn ellipse_path(&self, offset: Point<Pixels>) -> Option<Path<Pixels>> {
         let rx = f32::from(self.bounds.size.width) / 2.;
         let ry = f32::from(self.bounds.size.height) / 2.;
         if rx <= 0. || ry <= 0. {
@@ -48,7 +57,14 @@ impl Shape {
         path.build().ok()
     }
 
-    fn rasterize_ellipse(self, rgba: &mut [u8], w: u32, h: u32, origin: Point<Pixels>, scale: f32) {
+    fn rasterize_ellipse(
+        &self,
+        rgba: &mut [u8],
+        w: u32,
+        h: u32,
+        origin: Point<Pixels>,
+        scale: f32,
+    ) {
         let rx = f32::from(self.bounds.size.width) * scale / 2.;
         let ry = f32::from(self.bounds.size.height) * scale / 2.;
         if rx <= 0. || ry <= 0. {
@@ -104,7 +120,7 @@ impl Shape {
     }
 
     /// Inward strokes keep both preview and export within the rectangle.
-    pub(crate) fn strokes(self) -> [Bounds<Pixels>; 4] {
+    pub(crate) fn strokes(&self) -> [Bounds<Pixels>; 4] {
         let b = self.bounds;
         let width = px(self.width)
             .min(b.size.width / 2.)
@@ -127,7 +143,7 @@ impl Shape {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Draft {
     start: Point<Pixels>,
     shape: Shape,
@@ -140,6 +156,7 @@ pub(crate) struct Annotations {
     shapes: Vec<Shape>,
     undone: Vec<Shape>,
     draft: Option<Draft>,
+    pressed: bool,
 }
 
 impl Default for Annotations {
@@ -151,6 +168,7 @@ impl Default for Annotations {
             shapes: Vec::new(),
             undone: Vec::new(),
             draft: None,
+            pressed: false,
         }
     }
 }
@@ -170,6 +188,7 @@ impl Annotations {
     }
     pub(crate) fn toggle(&mut self, kind: ShapeKind) {
         self.draft = None;
+        self.pressed = false;
         self.tool = if self.tool == Some(kind) {
             None
         } else {
@@ -190,11 +209,16 @@ impl Annotations {
         self.shapes.clear();
         self.undone.clear();
         self.draft = None;
+        self.pressed = false;
         self.tool = None;
     }
 
     pub(crate) fn begin(&mut self, p: Point<Pixels>, selection: Bounds<Pixels>) {
         if !self.enabled() || !selection.contains(&p) {
+            return;
+        }
+        self.pressed = true;
+        if self.tool == Some(ShapeKind::Polyline) && self.draft.is_some() {
             return;
         }
         self.draft = Some(Draft {
@@ -204,6 +228,11 @@ impl Annotations {
                 bounds: Bounds::new(p, size(px(0.), px(0.))),
                 color: self.color().0,
                 width: self.width(),
+                points: if matches!(self.tool, Some(ShapeKind::Line | ShapeKind::Polyline)) {
+                    vec![p, p]
+                } else {
+                    Vec::new()
+                },
             },
         });
     }
@@ -217,6 +246,14 @@ impl Annotations {
         let Some(draft) = self.draft.as_mut() else {
             return false;
         };
+        if matches!(draft.shape.kind, ShapeKind::Line | ShapeKind::Polyline) {
+            let last = draft.shape.points.len() - 1;
+            let start = draft.shape.points[last - 1];
+            let end = line_endpoint(start, p, selection, square);
+            let changed = draft.shape.points[last] != end;
+            draft.shape.points[last] = end;
+            return changed;
+        }
         let start = draft.start;
         let mut end = point(
             p.x.clamp(selection.left(), selection.right()),
@@ -255,17 +292,61 @@ impl Annotations {
     }
 
     pub(crate) fn end(&mut self) {
-        if let Some(draft) = self.draft.take()
-            && draft.shape.bounds.size.width >= px(2.)
-            && draft.shape.bounds.size.height >= px(2.)
+        if !std::mem::take(&mut self.pressed) {
+            return;
+        }
+        if let Some(draft) = self.draft.as_mut()
+            && draft.shape.kind == ShapeKind::Polyline
         {
-            self.shapes.push(draft.shape);
+            let last = draft.shape.points.len() - 1;
+            let end = draft.shape.points[last];
+            if distance(draft.shape.points[last - 1], end) >= 2. {
+                draft.shape.points.push(end);
+            } else {
+                draft.shape.points[last] = draft.shape.points[last - 1];
+            }
+            return;
+        }
+        if let Some(draft) = self.draft.take() {
+            let valid = if draft.shape.kind == ShapeKind::Line {
+                distance(draft.shape.points[0], draft.shape.points[1]) >= 2.
+            } else {
+                draft.shape.bounds.size.width >= px(2.) && draft.shape.bounds.size.height >= px(2.)
+            };
+            if valid {
+                self.shapes.push(draft.shape);
+                self.undone.clear();
+            }
+        }
+    }
+
+    pub(crate) fn is_pressed(&self) -> bool {
+        self.pressed
+    }
+
+    pub(crate) fn is_drawing_polyline(&self) -> bool {
+        self.draft
+            .as_ref()
+            .is_some_and(|draft| draft.shape.kind == ShapeKind::Polyline)
+    }
+
+    /// Commit confirmed vertices, never the floating cursor preview.
+    pub(crate) fn finish_polyline(&mut self) {
+        if !self.is_drawing_polyline() {
+            return;
+        }
+        self.pressed = false;
+        let mut shape = self.draft.take().unwrap().shape;
+        shape.points.pop();
+        if shape.points.len() >= 2 {
+            self.shapes.push(shape);
             self.undone.clear();
         }
     }
 
     /// Escape cancels a stroke first, then leaves the tool while keeping marks.
     pub(crate) fn cancel(&mut self) -> bool {
+        self.pressed = false;
         if self.draft.take().is_some() {
             return true;
         }
@@ -276,6 +357,7 @@ impl Annotations {
         false
     }
     pub(crate) fn undo(&mut self) {
+        self.pressed = false;
         if self.draft.take().is_some() {
             return;
         }
@@ -290,11 +372,10 @@ impl Annotations {
             self.shapes.push(shape);
         }
     }
-    pub(crate) fn visible(&self) -> impl Iterator<Item = Shape> + '_ {
+    pub(crate) fn visible(&self) -> impl Iterator<Item = &Shape> + '_ {
         self.shapes
             .iter()
-            .copied()
-            .chain(self.draft.map(|draft| draft.shape))
+            .chain(self.draft.as_ref().map(|draft| &draft.shape))
     }
 
     pub(crate) fn rasterize(
@@ -306,6 +387,10 @@ impl Annotations {
         scale: f32,
     ) {
         for shape in self.visible() {
+            if matches!(shape.kind, ShapeKind::Line | ShapeKind::Polyline) {
+                line::rasterize(shape, rgba, w, h, origin, scale);
+                continue;
+            }
             if shape.kind == ShapeKind::Ellipse {
                 shape.rasterize_ellipse(rgba, w, h, origin, scale);
                 continue;
@@ -334,6 +419,66 @@ impl Annotations {
             }
         }
     }
+}
+
+fn distance(a: Point<Pixels>, b: Point<Pixels>) -> f32 {
+    f32::from(b.x - a.x).hypot(f32::from(b.y - a.y))
+}
+
+fn line_endpoint(
+    start: Point<Pixels>,
+    p: Point<Pixels>,
+    bounds: Bounds<Pixels>,
+    constrain: bool,
+) -> Point<Pixels> {
+    let end = point(
+        p.x.clamp(bounds.left(), bounds.right()),
+        p.y.clamp(bounds.top(), bounds.bottom()),
+    );
+    if !constrain {
+        return end;
+    }
+    let dx = f32::from(end.x - start.x);
+    let dy = f32::from(end.y - start.y);
+    let direction =
+        ((dy.atan2(dx) / std::f32::consts::FRAC_PI_4).round() as i32).rem_euclid(8) as usize;
+    let (x, y): (f32, f32) = [
+        (1., 0.),
+        (1., 1.),
+        (0., 1.),
+        (-1., 1.),
+        (-1., 0.),
+        (-1., -1.),
+        (0., -1.),
+        (1., -1.),
+    ][direction];
+    let mut length = dx.hypot(dy) / x.hypot(y);
+    for (direction, available) in [
+        (
+            x,
+            if x < 0. {
+                start.x - bounds.left()
+            } else {
+                bounds.right() - start.x
+            },
+        ),
+        (
+            y,
+            if y < 0. {
+                start.y - bounds.top()
+            } else {
+                bounds.bottom() - start.y
+            },
+        ),
+    ] {
+        if direction != 0. {
+            length = length.min(f32::from(available));
+        }
+    }
+    point(
+        (start.x + px(x * length)).clamp(bounds.left(), bounds.right()),
+        (start.y + px(y * length)).clamp(bounds.top(), bounds.bottom()),
+    )
 }
 
 #[cfg(test)]
@@ -479,6 +624,7 @@ mod tests {
                 kind: super::ShapeKind::Ellipse,
                 bounds: Bounds::new(point(px(-10.), px(15.)), size(px(60.), px(40.))),
                 color: 0xff0000ff,
+                points: Vec::new(),
                 width: 3.,
             };
             let w = (100. * scale) as u32;
@@ -515,6 +661,7 @@ mod tests {
                 kind: super::ShapeKind::Ellipse,
                 bounds: Bounds::new(point(px(-10.), px(-10.)), size(px(width), px(height))),
                 color: 0xff0000ff,
+                points: Vec::new(),
                 width: 5.,
             };
             let mut pixels = [0, 0, 0, 255].repeat(400);
@@ -523,6 +670,111 @@ mod tests {
                 ellipse.ellipse_path(point(px(0.), px(0.))).is_some(),
                 width > 0.
             );
+        }
+    }
+    #[test]
+    fn horizontal_vertical_and_reverse_lines_are_valid_but_tiny_clicks_preserve_redo() {
+        let mut a = Annotations::default();
+        a.toggle(super::ShapeKind::Line);
+        for (x, y) in [(50., 20.), (20., 50.), (-10., 20.)] {
+            a.begin(point(px(20.), px(20.)), selection());
+            a.drag_to(point(px(x), px(y)), selection(), false);
+            a.end();
+        }
+        assert_eq!(a.visible().count(), 3);
+        a.undo();
+        a.begin(point(px(20.), px(20.)), selection());
+        a.end();
+        a.redo();
+        assert_eq!(a.visible().count(), 3);
+    }
+
+    #[test]
+    fn line_snapping_preserves_45_degree_angles_at_every_boundary() {
+        let start = point(px(30.), px(30.));
+        for (x, y) in [
+            (-200., -80.),
+            (-80., 10.),
+            (40., -300.),
+            (200., 200.),
+            (200., 50.),
+            (45., 200.),
+        ] {
+            let end = super::line_endpoint(start, point(px(x), px(y)), selection(), true);
+            // Stroke endpoints may lie exactly on the crop's exclusive right/bottom edge.
+            assert!(end.x >= selection().left() && end.x <= selection().right());
+            assert!(end.y >= selection().top() && end.y <= selection().bottom());
+            let dx = f32::from(end.x - start.x).abs();
+            let dy = f32::from(end.y - start.y).abs();
+            assert!(dx < 0.001 || dy < 0.001 || (dx - dy).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn polyline_commits_clicked_nodes_only_and_undoes_as_one_annotation() {
+        let mut a = Annotations::default();
+        a.toggle(super::ShapeKind::Polyline);
+        for (x, y) in [(10., 10.), (40., 40.), (10., 70.)] {
+            let p = point(px(x), px(y));
+            a.begin(p, selection());
+            a.drag_to(p, selection(), false);
+            a.end();
+        }
+        a.drag_to(point(px(60.), px(80.)), selection(), false);
+        // A toolbar mouse-up has no corresponding canvas mouse-down.
+        a.end();
+        assert!(a.is_drawing_polyline());
+        a.finish_polyline();
+        let shape = a.visible().next().unwrap();
+        assert_eq!(shape.points.len(), 3);
+        assert_eq!(shape.points[2], point(px(10.), px(70.)));
+        a.undo();
+        assert_eq!(a.visible().count(), 0);
+        a.redo();
+        assert_eq!(a.visible().next().unwrap().points.len(), 3);
+        a.begin(point(px(10.), px(10.)), selection());
+        assert!(a.cancel());
+        assert_eq!(a.visible().count(), 1);
+        a.begin(point(px(10.), px(10.)), selection());
+        a.end();
+        a.finish_polyline();
+        assert_eq!(a.visible().count(), 1);
+    }
+
+    #[test]
+    fn line_raster_preserves_gaps_and_has_round_caps_at_fractional_scales() {
+        for scale in [1., 1.25, 1.73, 2.] {
+            let shape = super::Shape {
+                kind: super::ShapeKind::Polyline,
+                bounds: selection(),
+                points: vec![
+                    point(px(10.), px(30.)),
+                    point(px(60.), px(30.)),
+                    point(px(60.), px(60.)),
+                ],
+                width: 5.,
+                color: 0xff0000ff,
+            };
+            let w = (100. * scale) as u32;
+            let mut rgba = [0, 0, 0, 255].repeat((w * w) as usize);
+            let at =
+                |x: f32, y: f32| (((y * scale) as usize) * w as usize + (x * scale) as usize) * 4;
+            let gap = at(40., 30.);
+            rgba[gap..gap + 4].fill(0);
+            super::line::rasterize(&shape, &mut rgba, w, w, point(px(0.), px(0.)), scale);
+            for (x, y) in [(30., 30.), (60., 30.), (60., 50.)] {
+                assert_eq!(&rgba[at(x, y)..at(x, y) + 4], &[255, 0, 0, 255]);
+            }
+            assert!(rgba[at(8., 30.)] > 200, "round cap at scale {scale}");
+            assert_eq!(&rgba[gap..gap + 4], &[0; 4]);
+            assert_eq!(&rgba[at(30., 40.)..at(30., 40.) + 4], &[0, 0, 0, 255]);
+            assert!(
+                rgba.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|p| p[0] > 0 && p[0] < 255)
+            );
+            assert_eq!(shape.line_paths(point(px(0.), px(0.))).len(), 2);
         }
     }
 }

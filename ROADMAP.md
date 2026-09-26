@@ -677,7 +677,9 @@ time, with shared desktop coordinates, preview, history, and PNG export.
    multi-output preview and export. OCR continues to use the original image.
 2. Implemented: ellipse outlines and Shift-circle, sharing styles/history with
    rectangles and supporting mixed-DPI preview/export with antialiased edges.
-3. Lines and polylines.
+3. Implemented: lines and polylines — drag or click-to-add vertices, 45° constraints,
+   double-click/right-click/Enter completion, rounded strokes, shared history,
+   cross-output preview and antialiased export.
 4. Arrows.
 5. Sequence numbers.
 6. Pencil.
@@ -696,3 +698,5 @@ export. Ellipses use an outer contour and an inward inner contour for both GPU
 paths and antialiased raster export. History and drafts belong to the shared
 screenshot session. Starting
 a new screenshot selection clears its old annotations and redo history.
+
+Line follow-ups: vertex editing, dashed/dotted strokes and configurable joins/caps.
