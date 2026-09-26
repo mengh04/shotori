@@ -45,6 +45,21 @@ pub(crate) fn selection_backdrop(sel: Option<Bounds<Pixels>>) -> impl IntoElemen
     .size_full()
 }
 
+/// Hover highlight for window snapping: a bare 2px accent outline on
+/// the window under the cursor. Outline only — it must read as "a click
+/// will select this", not as a selection (no dim change, no fill, no
+/// label; those belong to a real selection).
+pub(crate) fn hover_outline(b: Bounds<Pixels>) -> impl IntoElement {
+    div()
+        .absolute()
+        .left(b.origin.x)
+        .top(b.origin.y)
+        .w(b.size.width)
+        .h(b.size.height)
+        .border_2()
+        .border_color(rgba(ACCENT))
+}
+
 /// Selection size label. The label tries above the selection,
 /// then below, and when neither fits (a selection spanning the screen
 /// height) it is drawn INSIDE the selection box — overlaid beats

@@ -36,6 +36,7 @@ pub mod selection;
 pub mod session;
 pub mod theme;
 pub mod toolbar;
+pub mod windowsnap;
 
 pub mod ocr;
 pub mod ocr_setup;

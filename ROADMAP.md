@@ -665,3 +665,37 @@ below-fit decision keeps 12 px of breathing room at the screen edge
 (zero-margin still looks glued on — measured). Anchors stay pure and
 unit-tested, including a grid sweep asserting the disjoint-and-on-screen
 invariant over 35 selection geometries.
+
+## Window snapping: what the compositor will and won't tell you (2026-09-26)
+
+Goal: hover a window → outline it; click → select it. On Wayland this
+needs the compositor's help: clients are isolated and no standard
+protocol exposes other clients' geometry (ext-foreign-toplevel-list is
+deliberately minimal — title and app-id only). Screen geometry is public
+(xdg-output), window geometry is private. Per-compositor IPC is the only
+door.
+
+**niri (source-verified on 26.04):** the IPC's
+`tile_pos_in_workspace_view` is populated for floating windows only —
+`tiles_with_ipc_layouts` never fills it for tiled windows, whose
+positions additionally depend on the unexposed workspace scroll offset.
+Upstream knows: issue #2381 asks for it, PR #4147 proposes exposing the
+view offset (unreviewed for months at the time of writing). Consequence:
+**floating windows snap exactly; tiled windows cannot snap at all** until
+upstream moves. The backend interface already carries rects, so tiled
+support lights up with a field-fill the day it merges.
+
+**Pixel detection was prototyped and rejected.** Frozen-frame template
+matching (known window sizes from the IPC + boundary-edge strength)
+looked promising, but real captures showed content edges inside windows
+scoring as strongly as genuine window boundaries (a ghostty pane border
+at x=232 scored 149 vs 150 for the true edge) — every extra
+discriminator (gap-band pairs, shadow gradients, structural voting)
+added new failure modes. A snap that occasionally grabs a wrong region
+is worse than no snap; silently degrading won. The full experiment log
+lives in the session that shipped this.
+
+**sway / Hyprland backends** were written from their IPC docs (i3
+`GET_TREE` rect space; `j/clients` + `j/monitors` active-workspace
+filtering) but have not been exercised on live sessions — fixture-tested
+only. Reports from users on those compositors are welcome.

@@ -62,6 +62,19 @@ fn main() {
         .spawn(shotori::ocr::warmup)
         .ok();
 
+    // Window snapping: ask the compositor (niri / sway / Hyprland IPC)
+    // where every visible window is. None = compositor without a
+    // supported IPC; the feature silently turns off (see windowsnap).
+    let snaps = shotori::windowsnap::query();
+    println!(
+        "[shotori] window snap: {}",
+        match &snaps {
+            Some(s) if !s.is_empty() => format!("{} window(s)", s.len()),
+            Some(_) => "no visible windows".to_owned(),
+            None => "unavailable on this compositor".to_owned(),
+        }
+    );
+
     // ② Overlays (one per screen)
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
@@ -97,6 +110,7 @@ fn main() {
                     let session = cx.new(|_| {
                         shotori::session::ScreenshotSession::new(
                             targets.iter().map(|(cap, _)| cap.clone()).collect(),
+                            snaps.unwrap_or_default(),
                         )
                     });
                     for (cap, did) in targets {

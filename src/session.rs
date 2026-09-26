@@ -27,10 +27,18 @@ pub struct ScreenshotSession {
     selection: Selection,
     active_output: Option<String>,
     blocked: bool,
+    /// Window-snap targets in global logical coordinates; empty when the
+    /// compositor exposes no supported IPC — see [`crate::windowsnap`]
+    snaps: Vec<crate::windowsnap::SnapRect>,
+    /// Index into `snaps`: the window under the cursor (hover outline)
+    hovered: Option<usize>,
+    /// Press point of the ongoing interaction (global). The click-snap
+    /// hit-tests the PRESS position, not wherever a jittery release lands
+    press: Option<Point<Pixels>>,
 }
 
 impl ScreenshotSession {
-    pub fn new(captures: Vec<Arc<Capture>>) -> Self {
+    pub fn new(captures: Vec<Arc<Capture>>, snaps: Vec<crate::windowsnap::SnapRect>) -> Self {
         Self {
             screens: captures
                 .into_iter()
@@ -45,6 +53,9 @@ impl ScreenshotSession {
             selection: Selection::Idle,
             active_output: None,
             blocked: false,
+            snaps,
+            hovered: None,
+            press: None,
         }
     }
 
@@ -105,9 +116,11 @@ impl ScreenshotSession {
         if self.blocked {
             return;
         }
+        let global = local + self.screen(name).bounds().origin;
+        self.press = Some(global);
+        self.hovered = None; // the outline steps aside for the real interaction
         self.active_output = Some(name.to_owned());
-        self.selection
-            .begin(local + self.screen(name).bounds().origin);
+        self.selection.begin(global);
     }
 
     pub(crate) fn drag_to(&mut self, name: &str, local: Point<Pixels>) -> bool {
@@ -124,9 +137,56 @@ impl ScreenshotSession {
         }
         self.selection
             .end(local + self.screen(name).bounds().origin);
+        // An in-place click (< selection::MIN_SIZE) leaves Idle — if a
+        // window sits under the PRESS point, select its rect instead
+        // (window snapping). A real drag still wins: freehand beats snap.
+        if !self.selection.is_dragging()
+            && !self.selection.is_selected()
+            && let Some(press) = self.press
+            && let Some(hit) = crate::windowsnap::hit_test(&self.snaps, press)
+        {
+            self.selection = Selection::Selected {
+                bounds: self.snaps[hit].bounds,
+            };
+        }
+        self.press = None;
+    }
+
+    /// Track the window under the cursor for the hover outline. Returns
+    /// whether the hover changed (callers decide on cx.notify()).
+    /// Suppressed while dragging — the freehand region takes over — and
+    /// while a modal is open.
+    pub(crate) fn hover_at(&mut self, name: &str, local: Point<Pixels>) -> bool {
+        if self.blocked || self.selection.is_dragging() || self.snaps.is_empty() {
+            return false;
+        }
+        let global = local + self.screen(name).bounds().origin;
+        let hit = crate::windowsnap::hit_test(&self.snaps, global);
+        if hit == self.hovered {
+            return false;
+        }
+        self.hovered = hit;
+        true
+    }
+
+    /// The hovered window's rect in this output's local coordinates, for
+    /// the hover outline; None when not hovering anything visible here.
+    pub(crate) fn hover_bounds(&self, name: &str) -> Option<Bounds<Pixels>> {
+        if self.blocked {
+            return None;
+        }
+        let screen = self.screen(name).bounds();
+        let mut b = self.snaps.get(self.hovered?)?.bounds.intersect(&screen);
+        if b.size.width <= px(0.) || b.size.height <= px(0.) {
+            return None;
+        }
+        b.origin -= screen.origin;
+        Some(b)
     }
 
     pub(crate) fn cancel_drag(&mut self) {
+        self.press = None;
+        self.hovered = None;
         self.selection.cancel_drag();
     }
 
@@ -207,7 +267,7 @@ impl ScreenshotSession {
 mod tests {
     use super::ScreenshotSession;
     use crate::capture::Capture;
-    use gpui_kit::{point, px, size};
+    use gpui_kit::{Bounds, point, px, size};
     use std::sync::Arc;
 
     fn screen(name: &str, pos: (i32, i32), scale: f32, color: [u8; 4]) -> Arc<Capture> {
@@ -220,10 +280,25 @@ mod tests {
     }
 
     fn session() -> ScreenshotSession {
-        ScreenshotSession::new(vec![
-            screen("left", (-100, 20), 1., [255, 0, 0, 255]),
-            screen("right", (0, 0), 2., [0, 255, 0, 255]),
-        ])
+        ScreenshotSession::new(
+            vec![
+                screen("left", (-100, 20), 1., [255, 0, 0, 255]),
+                screen("right", (0, 0), 2., [0, 255, 0, 255]),
+            ],
+            Vec::new(),
+        )
+    }
+
+    fn snap(x: f32, y: f32, w: f32, h: f32) -> crate::windowsnap::SnapRect {
+        crate::windowsnap::SnapRect {
+            bounds: Bounds {
+                origin: point(px(x), px(y)),
+                size: size(px(w), px(h)),
+            },
+            app_id: "fixture".into(),
+            focused: false,
+            recency: 0,
+        }
     }
 
     #[test]
@@ -290,10 +365,13 @@ mod tests {
 
     #[test]
     fn desktop_gaps_are_transparent_and_fractional_scale_uses_window_size() {
-        let mut s = ScreenshotSession::new(vec![
-            screen("top", (0, 0), 1.25, [255, 0, 0, 255]),
-            screen("bottom", (0, 120), 1.5, [0, 255, 0, 255]),
-        ]);
+        let mut s = ScreenshotSession::new(
+            vec![
+                screen("top", (0, 0), 1.25, [255, 0, 0, 255]),
+                screen("bottom", (0, 120), 1.5, [0, 255, 0, 255]),
+            ],
+            Vec::new(),
+        );
         s.set_size("top", size(px(100.), px(100.)));
         s.set_size("bottom", size(px(100.), px(100.)));
         s.begin("top", point(px(10.), px(90.)));
@@ -318,5 +396,73 @@ mod tests {
         s.cancel_drag();
         assert!(s.local_bounds("left").is_none());
         assert!(s.local_bounds("right").is_none());
+    }
+
+    // ── Window snapping ────────────────────────────────────────────
+
+    /// "right" spans global (0,0)-(100,100) logical; one snap window at
+    /// (20,30) sized 40x50 sits on it.
+    fn snapped_session() -> ScreenshotSession {
+        ScreenshotSession::new(
+            vec![screen("right", (0, 0), 2., [0, 255, 0, 255])],
+            vec![snap(20., 30., 40., 50.)],
+        )
+    }
+
+    #[test]
+    fn click_on_a_window_snaps_the_selection_to_its_rect() {
+        let mut s = snapped_session();
+        s.begin("right", point(px(50.), px(50.)));
+        s.end("right", point(px(51.), px(51.))); // < 2px: a click, not a drag
+        assert!(s.selection().is_selected());
+        let b = s.selection().bounds().unwrap();
+        assert_eq!(b.origin, point(px(20.), px(30.)));
+        assert_eq!(b.size, size(px(40.), px(50.)));
+        // crop lands in physical pixels (scale 2)
+        assert_eq!(s.crop("right").unwrap().0, 80);
+    }
+
+    #[test]
+    fn click_off_windows_still_clears() {
+        let mut s = snapped_session();
+        s.begin("right", point(px(5.), px(5.))); // click outside every window
+        s.end("right", point(px(6.), px(6.)));
+        assert!(!s.selection().is_selected());
+    }
+
+    #[test]
+    fn real_drag_over_a_window_still_wins() {
+        let mut s = snapped_session();
+        s.begin("right", point(px(50.), px(50.))); // inside the window
+        s.end("right", point(px(90.), px(90.))); // real drag: freehand beats snap
+        let b = s.selection().bounds().unwrap();
+        assert_eq!(b.origin, point(px(50.), px(50.)));
+        assert_eq!(b.size, size(px(40.), px(40.)));
+    }
+
+    #[test]
+    fn hover_tracks_windows_and_yields_local_bounds() {
+        let mut s = ScreenshotSession::new(
+            vec![
+                screen("left", (-100, 20), 1., [255, 0, 0, 255]),
+                screen("right", (0, 0), 2., [0, 255, 0, 255]),
+            ],
+            vec![snap(20., 30., 40., 50.)],
+        );
+        // entering / leaving flips the hover
+        assert!(s.hover_at("right", point(px(30.), px(40.))));
+        assert!(!s.hover_at("right", point(px(31.), px(41.)))); // same window
+        let b = s.hover_bounds("right").unwrap();
+        assert_eq!(b.origin, point(px(20.), px(30.)));
+        assert_eq!(b.size, size(px(40.), px(50.)));
+        assert!(s.hover_bounds("left").is_none()); // rect lives on right
+        assert!(s.hover_at("right", point(px(5.), px(5.)))); // leave → None
+        assert!(s.hover_bounds("right").is_none());
+
+        // suppressed while dragging; press clears the outline
+        s.hover_at("right", point(px(30.), px(40.)));
+        s.begin("right", point(px(30.), px(40.)));
+        assert!(!s.hover_at("right", point(px(35.), px(45.))));
+        assert!(s.hover_bounds("right").is_none());
     }
 }

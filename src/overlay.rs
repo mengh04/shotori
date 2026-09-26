@@ -15,7 +15,7 @@ use gpui_kit::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOpti
 use gpui_kit::*;
 
 use crate::capture::Capture;
-use crate::hud::{hint_bar, selection_backdrop, selection_label};
+use crate::hud::{hint_bar, hover_outline, selection_backdrop, selection_label};
 use crate::image_util;
 use crate::selection::Selection;
 use crate::toolbar::selection_toolbar;
@@ -415,6 +415,7 @@ impl Render for Overlay {
         let backdrop = shared
             .backdrop_bounds(&self.capture.output_name)
             .map(round_px);
+        let hover = shared.hover_bounds(&self.capture.output_name).map(round_px);
         let active = shared.active_on(&self.capture.output_name);
         let input_view = cx.entity().downgrade();
         let ws = window.bounds().size; // window logical size (= output logical size)
@@ -512,6 +513,9 @@ impl Render for Overlay {
             .child(img(self.frozen.clone()).size_full())
             // ② Dim layer and selection border share painted edges.
             .child(selection_backdrop(backdrop))
+            // ②½ Window-snap hover outline (above the dim, below all
+            // selection chrome: it is a hint, not a selection)
+            .children(hover.map(hover_outline))
             // Wayland may keep delivering a drag to its original surface even
             // outside its bounds. Element hover handlers would drop these events.
             .child(
@@ -525,7 +529,14 @@ impl Render for Overlay {
                             }
                             let _ = view.update(cx, |this, cx| {
                                 this.session.update(cx, |s, cx| {
-                                    if s.drag_to(&this.capture.output_name, event.position) {
+                                    // drag (with press held) or hover
+                                    // tracking (idle pointer) — one event
+                                    // feed drives both
+                                    let dragged =
+                                        s.drag_to(&this.capture.output_name, event.position);
+                                    let hovered =
+                                        s.hover_at(&this.capture.output_name, event.position);
+                                    if dragged || hovered {
                                         cx.notify();
                                     }
                                 });
@@ -683,7 +694,8 @@ mod multi_output_tests {
         };
         let left = make_capture("left", 0);
         let right = make_capture("right", 400);
-        let session = cx.new(|_| ScreenshotSession::new(vec![left.clone(), right.clone()]));
+        let session =
+            cx.new(|_| ScreenshotSession::new(vec![left.clone(), right.clone()], Vec::new()));
         let mut second_context = cx.clone();
         let (_, left_cx) =
             cx.add_window_view(|window, cx| Overlay::new(left, session.clone(), window, cx));

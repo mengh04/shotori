@@ -33,6 +33,11 @@ chrono = "0.4"
 # cx.quit() can never cut a notification off
 notify-rust = "4"
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+niri-ipc = "26.4.0"
+# window-snap backends: sway (i3 GET_TREE) and Hyprland (j/clients) speak
+# JSON over their unix sockets; parsed with serde_json Values (their
+# schemas drift across versions, tolerant field-by-field beats typed)
+serde_json = "1"
 
 # The pin (floating image) feature lives on the `pin` branch (it needs the
 # vendored set_layer_margin patch); once upstream merges it, the branch can
