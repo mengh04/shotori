@@ -522,20 +522,24 @@ mod tests {
 
     #[gpui_kit::test]
     fn text_grows_until_the_selection_right_edge(cx: &mut TestAppContext) {
-        let (input, cx) = cx.add_window_view(|_, cx| TextInput::new(500., 600., 24., cx));
-        cx.update(|window, cx| {
-            input.update(cx, |s, cx| {
-                assert_eq!(s.content_width(), 1.);
-                s.replace_text_in_range(None, "short", window, cx);
-                let short_width = s.content_width();
-                assert!(short_width > 1. && short_width < 100.);
-                s.replace_text_in_range(None, &"中".repeat(16), window, cx);
-                assert!(s.content_width() > 320.);
-                assert_eq!(s.height(), 24. * 1.35);
-                s.replace_text_in_range(None, &"中".repeat(12), window, cx);
-                assert!(s.height() > 24. * 1.35);
-                assert!(s.content_width() <= 500.);
-            })
+        crate::annotation::text::with_test_font(|| {
+            let (input, cx) = cx.add_window_view(|_, cx| TextInput::new(500., 600., 24., cx));
+            cx.update(|window, cx| {
+                input.update(cx, |s, cx| {
+                    assert_eq!(s.content_width(), 1.);
+                    s.replace_text_in_range(None, "short", window, cx);
+                    let short_width = s.content_width();
+                    assert!(short_width > 1. && short_width < 100.);
+                    // These glyphs are covered by the bundled font. CJK
+                    // fallback availability must not change layout assertions.
+                    s.replace_text_in_range(None, &"W".repeat(12), window, cx);
+                    assert!(s.content_width() > 320.);
+                    assert_eq!(s.height(), 24. * 1.35);
+                    s.replace_text_in_range(None, &"W".repeat(12), window, cx);
+                    assert!(s.height() > 24. * 1.35);
+                    assert!(s.content_width() <= 500.);
+                })
+            });
         });
     }
 

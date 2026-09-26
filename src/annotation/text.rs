@@ -11,6 +11,25 @@ thread_local! {
 pub(crate) fn with_fonts<T>(f: impl FnOnce(&mut FontSystem) -> T) -> T {
     FONTS.with_borrow_mut(|(fonts, _)| f(fonts))
 }
+
+/// Isolate layout tests from installed fonts and platform fallback differences.
+#[cfg(test)]
+pub(crate) fn with_test_font<T>(f: impl FnOnce() -> T) -> T {
+    struct RestoreFonts(Option<(FontSystem, SwashCache)>);
+    impl Drop for RestoreFonts {
+        fn drop(&mut self) {
+            FONTS.with(|fonts| fonts.replace(self.0.take().unwrap()));
+        }
+    }
+    let mut db = cosmic_text::fontdb::Database::new();
+    db.load_font_data(include_bytes!("../../assets/DejaVuSans-Bold.ttf").to_vec());
+    db.set_sans_serif_family("DejaVu Sans");
+    let fonts = FontSystem::new_with_locale_and_db("en-US".into(), db);
+    let _restore = RestoreFonts(Some(
+        FONTS.with(|cell| cell.replace((fonts, SwashCache::new()))),
+    ));
+    f()
+}
 pub(crate) fn buffer(text: &str, width: f32, limit: f32, font_size: f32) -> Buffer {
     with_fonts(|fonts| {
         let mut buffer = Buffer::new(fonts, Metrics::new(font_size, font_size * 1.35));
