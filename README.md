@@ -68,6 +68,7 @@ the screen's native resolution.
 | Key              | Action                                        |
 | ---------------- | --------------------------------------------- |
 | drag             | select a region                               |
+| `Ctrl+A`         | select this whole screen; again → every screen (wraps) |
 | `Enter` / `Ctrl+C` | copy the selection (or the full screen) to the clipboard |
 | `Ctrl+S`         | save the selection — system "save as" dialog  |
 | `Ctrl+O`         | OCR the selection → text to the clipboard     |

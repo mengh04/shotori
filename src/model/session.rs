@@ -108,6 +108,42 @@ impl ScreenshotSession {
         }
     }
 
+    /// Ctrl+A: cycle the selection between "this whole screen" and
+    /// "every screen". Any state (idle, partial drag, another screen's
+    /// selection) lands on the current screen first — that reads as
+    /// "select all" to a user looking at one monitor — the second press
+    /// spans everything, the third wraps back. Returns whether the
+    /// selection changed.
+    pub(crate) fn cycle_select_all(&mut self, name: &str) -> bool {
+        let Some(screen_bounds) = self
+            .screens
+            .iter()
+            .find(|s| s.capture.output_name == name)
+            .map(|s| s.bounds())
+        else {
+            return false; // unregistered output — overlay contract broken
+        };
+        let Some(union) = self
+            .screens
+            .iter()
+            .map(|s| s.bounds())
+            .reduce(|a, b| a.union(&b))
+        else {
+            return false;
+        };
+        let current = self.selection.bounds();
+        let next = if current == Some(union) {
+            screen_bounds // all → this screen (wrap)
+        } else if current == Some(screen_bounds) {
+            union // this screen → all
+        } else {
+            screen_bounds // idle / partial / elsewhere → this screen
+        };
+        self.active_output = Some(name.to_string());
+        self.selection = Selection::Selected { bounds: next };
+        true
+    }
+
     pub(crate) fn set_size(&mut self, name: &str, logical_size: Size<Pixels>) -> bool {
         if logical_size.width <= px(0.) || logical_size.height <= px(0.) {
             return false;
@@ -465,6 +501,7 @@ impl ScreenshotSession {
 #[cfg(test)]
 mod tests {
     use super::ScreenshotSession;
+    use crate::model::selection::Selection;
     use crate::platform::capture::Capture;
     use gpui_kit::{Bounds, point, px, size};
     use std::sync::Arc;
@@ -498,6 +535,51 @@ mod tests {
             focused: false,
             recency: 0,
         }
+    }
+
+    #[test]
+    fn ctrl_a_cycles_screen_then_union_then_wraps() {
+        let mut s = session();
+        let right = s.screens[1].bounds(); // "right" is the fixture's focused-ish screen
+        let union = s
+            .screens
+            .iter()
+            .map(|sc| sc.bounds())
+            .reduce(|a, b| a.union(&b))
+            .unwrap();
+
+        // idle → this screen
+        assert!(s.cycle_select_all("right"));
+        assert_eq!(s.selection().bounds(), Some(right));
+        // this screen → every screen
+        assert!(s.cycle_select_all("right"));
+        assert_eq!(s.selection().bounds(), Some(union));
+        // all → wraps back to this screen
+        assert!(s.cycle_select_all("right"));
+        assert_eq!(s.selection().bounds(), Some(right));
+    }
+
+    #[test]
+    fn ctrl_a_from_a_partial_selection_lands_on_the_whole_screen() {
+        let mut s = session();
+        // a user-drawn partial rectangle somewhere else
+        s.selection = Selection::Selected {
+            bounds: Bounds {
+                origin: point(px(-40.), px(60.)),
+                size: size(px(100.), px(50.)),
+            },
+        };
+        assert!(s.cycle_select_all("left"));
+        assert_eq!(s.selection().bounds(), Some(s.screens[0].bounds()));
+        // and anchors the active output
+        assert_eq!(s.active_output.as_deref(), Some("left"));
+    }
+
+    #[test]
+    fn ctrl_a_on_an_unknown_output_is_a_no_op() {
+        let mut s = session();
+        assert!(!s.cycle_select_all("nope"));
+        assert!(s.selection().bounds().is_none());
     }
 
     #[test]

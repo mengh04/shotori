@@ -16,8 +16,8 @@ use gpui_kit::*;
 
 use crate::actions::{
     CopySelection, FinishPolyline, OcrSelection, QuitOverlay, RedoAnnotation, SaveSelection,
-    ToggleArrow, ToggleEllipse, ToggleHighlighter, ToggleLine, ToggleMosaic, ToggleNumber,
-    TogglePencil, TogglePolyline, ToggleRectangle, UndoAnnotation,
+    SelectScreen, ToggleArrow, ToggleEllipse, ToggleHighlighter, ToggleLine, ToggleMosaic,
+    ToggleNumber, TogglePencil, TogglePolyline, ToggleRectangle, UndoAnnotation,
 };
 use crate::model::selection::Selection;
 use crate::platform::capture::Capture;
@@ -586,6 +586,17 @@ impl Render for Overlay {
                     return; // setup dialog is modal
                 }
                 this.copy_selection(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SelectScreen, _, cx| {
+                if this.session.read(cx).blocked() {
+                    return; // setup dialog is modal
+                }
+                let name = this.capture.output_name.clone();
+                this.session.update(cx, |s, cx| {
+                    if s.cycle_select_all(&name) {
+                        cx.notify();
+                    }
+                });
             }))
             .on_action(cx.listener(|this, _: &SaveSelection, window, cx| {
                 if this.session.read(cx).blocked() {

@@ -10,7 +10,13 @@
 
 use gpui_kit::*;
 
-gpui_kit::actions!([QuitOverlay, CopySelection, SaveSelection, OcrSelection]);
+gpui_kit::actions!([
+    QuitOverlay,
+    CopySelection,
+    SaveSelection,
+    OcrSelection,
+    SelectScreen
+]);
 
 // In-canvas annotation actions (shared by the overlay's keybindings and
 // the toolbar's tool buttons, like everything else in this module)
@@ -35,6 +41,7 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("escape", QuitOverlay, Some("ShotoriOverlay")),
         KeyBinding::new("enter", CopySelection, Some("ShotoriOverlay")),
+        KeyBinding::new("ctrl-a", SelectScreen, Some("ShotoriOverlay")),
         KeyBinding::new("ctrl-c", CopySelection, Some("ShotoriOverlay")),
         KeyBinding::new("ctrl-s", SaveSelection, Some("ShotoriOverlay")),
         KeyBinding::new("ctrl-o", OcrSelection, Some("ShotoriOverlay")),
