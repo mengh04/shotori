@@ -17,7 +17,68 @@ use crate::actions::{
 use crate::model::placement::{ROW_H, TB_H, TB_W, toolbar_anchor};
 
 // The default GPUI asset bundle does not include every toolbar icon.
-gpui_kit::assets::icon_assets!(pub ToolbarAssets, [Type, MirrorRectangular, Highlighter, Pencil, Square, Circle, Slash, Waypoints, ArrowUpRight, ListOrdered, ScanText, Save, X, Copy]);
+gpui_kit::assets::icon_assets!(
+    ToolbarAssets,
+    [
+        Type,
+        MirrorRectangular,
+        Highlighter,
+        Pencil,
+        Square,
+        Circle,
+        Slash,
+        Waypoints,
+        ArrowUpRight,
+        ListOrdered,
+        ScanText,
+        Save,
+        X,
+        Copy
+    ]
+);
+
+/// The app's own icon set, embedded from `assets/icons` at build time.
+/// The Lucide catalog has no true mosaic/pixelate glyph (its grids read
+/// as "table"), so shotori maintains its own SVGs — Lucide conventions
+/// kept (24×24 canvas, currentColor) so they tint with the toolbar text
+/// color like every bundled icon.
+#[derive(rust_embed::RustEmbed)]
+#[folder = "assets"]
+#[include = "icons/*.svg"]
+struct OwnIcons;
+
+/// The application asset source: the app's own icons first, then the
+/// selected Lucide icons (`icon_assets!` selects from the gpui-kit
+/// bundle — see the crate docs for the composition contract). Registered
+/// app-wide in `main.rs` via `with_assets`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ToolbarSource;
+
+impl AssetSource for ToolbarSource {
+    fn load(&self, path: &str) -> anyhow::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        if let Some(file) = OwnIcons::get(path) {
+            return Ok(Some(file.data));
+        }
+        ToolbarAssets.load(path)
+    }
+
+    fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
+        let mut names: Vec<SharedString> = OwnIcons::iter()
+            .filter(|name| name.starts_with(path))
+            .map(Into::into)
+            .collect();
+        names.extend(ToolbarAssets.list(path)?);
+        Ok(names)
+    }
+}
+
+/// One of the app's own icons (see [`OwnIcons`]).
+fn own_icon(path: &'static str) -> Svg {
+    svg()
+        .path(path)
+        .size(px(18.))
+        .text_color(rgba(theme::c().toolbar_text))
+}
 
 pub(crate) fn selection_toolbar(
     b: Bounds<Pixels>,
@@ -163,7 +224,7 @@ pub(crate) fn selection_toolbar(
                         |window, cx| window.dispatch_action(Box::new(ToggleMosaic), cx),
                     )
                     .selected(filter_tool)
-                    .child(mosaic_icon()),
+                    .child(own_icon("icons/mosaic.svg")),
                 )
                 .child(
                     icon_button(
@@ -248,13 +309,12 @@ pub(crate) fn selection_toolbar(
                         .selected(annotations.tool() == Some(kind))
                         .child(
                             if kind == crate::annotation::ShapeKind::Mosaic {
-                                mosaic_icon().into_any_element()
+                                own_icon("icons/mosaic.svg")
                             } else {
                                 svg()
                                     .path(IconName::MirrorRectangular.path())
                                     .size(px(18.))
                                     .text_color(rgba(theme::c().toolbar_text))
-                                    .into_any_element()
                             },
                         ),
                     );
@@ -387,25 +447,6 @@ pub(crate) fn selection_toolbar(
         }))
 }
 
-/// Soft gray checkerboard with rounded cells.
-fn mosaic_icon() -> Div {
-    div()
-        .size(px(18.))
-        .flex()
-        .flex_col()
-        .children((0..3).map(|row| {
-            div().flex().children((0..3).map(move |col| {
-                div().size(px(6.)).rounded(px(2.)).flex_shrink_0().bg(rgba(
-                    if (row + col) % 2 == 0 {
-                        theme::c().mosaic_dark
-                    } else {
-                        theme::c().mosaic_light
-                    },
-                ))
-            }))
-        }))
-}
-
 fn bar() -> Div {
     div()
         .flex()
@@ -509,6 +550,7 @@ mod tests {
     #[test]
     fn toolbar_icons_are_bundled() {
         use gpui_kit::{AssetSource, assets::IconName};
+        // the app's composed source: own SVGs first, then selected Lucide
         for icon in [
             IconName::Type,
             IconName::MirrorRectangular,
@@ -526,11 +568,18 @@ mod tests {
             IconName::Copy,
         ] {
             assert!(
-                super::ToolbarAssets
+                super::ToolbarSource
                     .load(icon.path().as_ref())
                     .unwrap()
                     .is_some()
             );
         }
+        // the self-maintained mosaic icon
+        assert!(
+            super::ToolbarSource
+                .load("icons/mosaic.svg")
+                .unwrap()
+                .is_some()
+        );
     }
 }

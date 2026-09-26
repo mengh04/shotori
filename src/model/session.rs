@@ -218,6 +218,17 @@ impl ScreenshotSession {
         local + self.screen(name).bounds().origin
     }
 
+    /// This output's overlay window size (logical px), as last reported by
+    /// [`ScreenshotSession::set_size`]. Chrome geometry (toolbar anchor)
+    /// needs it outside render — e.g. the cursor's toolbar hit-test.
+    pub(crate) fn overlay_size(&self, name: &str) -> Option<Size<Pixels>> {
+        self.screens
+            .iter()
+            .find(|s| s.capture.output_name == name)
+            .map(|s| s.logical_size)
+            .filter(|s| s.width > px(0.) && s.height > px(0.))
+    }
+
     pub(crate) fn drag_to(&mut self, name: &str, local: Point<Pixels>) -> bool {
         if self.blocked {
             return false;

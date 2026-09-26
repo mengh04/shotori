@@ -18,9 +18,6 @@
   "toolbar_selected": "#453528",
   "swatch_border": "#FFFFFF38",
 
-  "mosaic_dark": "#858A93",
-  "mosaic_light": "#CDD0D6",
-
   "annotation_colors": [
     "#FF4545", "#FF8A32", "#FFD43B", "#40C878", "#409CFF", "#222222", "#FFFFFF"
   ]
