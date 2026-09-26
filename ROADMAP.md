@@ -898,33 +898,33 @@ image/png, delay + custom filename paths.
 The platform layer was split per-OS behind platform-neutral signatures;
 the UI (overlay, annotations, toolbar, OCR) runs unmodified on both.
 
-- **Capture**: GDI `BitBlt` per monitor (`CAPTUREBLT`, no cursor ¡ª
+- **Capture**: GDI `BitBlt` per monitor (`CAPTUREBLT`, no cursor â€”
   screencopy parity). DPI awareness is set programmatically
   (per-monitor-v2) in main before anything else: an unaware process sees
   virtualized coordinates and wrong-resolution captures.
 - **The coordinate-space decision** (the load-bearing one): the session's
   global "logical" space uses the monitor's **physical origin** with a
-  **logical extent** (physical ¡Â effective scale). Dividing every origin
+  **logical extent** (physical Ã· effective scale). Dividing every origin
   by its own scale instead would make mixed-DPI monitors *overlap* in
   logical coordinates (100% 1920px monitor then 150% 2560px monitor:
-  1920 vs 2560/1.5=1707 ¡ª overlap at 1707 < 1920), breaking union/crop
-  math. The hybrid space tiles exactly, and local = (physical ? origin) ¡Â
+  1920 vs 2560/1.5=1707 â€” overlap at 1707 < 1920), breaking union/crop
+  math. The hybrid space tiles exactly, and local = (physical - origin) Ã·
   scale keeps the Wayland identity the session already assumes. Display
-  matching divides the physical origin by the scale ¡ª the same formula
+  matching divides the physical origin by the scale â€” the same formula
   the Wayland backend needs for its own reasons, so display.rs stays
   shared.
 - **Overlay window**: `WindowKind::PopUp` maps to
-  `WS_EX_TOOLWINDOW | WS_EX_TOPMOST` + borderless in gpui-pre-windows ¡ª
+  `WS_EX_TOOLWINDOW | WS_EX_TOPMOST` + borderless in gpui-pre-windows â€”
   the Win32 stand-in for layer-shell. Window bounds must be passed as
-  absolute gpui-logical coordinates (origin = physical ¡Â scale) or the
+  absolute gpui-logical coordinates (origin = physical Ã· scale) or the
   window falls back to default bounds on secondary monitors.
-- **Clipboard**: Win32 owns the data after SetClipboardData ¡ª the entire
+- **Clipboard**: Win32 owns the data after SetClipboardData â€” the entire
   resident-daemon machinery is Linux-only. CF_DIB + registered "PNG"
   format are offered side by side (decode round trip: callers keep one
   PNG-encoding path).
 - **Notifications**: WinRT toast from the same detached child process;
   POWERSHELL_APP_ID avoids registering an AppUserModelID (the toast
-  reports PowerShell as its source ¡ª cosmetic).
+  reports PowerShell as its source â€” cosmetic).
 - **Window snap**: EnumWindows + DWMWA_CLOAKED filtering; every visible
   toplevel is enumerable (no tiled-window blind spot), rect converted
-  physical ¡ú hybrid by the containing monitor's scale.
+  physical â†’ hybrid by the containing monitor's scale.
