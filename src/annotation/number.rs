@@ -242,6 +242,7 @@ mod tests {
         super::super::Shape {
             kind: super::super::ShapeKind::Number,
             number: Some(number),
+            text: None,
             bounds: Bounds::new(point(px(20.3), px(20.7)), size(px(diameter), px(diameter))),
             color: 0x0000ffff,
             width: 3.,

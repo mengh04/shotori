@@ -2,6 +2,7 @@
 mod filter;
 mod highlighter;
 mod line;
+pub(crate) mod text;
 pub(crate) use highlighter::HighlighterCache;
 mod number;
 pub(crate) use number::NumberCache;
@@ -10,6 +11,7 @@ use gpui_kit::{Bounds, Path, PathBuilder, Pixels, Point, point, px, size};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ShapeKind {
+    Text,
     Number,
     Pencil,
     Highlighter,
@@ -26,6 +28,7 @@ pub(crate) enum ShapeKind {
 pub(crate) struct Shape {
     pub(crate) kind: ShapeKind,
     pub(crate) number: Option<u32>,
+    pub(crate) text: Option<String>,
     pub(crate) bounds: Bounds<Pixels>,
     pub(crate) color: u32,
     pub(crate) width: f32,
@@ -166,6 +169,7 @@ pub(crate) struct Annotations {
     color_ix: usize,
     width_ix: usize,
     number_size_ix: usize,
+    text_size_ix: usize,
     filter_strength_ix: usize,
     highlighter_width_ix: usize,
     highlighter_color_ix: usize,
@@ -182,6 +186,7 @@ impl Default for Annotations {
             color_ix: 0,
             width_ix: 1,
             number_size_ix: 1,
+            text_size_ix: 1,
             filter_strength_ix: 1,
             highlighter_width_ix: 1,
             highlighter_color_ix: 2,
@@ -216,6 +221,57 @@ impl Annotations {
         } else {
             [1., 3., 5.][self.width_ix]
         }
+    }
+    pub(crate) fn text_size(&self) -> f32 {
+        [16., 24., 32.][self.text_size_ix]
+    }
+    pub(crate) fn set_text_size(&mut self, ix: usize) {
+        if ix < 3 {
+            self.text_size_ix = ix;
+        }
+    }
+    pub(crate) fn preview_text(&mut self, bounds: Bounds<Pixels>, value: String) {
+        self.draft = Some(Draft {
+            start: bounds.origin,
+            shape: Shape {
+                kind: ShapeKind::Text,
+                number: None,
+                text: Some(value),
+                bounds,
+                color: self.color().0,
+                width: self.text_size(),
+                points: Vec::new(),
+            },
+        });
+    }
+    pub(crate) fn has_text_preview(&self) -> bool {
+        self.draft
+            .as_ref()
+            .is_some_and(|d| d.shape.kind == ShapeKind::Text)
+    }
+    pub(crate) fn clear_text_preview(&mut self) {
+        if self
+            .draft
+            .as_ref()
+            .is_some_and(|d| d.shape.kind == ShapeKind::Text)
+        {
+            self.draft = None;
+        }
+    }
+    pub(crate) fn add_text(&mut self, bounds: Bounds<Pixels>, value: String) {
+        if value.trim().is_empty() {
+            return;
+        }
+        self.shapes.push(Shape {
+            kind: ShapeKind::Text,
+            number: None,
+            text: Some(value),
+            bounds,
+            color: self.color().0,
+            width: self.text_size(),
+            points: Vec::new(),
+        });
+        self.undone.clear();
     }
     pub(crate) fn number_size(&self) -> f32 {
         [24., 32., 40.][self.number_size_ix]
@@ -274,7 +330,7 @@ impl Annotations {
     }
 
     pub(crate) fn begin(&mut self, p: Point<Pixels>, selection: Bounds<Pixels>) {
-        if !self.enabled() || !selection.contains(&p) {
+        if !self.enabled() || self.tool == Some(ShapeKind::Text) || !selection.contains(&p) {
             return;
         }
         if self.tool == Some(ShapeKind::Number)
@@ -290,6 +346,7 @@ impl Annotations {
             start: p,
             shape: Shape {
                 kind: self.tool.expect("active annotation tool"),
+                text: None,
                 number: (self.tool == Some(ShapeKind::Number)).then(|| self.next_number()),
                 bounds: if self.tool == Some(ShapeKind::Number) {
                     number_bounds(p, selection, self.number_size())
@@ -485,6 +542,10 @@ impl Annotations {
         scale: f32,
     ) {
         for shape in self.visible() {
+            if shape.kind == ShapeKind::Text {
+                text::rasterize(shape, rgba, w, h, origin, scale);
+                continue;
+            }
             if matches!(shape.kind, ShapeKind::Mosaic | ShapeKind::Blur) {
                 filter::rasterize(shape, rgba, w, h, origin, scale);
                 continue;
@@ -831,6 +892,7 @@ mod tests {
         for scale in [1., 1.25, 1.5, 1.73, 2.] {
             let ellipse = super::Shape {
                 number: None,
+                text: None,
                 kind: super::ShapeKind::Ellipse,
                 bounds: Bounds::new(point(px(-10.), px(15.)), size(px(60.), px(40.))),
                 color: 0xff0000ff,
@@ -869,6 +931,7 @@ mod tests {
         for (width, height) in [(0., 0.), (2., 2.), (2., 60.), (60., 2.), (60., 40.)] {
             let ellipse = super::Shape {
                 number: None,
+                text: None,
                 kind: super::ShapeKind::Ellipse,
                 bounds: Bounds::new(point(px(-10.), px(-10.)), size(px(width), px(height))),
                 color: 0xff0000ff,
@@ -957,6 +1020,7 @@ mod tests {
         for scale in [1., 1.25, 1.73, 2.] {
             let shape = super::Shape {
                 number: None,
+                text: None,
                 kind: super::ShapeKind::Polyline,
                 bounds: selection(),
                 points: vec![

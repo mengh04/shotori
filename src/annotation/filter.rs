@@ -135,6 +135,7 @@ mod tests {
         Shape {
             kind,
             number: None,
+            text: None,
             bounds: Bounds::new(point(px(2.), px(2.)), size(px(8.), px(8.))),
             color: 0,
             width: 4.,

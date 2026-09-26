@@ -763,7 +763,12 @@ time, with shared desktop coordinates, preview, history, and PNG export.
    processing, shared history, and one export-backed preview across mixed-DPI outputs.
    Brush mode and region editing remain follow-ups; smart erasing requires a separate
    feasibility review.
-9. Text.
+9. Implemented: basic multiline text with system-font shaping and fallback, three font sizes,
+   palette colors, IME input, undo/redo, and shared cross-screen preview/export.
+   Cosmic also owns caret, selection, preedit and hit testing; GPUI supplies the native
+   IME protocol. Toolbar settings remain available during inline editing.
+   Text boxes grow with content and wrap at the selection right edge.
+   Existing-text editing, manual resizing, font selection, bold/italic, and rotation remain follow-ups.
 10. Eraser.
 11. Spotlight.
 12. Watermark.

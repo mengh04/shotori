@@ -267,6 +267,7 @@ mod tests {
         let shape = super::super::Shape {
             kind: super::super::ShapeKind::Arrow,
             number: None,
+            text: None,
             bounds: gpui_kit::Bounds::default(),
             points: vec![point(px(20.), px(30.)), point(px(70.), px(30.))],
             width: 3.,

@@ -20,3 +20,7 @@ pub mod ocr_setup;
 pub mod overlay;
 pub mod theme;
 pub mod toolbar;
+
+pub(crate) mod text_editor;
+
+pub(crate) mod text_input;
