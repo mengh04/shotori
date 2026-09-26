@@ -14,7 +14,7 @@ use crate::actions::{
     ToggleHighlighter, ToggleLine, ToggleMosaic, ToggleNumber, TogglePencil, TogglePolyline,
     ToggleRectangle, ToggleText,
 };
-use crate::model::placement::{ROW_H, TB_H, TB_W, toolbar_anchor};
+use crate::model::placement::{GRIP_W, ROW_H};
 
 // The default GPUI asset bundle does not include every toolbar icon.
 gpui_kit::assets::icon_assets!(
@@ -81,14 +81,12 @@ fn own_icon(path: &'static str) -> Svg {
 }
 
 pub(crate) fn selection_toolbar(
-    b: Bounds<Pixels>,
-    ws: Size<Pixels>,
+    rect: Bounds<Pixels>,
+    output: SharedString,
     annotations: &crate::annotation::Annotations,
     session: Entity<ScreenshotSession>,
     focus: FocusHandle,
 ) -> impl IntoElement {
-    let height = if annotations.enabled() { TB_H } else { ROW_H };
-    let (x, y) = toolbar_anchor(&b, ws, height);
     let selected_color = annotations.color().0;
     let filter_tool = matches!(
         annotations.tool(),
@@ -109,15 +107,16 @@ pub(crate) fn selection_toolbar(
     div()
         .id("shotori-toolbar")
         .absolute()
-        .left(px(x))
-        .top(px(y))
-        .w(px(TB_W.min((f32::from(ws.width) - 16.).max(1.))))
+        .left(rect.origin.x)
+        .top(rect.origin.y)
+        .w(rect.size.width)
         .flex()
         .flex_col()
         .gap(px(6.))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(
             bar()
+                .child(grip("tb-grip-left", output.clone(), session.clone()))
                 .child(
                     icon_button(
                         "tb-rectangle",
@@ -275,7 +274,8 @@ pub(crate) fn selection_toolbar(
                     |window, cx| {
                         window.dispatch_action(Box::new(CopySelection), cx);
                     },
-                )),
+                ))
+                .child(grip("tb-grip-right", output, session.clone())),
         )
         .children(annotations.enabled().then(|| {
             let mut options = bar();
@@ -447,6 +447,43 @@ pub(crate) fn selection_toolbar(
         }))
 }
 
+/// A drag strip at the toolbar's edge: press and the whole toolbar
+/// follows the pointer anywhere on its layer (session-side clamping
+/// keeps it inside the window). Visually a matte "grip texture" — a
+/// quiet dot matrix like the textured rubber on physical devices — NOT
+/// a button: no pill, no hover background. The open/closed hand cursor
+/// is the affordance (see `Overlay::cursor_style`).
+fn grip(
+    id: &'static str,
+    output: SharedString,
+    session: Entity<ScreenshotSession>,
+) -> impl IntoElement {
+    // toolbar_text at low alpha: visible as texture, quiet as texture
+    let grain = (theme::c().toolbar_text & 0xFFFFFF00) | 0x4D;
+    div()
+        .id(id)
+        .h(px(30.))
+        .w(px(GRIP_W))
+        .flex()
+        .gap(px(1.75))
+        .items_center()
+        .on_mouse_down(MouseButton::Left, move |ev, _, cx| {
+            session.update(cx, |s, cx| {
+                if s.toolbar_drag_begin(&output, ev.position) {
+                    cx.notify();
+                }
+            });
+            cx.stop_propagation(); // the press belongs to the toolbar, not the canvas
+        })
+        .children((0..3).map(|_| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(1.75))
+                .children((0..7).map(|_| div().size(px(1.5)).rounded_full().bg(rgba(grain))))
+        }))
+}
+
 fn bar() -> Div {
     div()
         .flex()
@@ -537,15 +574,21 @@ impl Render for ToolbarTooltip {
 
 #[cfg(test)]
 mod tests {
-    use super::{TB_H, TB_W, toolbar_anchor};
+    use crate::model::placement::{TB_W, round_px, toolbar_anchor, toolbar_bounds};
     use gpui_kit::{Bounds, point, px, size};
     #[test]
     fn toolbar_clamps_horizontally() {
         let b = Bounds::new(point(px(1800.), px(100.)), size(px(100.), px(100.)));
         assert_eq!(
-            toolbar_anchor(&b, size(px(1920.), px(1080.)), TB_H).0,
+            toolbar_anchor(&b, size(px(1920.), px(1080.)), super::ROW_H).0,
             1920. - TB_W - 8.
         );
+        // the composed rect: anchor + the width clamp the render side applies
+        let rect = toolbar_bounds(&round_px(b), size(px(1920.), px(1080.)), super::ROW_H);
+        assert_eq!(rect.size.width, px(TB_W));
+        // narrow window: the toolbar shrinks to the window minus breathing room
+        let rect = toolbar_bounds(&round_px(b), size(px(400.), px(400.)), super::ROW_H);
+        assert_eq!(rect.size.width, px(384.));
     }
     #[test]
     fn toolbar_icons_are_bundled() {

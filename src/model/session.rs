@@ -36,11 +36,28 @@ struct FilterPreview {
     image: Arc<RenderImage>,
 }
 
+/// An in-flight toolbar drag: `grab` is the press offset from the
+/// toolbar's origin (press − origin, window-local) so the toolbar
+/// follows the pointer without jumping; `restore` is the pre-drag
+/// position override (None = anchored) for Esc.
+#[derive(Clone, Copy)]
+struct ToolbarDrag {
+    grab: Point<Pixels>,
+    restore: Option<Point<Pixels>>,
+}
+
 pub struct ScreenshotSession {
     screens: Vec<Screen>,
     selection: Selection,
     active_output: Option<String>,
     blocked: bool,
+    /// The user-dragged toolbar position (window-local to the ACTIVE
+    /// output); None → the placement anchor decides. Reset by a NEW
+    /// selection or a change of host window — moving/resizing the
+    /// current selection keeps it (the user put it there deliberately).
+    toolbar_pos: Option<Point<Pixels>>,
+    /// Set while the toolbar is being dragged by an edge grip.
+    toolbar_drag: Option<ToolbarDrag>,
     /// Window-snap targets in global logical coordinates; empty when the
     /// compositor exposes no supported IPC — see [`crate::platform::windowsnap`]
     snaps: Vec<crate::platform::windowsnap::SnapRect>,
@@ -72,6 +89,8 @@ impl ScreenshotSession {
             selection: Selection::Idle,
             active_output: None,
             blocked: false,
+            toolbar_pos: None,
+            toolbar_drag: None,
             snaps,
             hovered: None,
             press: None,
@@ -98,12 +117,12 @@ impl ScreenshotSession {
             .map(|s| s.bounds())
             .reduce(|a, b| a.union(&b))
         {
-            self.active_output = Some(
-                self.screens
-                    .first()
-                    .map(|s| s.capture.output_name.clone())
-                    .unwrap_or_default(),
-            );
+            let first = self
+                .screens
+                .first()
+                .map(|s| s.capture.output_name.clone())
+                .unwrap_or_default();
+            self.set_active_output(&first);
             self.selection = Selection::Selected { bounds };
         }
     }
@@ -139,7 +158,8 @@ impl ScreenshotSession {
         } else {
             screen_bounds // idle / partial / elsewhere → this screen
         };
-        self.active_output = Some(name.to_string());
+        self.toolbar_pos = None; // the selection was replaced: re-anchor
+        self.set_active_output(name);
         self.selection = Selection::Selected { bounds: next };
         true
     }
@@ -174,6 +194,17 @@ impl ScreenshotSession {
         self.active_output.as_deref() == Some(name)
     }
 
+    /// Change the host window of the toolbar-carrying selection. A
+    /// dragged toolbar position is LOCAL to its host window — a new host
+    /// must re-anchor (the same coordinates would mean somewhere else
+    /// entirely on another screen).
+    fn set_active_output(&mut self, name: &str) {
+        if self.active_output.as_deref() != Some(name) {
+            self.toolbar_pos = None;
+        }
+        self.active_output = Some(name.to_owned());
+    }
+
     pub(crate) fn local_bounds(&self, name: &str) -> Option<Bounds<Pixels>> {
         let screen = self.screen(name).bounds();
         let mut bounds = self.selection.bounds()?.intersect(&screen);
@@ -199,7 +230,8 @@ impl ScreenshotSession {
         self.press = Some(global);
         self.hovered = None; // the outline steps aside for the real interaction
         self.annotations.reset();
-        self.active_output = Some(name.to_owned());
+        self.toolbar_pos = None; // a NEW selection re-anchors the toolbar
+        self.set_active_output(name);
         self.selection.begin(global);
     }
 
@@ -227,6 +259,116 @@ impl ScreenshotSession {
             .find(|s| s.capture.output_name == name)
             .map(|s| s.logical_size)
             .filter(|s| s.width > px(0.) && s.height > px(0.))
+    }
+
+    // ── Toolbar geometry + dragging ────────────────────────────────
+    // One source of truth: render, the cursor hit-test and the drag
+    // clamp all read THIS, so the three cannot drift apart.
+
+    /// The toolbar's rect in this output's LOCAL coordinates — the
+    /// placement anchor, or wherever the user last dragged it (clamped
+    /// inside the window). None when this output hosts no toolbar.
+    pub(crate) fn toolbar_bounds(&self, name: &str) -> Option<Bounds<Pixels>> {
+        if !self.selection.is_selected() || !self.active_on(name) {
+            return None;
+        }
+        let ws = self.overlay_size(name)?;
+        let sel = self
+            .local_bounds(name)
+            .map(crate::model::placement::round_px)?;
+        let height = if self.annotations.enabled() {
+            crate::model::placement::TB_H
+        } else {
+            crate::model::placement::ROW_H
+        };
+        let mut b = crate::model::placement::toolbar_bounds(&sel, ws, height);
+        if let Some(pos) = self.toolbar_pos {
+            b.origin = point(
+                px(f32::from(pos.x).clamp(
+                    8.,
+                    (f32::from(ws.width) - f32::from(b.size.width) - 8.).max(8.),
+                )),
+                px(f32::from(pos.y).clamp(
+                    8.,
+                    (f32::from(ws.height) - f32::from(b.size.height) - 8.).max(8.),
+                )),
+            );
+        }
+        Some(b)
+    }
+
+    /// The left/right drag-grip strips (local coords) — for the cursor's
+    /// grab affordance and nothing else; the elements themselves live in
+    /// `ui::toolbar`.
+    pub(crate) fn toolbar_grips(&self, name: &str) -> Option<(Bounds<Pixels>, Bounds<Pixels>)> {
+        let b = self.toolbar_bounds(name)?;
+        let w = px(crate::model::placement::GRIP_W);
+        Some((
+            Bounds {
+                origin: b.origin,
+                size: size(w, b.size.height),
+            },
+            Bounds {
+                origin: point(b.right() - w, b.origin.y),
+                size: size(w, b.size.height),
+            },
+        ))
+    }
+
+    /// Press on an edge grip: start dragging the toolbar. `press` is in
+    /// the host window's local coordinates. Returns false when there is
+    /// no draggable toolbar here (or a modal owns the session).
+    pub(crate) fn toolbar_drag_begin(&mut self, name: &str, press: Point<Pixels>) -> bool {
+        if self.blocked {
+            return false;
+        }
+        let Some(b) = self.toolbar_bounds(name) else {
+            return false;
+        };
+        self.toolbar_drag = Some(ToolbarDrag {
+            grab: press - b.origin,
+            restore: self.toolbar_pos,
+        });
+        true
+    }
+
+    /// Drag the toolbar under the pointer (window-local coords),
+    /// clamped inside the window — the toolbar cannot leave its layer.
+    /// Returns whether the position changed (callers decide on notify).
+    pub(crate) fn toolbar_drag_move(&mut self, name: &str, local: Point<Pixels>) -> bool {
+        let Some(grab) = self.toolbar_drag.map(|d| d.grab) else {
+            return false;
+        };
+        let Some(ws) = self.overlay_size(name) else {
+            return false;
+        };
+        let height = if self.annotations.enabled() {
+            crate::model::placement::TB_H
+        } else {
+            crate::model::placement::ROW_H
+        };
+        let w = crate::model::placement::TB_W.min((f32::from(ws.width) - 16.).max(1.));
+        let next = point(
+            px((f32::from(local.x) - f32::from(grab.x))
+                .clamp(8., (f32::from(ws.width) - w - 8.).max(8.))),
+            px((f32::from(local.y) - f32::from(grab.y))
+                .clamp(8., (f32::from(ws.height) - height - 8.).max(8.))),
+        );
+        if self.toolbar_pos == Some(next) {
+            return false;
+        }
+        self.toolbar_pos = Some(next);
+        true
+    }
+
+    /// Release: the dragged position becomes the toolbar's new home.
+    pub(crate) fn toolbar_drag_end(&mut self) {
+        self.toolbar_drag = None;
+    }
+
+    /// A grip drag is in flight?
+    pub(crate) fn toolbar_drag_active(&self) -> bool {
+        self.toolbar_drag.is_some()
     }
 
     pub(crate) fn drag_to(&mut self, name: &str, local: Point<Pixels>) -> bool {
@@ -266,6 +408,7 @@ impl ScreenshotSession {
         if self.blocked
             || self.selection.is_dragging()
             || self.selection.is_editing()
+            || self.toolbar_drag.is_some()
             || self.snaps.is_empty()
             || self.annotations.enabled()
         {
@@ -296,6 +439,12 @@ impl ScreenshotSession {
     }
 
     pub(crate) fn cancel_drag(&mut self) {
+        if let Some(drag) = self.toolbar_drag.take() {
+            // Esc mid-toolbar-drag: back to where it was. One Esc, one
+            // thing — the selection below is untouched.
+            self.toolbar_pos = drag.restore;
+            return;
+        }
         self.press = None;
         self.hovered = None;
         self.selection.cancel_drag();
@@ -364,7 +513,7 @@ impl ScreenshotSession {
                 .begin_edit(local + self.screen(name).bounds().origin)
             {
                 self.hovered = None;
-                self.active_output = Some(name.to_owned());
+                self.set_active_output(name);
                 return;
             }
             self.begin(name, local);
@@ -974,6 +1123,105 @@ mod tests {
         // released: hover tracking resumes
         assert!(s.hover_at("right", point(px(30.), px(40.))));
         assert!(s.hover_bounds("right").is_some());
+    }
+
+    // ── Toolbar dragging ───────────────────────────────────────────
+
+    #[test]
+    fn toolbar_drag_moves_clamps_and_reverts() {
+        let mut s = session();
+        s.set_size("right", size(px(1200.), px(800.)));
+        s.begin("right", point(px(50.), px(50.)));
+        s.end("right", point(px(200.), px(150.))); // (50,50)-(200,150), right is host
+
+        // anchored below the box by default; grips line both edges
+        let anchored = s.toolbar_bounds("right").unwrap();
+        assert_eq!(anchored.origin, point(px(50.), px(158.)));
+        assert_eq!(anchored.size.width, px(crate::model::placement::TB_W));
+        let (lg, rg) = s.toolbar_grips("right").unwrap();
+        assert_eq!(lg.left(), anchored.left());
+        assert_eq!(rg.right(), anchored.right());
+        assert_eq!(lg.size.width, px(crate::model::placement::GRIP_W));
+        assert_eq!(lg.size.height, anchored.size.height);
+        // a different output hosts nothing
+        assert!(s.toolbar_bounds("left").is_none());
+
+        // drag from the middle of the left grip: toolbar follows, no jump
+        let press = point(px(56.), px(177.)); // grab = (6, 19)
+        assert!(s.toolbar_drag_begin("right", press));
+        assert!(s.toolbar_drag_active());
+        assert!(s.toolbar_drag_move("right", point(px(200.), px(120.))));
+        let b = s.toolbar_bounds("right").unwrap();
+        assert_eq!(b.origin, point(px(194.), px(101.)));
+        assert_eq!(b.size, anchored.size); // size never changes
+        // unchanged position reports false (no duplicate notify)
+        assert!(!s.toolbar_drag_move("right", point(px(200.), px(120.))));
+
+        // clamped inside the window on every side
+        assert!(s.toolbar_drag_move("right", point(px(2000.), px(2000.))));
+        assert_eq!(
+            s.toolbar_bounds("right").unwrap().origin,
+            point(px(1200. - 512. - 8.), px(800. - 38. - 8.))
+        );
+        assert!(s.toolbar_drag_move("right", point(px(-999.), px(-999.))));
+        assert_eq!(
+            s.toolbar_bounds("right").unwrap().origin,
+            point(px(8.), px(8.))
+        );
+
+        // Esc mid-drag: back to the anchor (the pre-drag override was None)
+        s.cancel_drag();
+        assert!(!s.toolbar_drag_active());
+        assert_eq!(s.toolbar_bounds("right").unwrap(), anchored);
+
+        // a completed drag stays put…
+        assert!(s.toolbar_drag_begin("right", point(px(56.), px(177.))));
+        assert!(s.toolbar_drag_move("right", point(px(300.), px(300.))));
+        s.toolbar_drag_end();
+        let dropped = s.toolbar_bounds("right").unwrap().origin;
+        assert_eq!(dropped, point(px(294.), px(281.)));
+        // …and Esc with no drag in flight does NOT move it (stage two: quit)
+        s.cancel_drag();
+        assert_eq!(s.toolbar_bounds("right").unwrap().origin, dropped);
+    }
+
+    #[test]
+    fn editing_the_selection_keeps_a_dragged_toolbar_but_a_new_one_reanchors() {
+        let mut s = session();
+        s.set_size("right", size(px(1200.), px(800.)));
+        s.begin("right", point(px(50.), px(50.)));
+        s.end("right", point(px(200.), px(150.)));
+        let anchored = s.toolbar_bounds("right").unwrap().origin;
+        assert!(s.toolbar_drag_begin("right", point(px(56.), px(177.))));
+        assert!(s.toolbar_drag_move("right", point(px(400.), px(500.))));
+        s.toolbar_drag_end();
+        let dragged = s.toolbar_bounds("right").unwrap().origin;
+        assert_ne!(dragged, anchored);
+
+        // moving the SELECTION (an edit) keeps the user's placement
+        s.pointer_down("right", point(px(120.), px(100.))); // interior
+        s.pointer_move("right", point(px(220.), px(200.)), false);
+        s.pointer_up("right", point(px(220.), px(200.)), false);
+        assert_eq!(s.toolbar_bounds("right").unwrap().origin, dragged);
+
+        // a NEW selection re-anchors
+        s.pointer_down("right", point(px(500.), px(500.)));
+        s.pointer_move("right", point(px(700.), px(650.)), false);
+        s.pointer_up("right", point(px(700.), px(650.)), false);
+        assert_ne!(s.toolbar_bounds("right").unwrap().origin, dragged);
+
+        // and so does a change of host window (the override is local!)
+        s.set_size("left", size(px(1200.), px(800.)));
+        s.begin("left", point(px(300.), px(50.)));
+        s.end("left", point(px(700.), px(150.)));
+        assert!(s.toolbar_drag_begin("left", point(px(306.), px(177.))));
+        assert!(s.toolbar_drag_move("left", point(px(400.), px(500.))));
+        s.toolbar_drag_end();
+        assert!(s.toolbar_bounds("left").unwrap().origin.y > px(158.)); // dragged
+        // selection replaced from the right screen → left re-anchors
+        s.begin("right", point(px(50.), px(50.)));
+        s.end("right", point(px(200.), px(150.)));
+        assert!(s.toolbar_bounds("left").is_none());
     }
 
     #[test]

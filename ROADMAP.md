@@ -733,6 +733,57 @@ platform, never back up. OCR's download orchestration (~120 lines) stays
 in overlay for now — it is entangled with the Overlay entity state and
 moving it is risk without payoff. overlay.rs: 783 → 709 lines.
 
+## Draggable toolbar (2026-09-27, later)
+
+The toolbar is no longer nailed to its anchor: a matte grip strip at
+each edge of row one (a bare 3×7 dot matrix, low-alpha — deliberately
+NOT a button: no pill, no hover background; the open/closed hand cursor
+is the affordance) drags the whole toolbar anywhere on its layer.
+First cut used three rounded bars + a hover pill — user-rejected for
+reading as "just a dashed line" and a 15th button.
+
+### Where the state lives — and what resets it
+
+`session.toolbar_pos` (window-local override of the anchor) +
+`toolbar_drag` (grab offset + pre-drag restore). One geometry source:
+`session.toolbar_bounds()` — render, the cursor hit-test AND the drag
+clamp all read it, so they cannot drift (the cursor's toolbar rect used
+to be recomputed in overlay; that duplication is gone). placement grew
+`toolbar_bounds()` (anchor + width clamp) and took in `round_px`;
+TB_W 492 → 512 to make room for the grips.
+
+Reset semantics: a NEW selection (`begin`, `cycle_select_all`,
+`select_all`) re-anchors; a change of host window re-anchors (the
+override is local — the same coordinates mean somewhere else entirely
+on another screen); moving/resizing the CURRENT selection keeps the
+user's placement (they put it there deliberately). Esc mid-drag
+reverts to the pre-drag position — one Esc, one thing (`cancel_drag`
+returns before touching the selection).
+
+### Event plumbing
+
+The grip's `on_mouse_down` starts the drag and stops propagation (the
+toolbar root also stops it — the canvas never sees the press, so no
+move/resize of the selection underneath). Moves/releases ride the
+window-level canvas listeners (they already handle
+release-outside-window on Wayland): move → `toolbar_drag_move`
+(clamped to the window, 8px breathing room), release →
+`toolbar_drag_end`. Hover (window-snap outline) is suppressed while a
+toolbar drag is in flight.
+
+### Verification
+
+- session: drag follows without jumping (grab math), clamps on all
+  four sides, unchanged-position returns false, Esc revert, drop
+  persists, edit-keeps/new-selection-reanchors, host-change reanchors
+- overlay: full pipeline — anchored rect as predicted, OpenHand on
+  both grips (one tested OUTSIDE the box horizontally — the grip
+  affordance wins), ClosedHand mid-drag, drop position held, and the
+  selection beneath the press untouched
+- cursor test extended with the grip case; toolbar placement test now
+  asserts the composed `toolbar_bounds` (full + narrow width clamp)
+- 161 green; live vision check of the dot-matrix grips
+
 ## Custom icon assets + toolbar cursor fix (2026-09-27)
 
 Two follow-ups from the selection-editing release, both user-reported:
