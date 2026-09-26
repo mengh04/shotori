@@ -203,6 +203,21 @@ impl ScreenshotSession {
         self.selection.begin(global);
     }
 
+    /// The union of every screen's bounds — the "desktop" a selection can
+    /// occupy. Move/resize clamps to it (a selection cannot leave the
+    /// captured area).
+    fn desktop_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.screens
+            .iter()
+            .map(|s| s.bounds())
+            .reduce(|a, b| a.union(&b))
+    }
+
+    /// Window-local → global logical coordinates for one output.
+    pub(crate) fn to_global(&self, name: &str, local: Point<Pixels>) -> Point<Pixels> {
+        local + self.screen(name).bounds().origin
+    }
+
     pub(crate) fn drag_to(&mut self, name: &str, local: Point<Pixels>) -> bool {
         if self.blocked {
             return false;
@@ -239,6 +254,7 @@ impl ScreenshotSession {
     pub(crate) fn hover_at(&mut self, name: &str, local: Point<Pixels>) -> bool {
         if self.blocked
             || self.selection.is_dragging()
+            || self.selection.is_editing()
             || self.snaps.is_empty()
             || self.annotations.enabled()
         {
@@ -328,6 +344,18 @@ impl ScreenshotSession {
                     .begin(local + self.screen(name).bounds().origin, selection);
             }
         } else {
+            // A finalized selection is editable in place: an edge/corner
+            // band grabs a resize handle, the interior starts a move. Only
+            // a press OUTSIDE starts a fresh selection (which also clears
+            // the annotations — an edit must not).
+            if self
+                .selection
+                .begin_edit(local + self.screen(name).bounds().origin)
+            {
+                self.hovered = None;
+                self.active_output = Some(name.to_owned());
+                return;
+            }
             self.begin(name, local);
         }
     }
@@ -345,6 +373,12 @@ impl ScreenshotSession {
                 );
             }
             false
+        } else if self.selection.is_editing() {
+            let Some(desktop) = self.desktop_bounds() else {
+                return false;
+            };
+            self.selection
+                .edit_to(local + self.screen(name).bounds().origin, desktop)
         } else {
             self.drag_to(name, local)
         }
@@ -357,6 +391,9 @@ impl ScreenshotSession {
         if self.annotations.enabled() {
             self.pointer_move(name, local, square);
             self.annotations.end();
+        } else if self.selection.is_editing() {
+            self.selection.end_edit();
+            self.press = None;
         } else {
             self.end(name, local);
         }
@@ -794,6 +831,138 @@ mod tests {
         s.begin("right", point(px(30.), px(40.)));
         assert!(!s.hover_at("right", point(px(35.), px(45.))));
         assert!(s.hover_bounds("right").is_none());
+    }
+
+    // ── In-place selection editing (move / resize) ────────────────
+
+    #[test]
+    fn move_selection_after_release_preserves_annotations() {
+        let mut s = session();
+        s.begin("left", point(px(10.), px(10.)));
+        s.end("left", point(px(30.), px(30.))); // global (-90,30) 20×20
+        s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Rectangle));
+        s.pointer_down("left", point(px(12.), px(12.)));
+        s.pointer_up("left", point(px(28.), px(28.)), false);
+        assert_eq!(s.annotations().visible().count(), 1);
+        // untoggle: back to selection mode (editing only works without a tool)
+        s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Rectangle));
+
+        // press the interior, drag, release → translated, annotations intact
+        s.pointer_down("left", point(px(20.), px(20.))); // global (-80,40): interior
+        assert!(s.selection().is_editing());
+        assert!(!s.selection().is_selected()); // toolbar hides mid-edit
+        s.pointer_move("left", point(px(40.), px(40.)), false); // global (-60,60)
+        s.pointer_up("left", point(px(40.), px(40.)), false);
+        let b = s.selection().bounds().unwrap();
+        assert_eq!(b.origin, point(px(-70.), px(50.))); // +20,+20
+        assert_eq!(b.size, size(px(20.), px(20.)));
+        assert!(s.selection().is_selected());
+        assert_eq!(s.annotations().visible().count(), 1); // NOT reset by the edit
+    }
+
+    #[test]
+    fn resize_selection_by_corner_handle() {
+        let mut s = session();
+        s.begin("left", point(px(10.), px(10.)));
+        s.end("left", point(px(30.), px(30.))); // global (-90,30) 20×20
+        // press right at the bottom-right corner (within the 8px band)
+        s.pointer_down("left", point(px(30.), px(30.)));
+        assert!(s.selection().is_editing());
+        s.pointer_move("left", point(px(50.), px(60.)), false); // global (-50,80)
+        s.pointer_up("left", point(px(50.), px(60.)), false);
+        let b = s.selection().bounds().unwrap();
+        assert_eq!(b.origin, point(px(-90.), px(30.))); // top-left pinned
+        assert_eq!(b.size, size(px(40.), px(50.)));
+        // and the export path follows the new bounds
+        assert_eq!(s.crop("left").unwrap().0, 40);
+    }
+
+    #[test]
+    fn press_outside_selection_still_restarts_and_clears_annotations() {
+        let mut s = session();
+        s.begin("left", point(px(10.), px(10.)));
+        s.end("left", point(px(30.), px(30.)));
+        s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Rectangle));
+        s.pointer_down("left", point(px(15.), px(15.)));
+        s.pointer_up("left", point(px(25.), px(25.)), false);
+        assert_eq!(s.annotations().visible().count(), 1);
+        // untoggle the tool, then press well outside the box: fresh
+        // selection, annotations wiped
+        s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Rectangle));
+        s.pointer_down("left", point(px(60.), px(60.)));
+        assert!(s.selection().is_dragging());
+        s.pointer_move("left", point(px(80.), px(80.)), false);
+        s.pointer_up("left", point(px(80.), px(80.)), false);
+        assert_eq!(s.annotations().visible().count(), 0);
+        let b = s.selection().bounds().unwrap();
+        assert_eq!(b.origin, point(px(-40.), px(80.)));
+    }
+
+    #[test]
+    fn esc_reverts_an_inflight_move() {
+        let mut s = session();
+        s.begin("left", point(px(10.), px(10.)));
+        s.end("left", point(px(30.), px(30.)));
+        s.pointer_down("left", point(px(20.), px(20.)));
+        s.pointer_move("left", point(px(60.), px(60.)), false);
+        s.cancel_drag();
+        assert!(s.selection().is_selected());
+        let b = s.selection().bounds().unwrap();
+        assert_eq!(b.origin, point(px(-90.), px(30.)));
+        assert_eq!(b.size, size(px(20.), px(20.)));
+    }
+
+    #[test]
+    fn cross_screen_move_translates_globally() {
+        let mut s = session();
+        s.begin("left", point(px(80.), px(20.)));
+        s.end("right", point(px(20.), px(60.))); // global (-20,40) 40×20, spans the seam
+        // grab the part that lives on the RIGHT screen…
+        s.pointer_down("right", point(px(10.), px(50.))); // global (10,50): interior
+        // …and the drag continues with the LEFT overlay delivering events
+        // (left origin is (-100,20): local (90,40) → global (-10,60))
+        s.pointer_move("left", point(px(90.), px(40.)), false);
+        s.pointer_up("left", point(px(90.), px(40.)), false);
+        let b = s.selection().bounds().unwrap();
+        assert_eq!(b.origin, point(px(-40.), px(50.)));
+        assert_eq!(b.size, size(px(40.), px(20.)));
+        assert_eq!(
+            s.local_bounds("left").unwrap(),
+            Bounds {
+                origin: point(px(60.), px(30.)),
+                size: size(px(40.), px(20.))
+            }
+        );
+        assert!(s.local_bounds("right").is_none()); // fully on the left now
+    }
+
+    #[test]
+    fn in_place_click_inside_selection_keeps_it_even_over_a_snap_window() {
+        let mut s = snapped_session();
+        s.begin("right", point(px(25.), px(35.)));
+        s.end("right", point(px(55.), px(75.)));
+        // a click (no drag) at a point that ALSO sits on a snap window:
+        // editing semantics win — the current selection is kept, no re-snap
+        s.pointer_down("right", point(px(40.), px(55.)));
+        s.pointer_up("right", point(px(40.), px(55.)), false);
+        assert!(s.selection().is_selected());
+        let b = s.selection().bounds().unwrap();
+        assert_eq!(b.origin, point(px(25.), px(35.)));
+        assert_eq!(b.size, size(px(30.), px(40.)));
+    }
+
+    #[test]
+    fn editing_suppresses_the_window_hover_outline() {
+        let mut s = snapped_session();
+        s.begin("right", point(px(25.), px(35.)));
+        s.end("right", point(px(55.), px(75.)));
+        s.pointer_down("right", point(px(40.), px(55.))); // move grab
+        assert!(!s.hover_at("right", point(px(30.), px(40.)))); // over a window, but editing
+        assert!(s.hover_bounds("right").is_none());
+        s.pointer_up("right", point(px(40.), px(55.)), false);
+        // released: hover tracking resumes
+        assert!(s.hover_at("right", point(px(30.), px(40.))));
+        assert!(s.hover_bounds("right").is_some());
     }
 
     #[test]

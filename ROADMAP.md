@@ -733,6 +733,73 @@ platform, never back up. OCR's download orchestration (~120 lines) stays
 in overlay for now — it is entangled with the Overlay entity state and
 moving it is risk without payoff. overlay.rs: 783 → 709 lines.
 
+## Selection editing in place: move + resize (2026-09-27)
+
+A drawn selection is no longer set in stone (previously ANY press while
+`Selected` restarted the selection — a slightly-off box meant redrawing it
+from scratch). Classic screenshot-tool semantics now:
+
+- Press an **edge/corner band** (8 logical px) → resize that side; the
+  opposite edges stay pinned; no flipping (MIN_SIZE=2px holds), clamped to
+  the desktop (the union of screens — a selection cannot leave the
+  captured area, and cross-screen edits work because bounds are global)
+- Press the **interior** → move; `grab = press − origin` so the box
+  follows the pointer without jumping
+- Press **outside** → fresh drag, exactly as before (annotations still
+  wipe on a NEW selection; an edit must NOT wipe them)
+- An in-place click inside keeps the selection (it no longer re-snaps to
+  a window that happens to live inside the old box — editing semantics
+  win; click outside to re-snap)
+- Esc during an edit reverts to the pre-edit bounds (stage-one Esc),
+  release finalizes; the toolbar hides while editing (`is_selected()` is
+  the render gate) and returns on release
+
+### The handle hit-test geometry lesson
+
+The first cut hit-tested each axis independently ("near the top edge?
+near the left?") — which made the edges' EXTENSIONS into invisible grab
+zones: a press 50px past the right end of the top edge still grabbed
+"top edge" and silently entered resize instead of starting a fresh
+selection. The multi-output overlay simulation test caught it (a phase-2
+press expected a new selection and found the old one edited). Correct
+geometry: corners are square zones that may stick out past the box, but
+an EDGE handle only counts along its edge's own span (the other axis
+must lie within the box). Tiny boxes (< 2× hit band per axis) resolve to
+the nearer edge per axis — a grab is still a grab.
+
+### Cursor feedback via set_window_cursor_style
+
+The overlay had no cursor affordance at all (plain arrow everywhere).
+Now a shared `Rc<Cell<CursorStyle>>` is refreshed on every pointer move
+(plus on session changes, for state flips without motion: Ctrl+A, snap,
+undo) and pushed window-level from the handles canvas during paint:
+crosshair for drawing/annotation tools, open hand over the interior,
+closed hand while moving, the matching resize arrow per handle. Why
+window-level is safe here: gpui resolves `None`-hitbox (window) requests
+with immediate precedence over hitbox styles, and nothing in this UI
+sets an element cursor today (gpui-kit buttons included — verified
+against the sources), so nothing gets shadowed. The text editor and the
+OCR setup dialog opt out of the push entirely (their inputs own IBeam /
+default cursors via hitboxes).
+
+### Verification
+
+- selection.rs: 16 unit tests (hit zones incl. the extension regression,
+  narrow-box tie-breaks, move clamp, all-8-handle resize sweeps,
+  end/cancel/in-place-click semantics)
+- session.rs: 7 new tests (edit preserves annotations, outside press
+  still wipes, Esc revert, cross-screen move with events delivered by
+  the OTHER screen's overlay, click-over-snap-window keeps the box,
+  hover suppression during edits)
+- overlay.rs: full pipeline simulation (press→move→release through real
+  window events for both move and corner-resize, crop follows)
+- Live: 8 handles rendered correctly on a 500×350 injected selection
+  (vision-checked grim capture); copy regression exact 500×350
+
+Follow-ups: arrow-key nudging, pixel-exact sizing via Shift+arrows,
+handle size scaling with DPI, keyboard-only resize (Tab between
+handles).
+
 ## Annotation tools — incremental implementation
 
 Reference: [PixPin annotation basics](https://pixpin.cn/docs/mark/base-use)
