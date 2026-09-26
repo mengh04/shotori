@@ -341,14 +341,14 @@ mod tests {
 
     #[test]
     fn toolbar_sits_below_by_default() {
-        let (x, y) = toolbar_anchor(&bounds(50., 100., 300., 200.), screen());
+        let (x, y) = toolbar_anchor(&bounds(50., 100., 300., 200.), screen(), TB_H);
         assert_eq!((x, y), (50., 308.));
     }
 
     #[test]
     fn toolbar_goes_inside_bottom_left_when_reaching_the_bottom() {
-        let (x, y) = toolbar_anchor(&bounds(50., 300., 300., 780.), screen());
-        assert_eq!((x, y), (50. + 12., 1080. - 40. - 8.));
+        let (x, y) = toolbar_anchor(&bounds(50., 300., 300., 780.), screen(), TB_H);
+        assert_eq!((x, y), (50. + 12., 1080. - TB_H - 8.));
     }
 
     #[test]
@@ -363,7 +363,7 @@ mod tests {
                 }
                 let b = bounds(50., top, 300., bottom - top);
                 let (_, ly) = label_anchor(&b, screen());
-                let (_, ty) = toolbar_anchor(&b, screen());
+                let (_, ty) = toolbar_anchor(&b, screen(), TB_H);
                 assert!(ly >= 0., "label off-screen for {b:?}");
                 assert!(
                     ty >= 0. && ty + TB_H <= 1080.,

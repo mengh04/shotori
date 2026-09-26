@@ -27,6 +27,7 @@ pub struct ScreenshotSession {
     selection: Selection,
     active_output: Option<String>,
     blocked: bool,
+    annotations: crate::annotation::Annotations,
 }
 
 impl ScreenshotSession {
@@ -45,6 +46,7 @@ impl ScreenshotSession {
             selection: Selection::Idle,
             active_output: None,
             blocked: false,
+            annotations: Default::default(),
         }
     }
 
@@ -105,6 +107,7 @@ impl ScreenshotSession {
         if self.blocked {
             return;
         }
+        self.annotations.reset();
         self.active_output = Some(name.to_owned());
         self.selection
             .begin(local + self.screen(name).bounds().origin);
@@ -130,9 +133,88 @@ impl ScreenshotSession {
         self.selection.cancel_drag();
     }
 
+    pub(crate) fn annotations(&self) -> &crate::annotation::Annotations {
+        &self.annotations
+    }
+
+    pub(crate) fn edit_annotations(
+        &mut self,
+        edit: impl FnOnce(&mut crate::annotation::Annotations),
+    ) {
+        if !self.blocked && self.selection.is_selected() {
+            edit(&mut self.annotations);
+        }
+    }
+
+    pub(crate) fn pointer_down(&mut self, name: &str, local: Point<Pixels>) {
+        if self.blocked {
+            return;
+        }
+        if self.annotations.enabled() {
+            if let Some(selection) = self.selection.bounds() {
+                self.annotations
+                    .begin(local + self.screen(name).bounds().origin, selection);
+            }
+        } else {
+            self.begin(name, local);
+        }
+    }
+
+    pub(crate) fn pointer_move(&mut self, name: &str, local: Point<Pixels>, square: bool) -> bool {
+        if self.blocked {
+            return false;
+        }
+        if self.annotations.enabled() {
+            if let Some(selection) = self.selection.bounds() {
+                return self.annotations.drag_to(
+                    local + self.screen(name).bounds().origin,
+                    selection,
+                    square,
+                );
+            }
+            false
+        } else {
+            self.drag_to(name, local)
+        }
+    }
+
+    pub(crate) fn pointer_up(&mut self, name: &str, local: Point<Pixels>, square: bool) {
+        if self.blocked {
+            return;
+        }
+        if self.annotations.enabled() {
+            self.pointer_move(name, local, square);
+            self.annotations.end();
+        } else {
+            self.end(name, local);
+        }
+    }
+
+    pub(crate) fn cancel_annotation(&mut self) -> bool {
+        !self.blocked && self.annotations.cancel()
+    }
+
+    pub(crate) fn local_annotations(&self, name: &str) -> Vec<crate::annotation::Rectangle> {
+        let origin = self.screen(name).bounds().origin;
+        self.annotations
+            .visible()
+            .map(|mut rectangle| {
+                rectangle.bounds.origin -= origin;
+                rectangle
+            })
+            .collect()
+    }
+
+    pub(crate) fn crop(&self, output: &str) -> Option<(u32, u32, Vec<u8>)> {
+        self.crop_impl(output, true)
+    }
+    pub(crate) fn crop_original(&self, output: &str) -> Option<(u32, u32, Vec<u8>)> {
+        self.crop_impl(output, false)
+    }
+
     /// Keep the original single-output crop when possible. Spanning selections
     /// use the highest participating pixel density; desktop gaps stay transparent.
-    pub(crate) fn crop(&self, fallback_output: &str) -> Option<(u32, u32, Vec<u8>)> {
+    fn crop_impl(&self, fallback_output: &str, marked: bool) -> Option<(u32, u32, Vec<u8>)> {
         let selected = self
             .selection
             .bounds()
@@ -150,13 +232,20 @@ impl ScreenshotSession {
             let (screen, mut bounds) = participating[0];
             bounds.origin -= screen.bounds().origin;
             let cap = &screen.capture;
-            return crate::export::crop(
-                &cap.rgba,
-                cap.width,
-                cap.height,
-                bounds,
-                cap.width as f32 / f32::from(screen.logical_size.width),
-            );
+            let scale = cap.width as f32 / f32::from(screen.logical_size.width);
+            let (w, h, mut rgba) =
+                crate::export::crop(&cap.rgba, cap.width, cap.height, bounds, scale)?;
+            if marked {
+                // crop() rounds the source offset to native pixels. Use the
+                // same rounded origin when placing logical annotation edges.
+                let origin = screen.bounds().origin
+                    + point(
+                        px((f32::from(bounds.left()) * scale).round() / scale),
+                        px((f32::from(bounds.top()) * scale).round() / scale),
+                    );
+                self.annotations.rasterize(&mut rgba, w, h, origin, scale);
+            }
+            return Some((w, h, rgba));
         }
         if participating.is_empty() {
             return None;
@@ -199,7 +288,12 @@ impl ScreenshotSession {
             );
             image::imageops::replace(&mut out, &image, x.into(), y.into());
         }
-        Some((w, h, out.into_raw()))
+        let mut rgba = out.into_raw();
+        if marked {
+            self.annotations
+                .rasterize(&mut rgba, w, h, extent.origin, scale);
+        }
+        Some((w, h, rgba))
     }
 }
 
@@ -318,5 +412,26 @@ mod tests {
         s.cancel_drag();
         assert!(s.local_bounds("left").is_none());
         assert!(s.local_bounds("right").is_none());
+    }
+    #[test]
+    fn rectangle_crosses_mixed_dpi_outputs_and_is_encoded_but_not_used_for_ocr() {
+        let mut s = session();
+        s.begin("left", point(px(80.), px(20.)));
+        s.end("right", point(px(20.), px(60.)));
+        s.edit_annotations(|a| a.toggle());
+        s.pointer_down("left", point(px(90.), px(25.)));
+        s.pointer_up("right", point(px(10.), px(55.)), false);
+        let (w, h, pixels) = s.crop("right").unwrap();
+        let png = crate::export::encode_png(w, h, &pixels).unwrap();
+        let decoded = image::load_from_memory(&png).unwrap().into_rgba8();
+        let color = s.annotations().color().0.to_be_bytes();
+        assert_eq!(decoded.get_pixel(20, 10).0, color);
+        assert_eq!(decoded.get_pixel(40, 10).0, color);
+        assert_eq!(decoded.get_pixel(40, 20).0, [0, 255, 0, 255]);
+        let (_, _, original) = s.crop_original("left").unwrap();
+        assert_eq!(
+            &original[(10 * w as usize + 40) * 4..(10 * w as usize + 40) * 4 + 4],
+            &[0, 255, 0, 255]
+        );
     }
 }

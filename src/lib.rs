@@ -23,6 +23,7 @@
 //! the vendored set_layer_margin patch; can't ship on crates.io until
 //! upstream merges it).
 
+mod annotation;
 pub mod capture;
 pub mod clipboard;
 pub mod display;

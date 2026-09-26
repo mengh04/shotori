@@ -665,3 +665,31 @@ below-fit decision keeps 12 px of breathing room at the screen edge
 (zero-margin still looks glued on — measured). Anchors stay pure and
 unit-tested, including a grid sweep asserting the disjoint-and-on-screen
 invariant over 35 selection geometries.
+
+
+## Annotation tools — incremental implementation
+
+Reference: [PixPin annotation basics](https://pixpin.cn/docs/mark/base-use)
+and [geometry tools](https://pixpin.cn/docs/mark/geo). Implement one tool at a
+time, with shared desktop coordinates, preview, history, and PNG export.
+
+1. Implemented: rectangle outlines — drag, Shift-square, preset colors/widths, undo/redo,
+   multi-output preview and export. OCR continues to use the original image.
+2. Ellipse outlines and Shift-circle.
+3. Lines and polylines.
+4. Arrows.
+5. Sequence numbers.
+6. Pencil.
+7. Highlighter.
+8. Mosaic and blur (smart erasing requires a separate feasibility review).
+9. Text.
+10. Eraser.
+11. Spotlight.
+12. Watermark.
+13. Magnifier.
+
+Follow-up geometry enhancements: select existing annotations, move/resize,
+delete, fill, line styles, rounded corners, rotation, sectors and arcs.
+Rectangle strokes use the same four inward bands for GPU preview and raster
+export; history and drafts belong to the shared screenshot session. Starting
+a new screenshot selection clears its old annotations and redo history.

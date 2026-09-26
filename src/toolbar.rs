@@ -1,112 +1,281 @@
-//! # Selection toolbar: Copy / Save / OCR / Cancel
-//!
-//! Buttons dispatch the exact same actions as the keyboard through
-//! `dispatch_action` — one action, two triggers, one pipeline.
-//! Visibility is decided by the overlay: it only appears after the selection
-//! is finalized ([`crate::selection::Selection::is_selected`]).
+//! Compact screenshot toolbar and rectangle appearance controls.
+use gpui_kit::{assets::IconName, base::Button, *};
 
-use gpui_kit::base::Button;
-use gpui_kit::*;
+use crate::{
+    overlay::{CopySelection, OcrSelection, QuitOverlay, SaveSelection, ToggleRectangle},
+    session::ScreenshotSession,
+    theme,
+};
 
-use crate::overlay::{CopySelection, OcrSelection, QuitOverlay, SaveSelection};
-use crate::theme;
+// The default GPUI asset bundle does not include every toolbar icon.
+gpui_kit::assets::icon_assets!(pub ToolbarAssets, [Square, ScanText, Save, X, Copy]);
 
-/// Toolbar: BELOW the selection, or — when the selection reaches the
-/// bottom of the screen — INSIDE the box at its bottom-left corner. Never
-/// above: the label owns the top zone, the toolbar the bottom zone, so
-/// they cannot collide by construction (see hud::label_anchor).
-/// [Copy][Save][OCR][Cancel]
-const TB_W: f32 = 320.;
-pub(crate) const TB_H: f32 = 40.;
-/// Breathing room kept between the lowest element and the screen edge —
-/// "fits at exactly zero margin" still looks glued on (measured).
+const TB_W: f32 = 332.;
+const ROW_H: f32 = 38.;
+pub(crate) const TB_H: f32 = ROW_H * 2. + 6.;
 const EDGE_B: f32 = 12.;
 
-pub fn selection_toolbar(b: Bounds<Pixels>, ws: Size<Pixels>) -> impl IntoElement {
-    let (x, y) = toolbar_anchor(&b, ws);
+pub(crate) fn selection_toolbar(
+    b: Bounds<Pixels>,
+    ws: Size<Pixels>,
+    annotations: &crate::annotation::Annotations,
+    session: Entity<ScreenshotSession>,
+    focus: FocusHandle,
+) -> impl IntoElement {
+    let height = if annotations.enabled() { TB_H } else { ROW_H };
+    let (x, y) = toolbar_anchor(&b, ws, height);
+    let selected_color = annotations.color().0;
+    let selected_width = annotations.width();
+    let settings_focus = focus.clone();
 
     div()
         .id("shotori-toolbar")
         .absolute()
         .left(px(x))
         .top(px(y))
+        .w(px(TB_W.min((f32::from(ws.width) - 16.).max(1.))))
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            bar()
+                .child(
+                    icon_button(
+                        "tb-rectangle",
+                        "Rectangle · R",
+                        IconName::Square,
+                        focus.clone(),
+                        |window, cx| {
+                            window.dispatch_action(Box::new(ToggleRectangle), cx);
+                        },
+                    )
+                    .selected(annotations.enabled()),
+                )
+                .child(div().flex_1())
+                .child(icon_button(
+                    "tb-ocr",
+                    "Recognize text · Ctrl+O",
+                    IconName::ScanText,
+                    focus.clone(),
+                    |window, cx| {
+                        window.dispatch_action(Box::new(OcrSelection), cx);
+                    },
+                ))
+                .child(icon_button(
+                    "tb-save",
+                    "Save · Ctrl+S",
+                    IconName::Save,
+                    focus.clone(),
+                    |window, cx| {
+                        window.dispatch_action(Box::new(SaveSelection), cx);
+                    },
+                ))
+                .child(separator())
+                .child(icon_button(
+                    "tb-cancel",
+                    "Cancel · Esc",
+                    IconName::X,
+                    focus.clone(),
+                    |window, cx| {
+                        window.dispatch_action(Box::new(QuitOverlay), cx);
+                    },
+                ))
+                .child(icon_button(
+                    "tb-copy",
+                    "Copy · Enter / Ctrl+C",
+                    IconName::Copy,
+                    focus,
+                    |window, cx| {
+                        window.dispatch_action(Box::new(CopySelection), cx);
+                    },
+                )),
+        )
+        .children(annotations.enabled().then(|| {
+            let mut options = bar();
+            for (ix, width) in [1., 3., 5.].into_iter().enumerate() {
+                let session = session.clone();
+                options = options.child(
+                    control(
+                        format!("tb-width-{ix}"),
+                        format!("Line width: {width} px"),
+                        settings_focus.clone(),
+                        move |_, cx| {
+                            session.update(cx, |s, cx| {
+                                s.edit_annotations(|a| a.set_width(ix));
+                                cx.notify();
+                            })
+                        },
+                    )
+                    .w(px(26.))
+                    .selected(selected_width == width)
+                    .child(
+                        div()
+                            .size(px(width + 2.))
+                            .rounded_full()
+                            .bg(rgba(theme::TOOLBAR_TEXT)),
+                    ),
+                );
+            }
+            options = options.child(separator()).child(div().flex_1());
+            for (ix, (color, name)) in theme::ANNOTATION_COLORS.into_iter().enumerate() {
+                let session = session.clone();
+                options = options.child(
+                    control(
+                        format!("tb-color-{ix}"),
+                        format!("Color: {name}"),
+                        settings_focus.clone(),
+                        move |_, cx| {
+                            session.update(cx, |s, cx| {
+                                s.edit_annotations(|a| a.set_color(ix));
+                                cx.notify();
+                            })
+                        },
+                    )
+                    .w(px(28.))
+                    .selected(selected_color == color)
+                    .child(
+                        div()
+                            .size(px(20.))
+                            .rounded(px(4.))
+                            .bg(rgba(color))
+                            .border_1()
+                            .border_color(rgba(theme::TOOLBAR_BORDER)),
+                    ),
+                );
+            }
+            options
+        }))
+}
+
+fn bar() -> Div {
+    div()
         .flex()
         .items_center()
-        .gap_2()
-        .px_2()
-        .py_1()
-        .rounded_lg()
-        .bg(rgba(theme::CHIP_BG))
+        .gap(px(2.))
+        .h(px(ROW_H))
+        .px(px(5.))
+        .rounded(px(8.))
+        .bg(rgba(theme::TOOLBAR_BG))
         .border_1()
-        .border_color(rgba(theme::ACCENT))
-        // Key: clicks inside the toolbar must not bubble to the root node —
-        // otherwise pressing a button would start a new selection
-        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-            cx.stop_propagation();
-        })
-        .child(toolbar_button("tb-copy", "Copy", |window, cx| {
-            window.dispatch_action(Box::new(CopySelection), cx);
-        }))
-        .child(toolbar_button("tb-save", "Save", |window, cx| {
-            window.dispatch_action(Box::new(SaveSelection), cx);
-        }))
-        // .children() takes an IntoIterator — Option works as "0 or 1 child",
-        // letting the OCR button compile away in slim builds
-        .child(toolbar_button("tb-ocr", "OCR", |window, cx| {
-            window.dispatch_action(Box::new(OcrSelection), cx);
-        }))
-        .child(toolbar_button("tb-cancel", "Cancel", |window, cx| {
-            window.dispatch_action(Box::new(QuitOverlay), cx);
-        }))
+        .border_color(rgba(theme::TOOLBAR_BORDER))
+        .shadow_md()
 }
 
-/// Hand-drawn toolbar button: the base `Button` provides behavior (click /
-/// focus / hover state machine / accessibility), we only paint the skin —
-/// the standard move for the gpui-base custom-drawing route.
-fn toolbar_button(
+fn separator() -> Div {
+    div()
+        .w(px(1.))
+        .h(px(18.))
+        .mx(px(4.))
+        .bg(rgba(theme::TOOLBAR_BORDER))
+}
+
+fn icon_button(
     id: &'static str,
     label: &'static str,
+    icon: IconName,
+    focus: FocusHandle,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    Button::new(id)
-        .on_click(move |_, window, cx| on_click(window, cx))
-        .px_3()
-        .py_1()
-        .rounded(px(6.))
-        .text_size(px(13.))
-        .text_color(rgba(theme::BTN_TEXT))
-        .hover(|s| s.bg(rgba(theme::BTN_HOVER_BG)))
-        .child(label)
+) -> Button {
+    control(id.to_owned(), label.to_owned(), focus, on_click).child(
+        svg()
+            .path(icon.path())
+            .size(px(18.))
+            .text_color(rgba(theme::TOOLBAR_TEXT)),
+    )
 }
 
-/// Toolbar placement (pure, tested): below the selection, or inside its
-/// bottom-left corner when the screen ends first. Horizontally clamped.
-pub(crate) fn toolbar_anchor(b: &Bounds<Pixels>, ws: Size<Pixels>) -> (f32, f32) {
-    let inside = f32::from(b.bottom()) + TB_H + 8. + EDGE_B > f32::from(ws.height);
+/// Restore the canvas focus BEFORE changing toolbar state. A focused control
+/// may disappear on redraw (e.g. leaving rectangle mode), otherwise scoped
+/// shortcut dispatch no longer has the screenshot root in its focus path.
+fn control(
+    id: String,
+    label: String,
+    focus: FocusHandle,
+    on_click: impl Fn(&mut Window, &mut App) + 'static,
+) -> Button {
+    let selector = id.clone();
+    let tooltip: SharedString = label.clone().into();
+    Button::new(SharedString::from(id))
+        .debug_selector(move || selector)
+        .accessibility_label(label)
+        .tooltip(move |_, cx| cx.new(|_| ToolbarTooltip(tooltip.clone())).into())
+        .on_click(move |_, window, cx| {
+            window.focus(&focus, cx);
+            on_click(window, cx);
+        })
+        .size(px(30.))
+        .flex_shrink_0()
+        .rounded(px(5.))
+        .text_color(rgba(theme::TOOLBAR_TEXT))
+        .hover(|s| s.bg(rgba(theme::TOOLBAR_HOVER)))
+        .focus_visible(|s| s.border_1().border_color(rgba(theme::ACCENT)))
+        .styles(|s| {
+            s.selected(|s| {
+                s.bg(rgba(theme::TOOLBAR_SELECTED))
+                    .text_color(rgba(theme::ACCENT))
+                    .border_1()
+                    .border_color(rgba(theme::ACCENT))
+            })
+        })
+}
+
+struct ToolbarTooltip(SharedString);
+impl Render for ToolbarTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded(px(5.))
+            .bg(rgba(theme::TOOLBAR_BG))
+            .border_1()
+            .border_color(rgba(theme::TOOLBAR_BORDER))
+            .text_size(px(12.))
+            .text_color(rgba(theme::TOOLBAR_TEXT))
+            .child(self.0.clone())
+    }
+}
+
+pub(crate) fn toolbar_anchor(b: &Bounds<Pixels>, ws: Size<Pixels>, height: f32) -> (f32, f32) {
+    let inside = f32::from(b.bottom()) + height + 8. + EDGE_B > f32::from(ws.height);
     let x = (f32::from(b.left()) + if inside { 12. } else { 0. })
         .clamp(8., (f32::from(ws.width) - TB_W - 8.).max(8.));
     let y = if inside {
-        // inside, bottom-left corner (inset from the border)
-        f32::from(b.bottom()) - TB_H - 8.
+        f32::from(b.bottom()) - height - 8.
     } else {
         f32::from(b.bottom()) + 8.
     };
-    (x, y)
+    (x, y.clamp(8., (f32::from(ws.height) - height - 8.).max(8.)))
 }
 
 #[cfg(test)]
 mod tests {
-    // The placement invariants (disjoint zones, on-screen) are swept in
-    // hud::tests; here only the clamp itself.
-    use super::TB_W;
-    use gpui_kit::{px, size};
-
+    use super::{TB_H, TB_W, toolbar_anchor};
+    use gpui_kit::{Bounds, point, px, size};
     #[test]
     fn toolbar_clamps_horizontally() {
-        // a selection hugging the right edge: the toolbar pins into the screen
-        let left: f32 = 1800.;
-        let ws = size(px(1920.), px(1080.));
-        let x = left.clamp(8., (f32::from(ws.width) - TB_W - 8.).max(8.));
-        assert_eq!(x, 1920. - TB_W - 8.);
+        let b = Bounds::new(point(px(1800.), px(100.)), size(px(100.), px(100.)));
+        assert_eq!(
+            toolbar_anchor(&b, size(px(1920.), px(1080.)), TB_H).0,
+            1920. - TB_W - 8.
+        );
+    }
+    #[test]
+    fn toolbar_icons_are_bundled() {
+        use gpui_kit::{AssetSource, assets::IconName};
+        for icon in [
+            IconName::Square,
+            IconName::ScanText,
+            IconName::Save,
+            IconName::X,
+            IconName::Copy,
+        ] {
+            assert!(
+                super::ToolbarAssets
+                    .load(icon.path().as_ref())
+                    .unwrap()
+                    .is_some()
+            );
+        }
     }
 }

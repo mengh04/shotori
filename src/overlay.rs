@@ -20,7 +20,25 @@ use crate::image_util;
 use crate::selection::Selection;
 use crate::toolbar::selection_toolbar;
 
-gpui_kit::actions!([QuitOverlay, CopySelection, SaveSelection, OcrSelection]);
+gpui_kit::actions!([
+    QuitOverlay,
+    CopySelection,
+    SaveSelection,
+    OcrSelection,
+    ToggleRectangle,
+    UndoAnnotation,
+    RedoAnnotation
+]);
+
+/// Shared by the application and interaction tests.
+pub fn init_annotation_keybindings(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("r", ToggleRectangle, Some("ShotoriOverlay")),
+        KeyBinding::new("ctrl-z", UndoAnnotation, Some("ShotoriOverlay")),
+        KeyBinding::new("ctrl-y", RedoAnnotation, Some("ShotoriOverlay")),
+        KeyBinding::new("ctrl-shift-z", RedoAnnotation, Some("ShotoriOverlay")),
+    ]);
+}
 
 pub struct Overlay {
     focus_handle: FocusHandle,
@@ -64,7 +82,14 @@ impl Overlay {
             cx.notify();
         });
         let subscriptions = vec![
-            cx.observe_in(&session, window, |_, _, _, cx| cx.notify()),
+            cx.observe_in(&session, window, |this, _, window, cx| {
+                // A change from another output can remove this toolbar while
+                // one of its controls still owns the local keyboard focus.
+                if this.ocr_setup.is_none() {
+                    window.focus(&this.focus_handle, cx);
+                }
+                cx.notify();
+            }),
             cx.observe_window_bounds(window, |this, window, cx| {
                 this.session.update(cx, |session, cx| {
                     if session.set_size(&this.capture.output_name, window.bounds().size) {
@@ -184,7 +209,11 @@ impl Overlay {
         if self.session.read(cx).blocked() {
             return; // dialog open or an OCR already running
         }
-        let Some((w, h, rgba)) = self.crop(cx) else {
+        let Some((w, h, rgba)) = self
+            .session
+            .read(cx)
+            .crop_original(&self.capture.output_name)
+        else {
             println!("[shotori] empty selection, ignoring");
             return;
         };
@@ -415,6 +444,7 @@ impl Render for Overlay {
         let backdrop = shared
             .backdrop_bounds(&self.capture.output_name)
             .map(round_px);
+        let rectangles = shared.local_annotations(&self.capture.output_name);
         let active = shared.active_on(&self.capture.output_name);
         let input_view = cx.entity().downgrade();
         let ws = window.bounds().size; // window logical size (= output logical size)
@@ -432,6 +462,27 @@ impl Render for Overlay {
             .size_full()
             .relative()
             .track_focus(&self.focus_handle)
+            .on_action(cx.listener(|this, _: &ToggleRectangle, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.toggle());
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &UndoAnnotation, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.undo());
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &RedoAnnotation, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.redo());
+                    cx.notify();
+                });
+            }))
             .on_action(cx.listener(|this, _: &CopySelection, window, cx| {
                 if this.session.read(cx).blocked() {
                     return; // setup dialog is modal
@@ -482,6 +533,16 @@ impl Render for Overlay {
                     cx.stop_propagation();
                     return;
                 }
+                if this.session.update(cx, |s, cx| {
+                    let cancelled = s.cancel_annotation();
+                    if cancelled {
+                        cx.notify();
+                    }
+                    cancelled
+                }) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.session.read(cx).selection().is_dragging() {
                     this.session.update(cx, |s, cx| {
                         s.cancel_drag();
@@ -496,12 +557,13 @@ impl Render for Overlay {
             // ── Selection interaction (events → state machine) ─────────
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                     if this.session.read(cx).blocked() {
                         return; // modal dialog: no new selections
                     }
+                    window.focus(&this.focus_handle, cx);
                     this.session.update(cx, |s, cx| {
-                        s.begin(&this.capture.output_name, ev.position);
+                        s.pointer_down(&this.capture.output_name, ev.position);
                         cx.notify();
                     });
                     cx.notify();
@@ -512,6 +574,31 @@ impl Render for Overlay {
             .child(img(self.frozen.clone()).size_full())
             // ② Dim layer and selection border share painted edges.
             .child(selection_backdrop(backdrop))
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |viewport, (), window, _| {
+                        if let Some(mut clip) = sel {
+                            clip.origin += viewport.origin;
+                            window.with_content_mask(
+                                Some(ContentMask { bounds: clip }),
+                                |window| {
+                                    for rectangle in rectangles {
+                                        for mut stroke in rectangle.strokes() {
+                                            stroke.origin += viewport.origin;
+                                            window.paint_quad(fill(stroke, rgba(rectangle.color)));
+                                        }
+                                    }
+                                },
+                            );
+                        }
+                    },
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
             // Wayland may keep delivering a drag to its original surface even
             // outside its bounds. Element hover handlers would drop these events.
             .child(
@@ -525,7 +612,11 @@ impl Render for Overlay {
                             }
                             let _ = view.update(cx, |this, cx| {
                                 this.session.update(cx, |s, cx| {
-                                    if s.drag_to(&this.capture.output_name, event.position) {
+                                    if s.pointer_move(
+                                        &this.capture.output_name,
+                                        event.position,
+                                        event.modifiers.shift,
+                                    ) {
                                         cx.notify();
                                     }
                                 });
@@ -537,7 +628,11 @@ impl Render for Overlay {
                             }
                             let _ = input_view.update(cx, |this, cx| {
                                 this.session.update(cx, |s, cx| {
-                                    s.end(&this.capture.output_name, event.position);
+                                    s.pointer_up(
+                                        &this.capture.output_name,
+                                        event.position,
+                                        event.modifiers.shift,
+                                    );
                                     cx.notify();
                                 });
                             });
@@ -559,7 +654,13 @@ impl Render for Overlay {
                     && self.ocr_setup.is_none()
                     && let Some(bounds) = sel
                 {
-                    Some(selection_toolbar(round_px(bounds), ws))
+                    Some(selection_toolbar(
+                        round_px(bounds),
+                        ws,
+                        self.session.read(cx).annotations(),
+                        self.session.clone(),
+                        self.focus_handle.clone(),
+                    ))
                 } else {
                     None
                 },
@@ -767,5 +868,126 @@ mod multi_output_tests {
             );
             assert_eq!(shared.crop("right").unwrap().0, 100);
         });
+    }
+    #[gpui_kit::test]
+    fn rectangle_toolbar_keyboard_and_export_share_the_same_state(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::base::init(cx);
+            super::init_annotation_keybindings(cx);
+            cx.bind_keys([gpui_kit::KeyBinding::new(
+                "escape",
+                super::QuitOverlay,
+                Some("ShotoriOverlay"),
+            )]);
+        });
+        let mut capture = Capture::for_test((0, 0), 1.);
+        capture.output_name = "screen".into();
+        capture.width = 400;
+        capture.height = 400;
+        capture.rgba = vec![255; 400 * 400 * 4];
+        let capture = Arc::new(capture);
+        let session = cx.new(|_| ScreenshotSession::new(vec![capture.clone()]));
+        let (_, cx) =
+            cx.add_window_view(|window, cx| Overlay::new(capture, session.clone(), window, cx));
+        cx.simulate_resize(size(px(400.), px(400.)));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_mouse_down(
+            point(px(20.), px(20.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.simulate_mouse_move(
+            point(px(250.), px(180.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.simulate_mouse_up(
+            point(px(250.), px(180.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let button = cx
+            .debug_bounds("tb-rectangle")
+            .expect("rectangle toolbar button");
+        cx.simulate_click(button.center(), Default::default());
+        cx.update(|_, cx| assert!(session.read(cx).annotations().enabled()));
+        let shift = gpui_kit::Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        cx.simulate_mouse_down(
+            point(px(50.), px(50.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.simulate_mouse_move(point(px(90.), px(110.)), MouseButton::Left, shift);
+        cx.simulate_mouse_up(point(px(90.), px(110.)), MouseButton::Left, shift);
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let shared = session.read(cx);
+            let rectangle = shared.annotations().visible().next().unwrap();
+            assert_eq!(rectangle.bounds.size, size(px(60.), px(60.)));
+            assert_eq!(
+                shared.selection().bounds().unwrap().size,
+                size(px(230.), px(160.))
+            );
+            assert_ne!(
+                shared.crop("screen").unwrap().2,
+                shared.crop_original("screen").unwrap().2
+            );
+            let painted = window.painted_quads();
+            let scale = window.scale_factor();
+            for stroke in rectangle.strokes() {
+                assert!(
+                    painted.iter().any(|quad| {
+                        quad.bounds.origin.x.0 == f32::from(stroke.origin.x) * scale
+                            && quad.bounds.origin.y.0 == f32::from(stroke.origin.y) * scale
+                            && quad.bounds.size.width.0 == f32::from(stroke.size.width) * scale
+                            && quad.bounds.size.height.0 == f32::from(stroke.size.height) * scale
+                    }),
+                    "rectangle stroke {stroke:?} missing from preview: {:?}",
+                    painted.iter().map(|q| q.bounds).collect::<Vec<_>>()
+                );
+            }
+        });
+        assert!(cx.debug_bounds("tb-undo").is_none());
+        assert!(cx.debug_bounds("tb-redo").is_none());
+        // Settings clicks must not strand keyboard focus on a transient button.
+        for selector in ["tb-color-3", "tb-width-2"] {
+            let button = cx.debug_bounds(selector).unwrap();
+            cx.simulate_click(button.center(), Default::default());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.simulate_keystrokes("ctrl-z");
+            cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 0));
+            cx.simulate_keystrokes("ctrl-y");
+            cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 1));
+        }
+        cx.update(|_, cx| {
+            assert_eq!(session.read(cx).annotations().color().1, "Green");
+            assert_eq!(session.read(cx).annotations().width(), 5.);
+        });
+        cx.simulate_keystrokes("ctrl-z");
+        cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 0));
+        cx.simulate_keystrokes("ctrl-y");
+        cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 1));
+        cx.simulate_keystrokes("escape");
+        cx.update(|_, cx| {
+            assert!(!session.read(cx).annotations().enabled());
+            assert_eq!(session.read(cx).annotations().visible().count(), 1);
+        });
+        cx.simulate_keystrokes("r");
+        cx.update(|_, cx| assert!(session.read(cx).annotations().enabled()));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        // Even keyboard focus on a settings button must survive that row's
+        // removal when R leaves the tool.
+        cx.simulate_keystrokes("tab tab tab tab tab tab");
+        cx.simulate_keystrokes("r");
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_keystrokes("ctrl-z");
+        cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 0));
+        cx.simulate_keystrokes("ctrl-shift-z");
+        cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 1));
     }
 }

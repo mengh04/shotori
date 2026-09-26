@@ -64,10 +64,11 @@ fn main() {
 
     // ② Overlays (one per screen)
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(shotori::toolbar::ToolbarAssets)
         .run(move |cx| {
             gpui_kit::base::init(cx);
             shotori::ocr_setup::init(cx);
+            shotori::overlay::init_annotation_keybindings(cx);
 
             // Keybindings are scoped by key_context
             cx.bind_keys([
