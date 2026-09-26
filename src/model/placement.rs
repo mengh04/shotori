@@ -25,7 +25,7 @@ const INSET: f32 = 12.;
 
 /// Toolbar: [Copy][Save][OCR][Cancel] on row one; annotation tools,
 /// colors and widths on row two (only while a tool is active).
-pub(crate) const TB_W: f32 = 460.;
+pub(crate) const TB_W: f32 = 492.;
 /// Single-row height (tools inactive)
 pub(crate) const ROW_H: f32 = 38.;
 /// Two-row height (the tall case used for placement decisions)
@@ -130,7 +130,7 @@ mod tests {
         // a selection hugging the right edge: the toolbar pins into the screen
         let b = bounds(1800., 500., 100., 200.);
         let (x, _) = toolbar_anchor(&b, screen(), TB_H);
-        assert_eq!(x, 1920. - 460. - 8.);
+        assert_eq!(x, 1920. - super::TB_W - 8.);
     }
 
     #[test]

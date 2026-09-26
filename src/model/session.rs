@@ -287,6 +287,37 @@ impl ScreenshotSession {
         }
     }
 
+    pub(crate) fn edit_annotation_settings(
+        &mut self,
+        edit: impl FnOnce(&mut crate::annotation::Annotations),
+    ) {
+        if self.annotations.has_text_preview() {
+            edit(&mut self.annotations);
+        } else {
+            self.edit_annotations(edit);
+        }
+    }
+
+    pub(crate) fn preview_text(&mut self, bounds: Bounds<Pixels>, value: String) {
+        self.annotations.preview_text(bounds, value);
+    }
+    pub(crate) fn clear_text_preview(&mut self) {
+        self.annotations.clear_text_preview();
+    }
+
+    pub(crate) fn text_bounds(&self, output: &str, local: Point<Pixels>) -> Option<Bounds<Pixels>> {
+        if self.blocked || !self.selection.is_selected() {
+            return None;
+        }
+        let bounds = self.selection.bounds()?;
+        let origin = local + self.screen(output).bounds().origin;
+        if !bounds.contains(&origin) {
+            return None;
+        }
+        let available = Bounds::from_corners(origin, bounds.bottom_right());
+        (available.size.width >= px(16.) && available.size.height >= px(16.)).then_some(available)
+    }
+
     pub(crate) fn pointer_down(&mut self, name: &str, local: Point<Pixels>) {
         if self.blocked {
             return;
@@ -360,7 +391,7 @@ impl ScreenshotSession {
             .map(|r| (r.width, r.height, r.rgba))
     }
 
-    /// Reuse the exported composite on every output whenever pixel filters are present.
+    /// Reuse the exported composite on every output whenever pixel filters or text are present.
     /// Captures are immutable; selection, shapes and display geometry own invalidation.
     pub(crate) fn filtered_preview(
         &self,
@@ -368,11 +399,12 @@ impl ScreenshotSession {
     ) -> Option<(Bounds<Pixels>, Arc<RenderImage>)> {
         use crate::annotation::ShapeKind;
         let mut cache = self.filter_preview.borrow_mut();
-        if !self
-            .annotations
-            .visible()
-            .any(|s| matches!(s.kind, ShapeKind::Mosaic | ShapeKind::Blur))
-        {
+        if !self.annotations.visible().any(|s| {
+            matches!(
+                s.kind,
+                ShapeKind::Mosaic | ShapeKind::Blur | ShapeKind::Text
+            )
+        }) {
             *cache = None;
             return None;
         }
@@ -856,6 +888,41 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn text_crosses_outputs_with_shared_preview_and_history() {
+        let mut s = session();
+        s.begin("left", point(px(80.), px(20.)));
+        s.end("right", point(px(40.), px(90.)));
+        let bounds = s.text_bounds("left", point(px(85.), px(25.))).unwrap();
+        s.edit_annotations(|a| {
+            a.set_text_size(0);
+            a.set_color(4);
+            a.add_text(bounds, "MMMM 中文".into());
+        });
+        let original = s.crop_original("left").unwrap().2;
+        let (w, _, pixels) = s.crop("left").unwrap();
+        let mut sides = [false; 2];
+        for (i, (before, after)) in original
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(pixels.as_chunks::<4>().0.iter())
+            .enumerate()
+        {
+            if before != after {
+                sides[usize::from(i % w as usize >= 40)] = true;
+            }
+        }
+        assert_eq!(sides, [true, true]);
+        let (_, left) = s.filtered_preview("left").unwrap();
+        let (_, right) = s.filtered_preview("right").unwrap();
+        assert!(Arc::ptr_eq(&left, &right));
+        s.edit_annotations(|a| a.undo());
+        assert_eq!(s.crop("left").unwrap().2, original);
+        s.edit_annotations(|a| a.redo());
+        assert_eq!(s.crop("right").unwrap().2, pixels);
+    }
+
     #[test]
     fn filters_share_export_pixels_across_outputs_and_invalidate_on_undo() {
         for kind in [

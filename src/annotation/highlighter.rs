@@ -92,6 +92,7 @@ mod tests {
         Shape {
             kind: ShapeKind::Highlighter,
             number: None,
+            text: None,
             bounds: Bounds::default(),
             color: 0xffd43b60,
             width: 20.,

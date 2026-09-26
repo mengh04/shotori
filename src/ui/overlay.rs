@@ -16,9 +16,10 @@ use gpui_kit::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOpti
 use gpui_kit::*;
 
 use crate::actions::{
-    CopySelection, FinishPolyline, OcrSelection, QuitOverlay, RedoAnnotation, SaveSelection,
-    SelectScreen, ToggleArrow, ToggleEllipse, ToggleHighlighter, ToggleLine, ToggleMosaic,
-    ToggleNumber, TogglePencil, TogglePolyline, ToggleRectangle, UndoAnnotation,
+    CancelText, CopySelection, FinishPolyline, OcrSelection, QuitOverlay, RedoAnnotation,
+    SaveSelection, SelectScreen, ToggleArrow, ToggleEllipse, ToggleHighlighter, ToggleLine,
+    ToggleMosaic, ToggleNumber, TogglePencil, TogglePolyline, ToggleRectangle, ToggleText,
+    UndoAnnotation,
 };
 use crate::model::selection::Selection;
 use crate::platform::capture::Capture;
@@ -41,6 +42,8 @@ pub struct Overlay {
     setup_focus: crate::ui::ocr_setup::SetupFocus,
     /// OCR inference in flight → show the busy badge (spinner)
     ocr_busy: bool,
+    text_editing: Option<crate::ui::text_editor::TextEditor>,
+    text_subscription: Option<Subscription>,
 }
 
 impl Overlay {
@@ -76,11 +79,36 @@ impl Overlay {
             }
             cx.notify();
         });
-        let subscriptions = vec![
-            cx.observe_in(&session, window, |this, _, window, cx| {
+        let mut overlay = Self {
+            focus_handle,
+            frozen,
+            number_cache: Default::default(),
+            highlighter_cache: Default::default(),
+            capture,
+            session,
+            _subscriptions: Vec::new(),
+            ocr_setup: None,
+            setup_focus: crate::ui::ocr_setup::SetupFocus::new(cx),
+            ocr_busy: false,
+            text_editing: None,
+            text_subscription: None,
+        };
+        overlay.attach_observers(window, cx);
+        overlay
+    }
+
+    fn attach_observers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self._subscriptions = vec![
+            cx.observe_in(&self.session, window, |this, _, window, cx| {
                 // A change from another output can remove this toolbar while
                 // one of its controls still owns the local keyboard focus.
-                if this.ocr_setup.is_none() {
+                if let Some(editor) = &mut this.text_editing {
+                    let a = this.session.read(cx).annotations();
+                    if editor.sync_style(a.text_size(), a.color().0, cx) {
+                        this.refresh_text(cx);
+                    }
+                }
+                if this.ocr_setup.is_none() && this.text_editing.is_none() {
                     window.focus(&this.focus_handle, cx);
                 }
                 cx.notify();
@@ -93,18 +121,85 @@ impl Overlay {
                 });
             }),
         ];
-        Self {
-            focus_handle,
-            frozen,
-            number_cache: Default::default(),
-            highlighter_cache: Default::default(),
-            capture,
-            session,
-            _subscriptions: subscriptions,
-            ocr_setup: None,
-            setup_focus: crate::ui::ocr_setup::SetupFocus::new(cx),
-            ocr_busy: false,
-        }
+    }
+    fn subscribe_text(
+        &mut self,
+        input: &Entity<crate::ui::text_input::TextInput>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.text_subscription =
+            Some(
+                cx.subscribe_in(input, window, |this, _, event, window, cx| {
+                    if matches!(event, gpui_kit::base::input::InputEvent::Change) {
+                        this.refresh_text(cx);
+                    }
+                    if matches!(
+                        event,
+                        gpui_kit::base::input::InputEvent::PressEnter { shift: false, .. }
+                    ) {
+                        this.finish_text(true, window, cx);
+                    }
+                }),
+            );
+    }
+
+    fn start_text(&mut self, local: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(bounds) = self
+            .session
+            .read(cx)
+            .text_bounds(&self.capture.output_name, local)
+        else {
+            return;
+        };
+        let font_size = self.session.read(cx).annotations().text_size();
+        let color = self.session.read(cx).annotations().color().0;
+        let editor =
+            crate::ui::text_editor::TextEditor::new(bounds, local, font_size, color, window, cx);
+        self.subscribe_text(editor.input(), window, cx);
+        self.text_editing = Some(editor);
+        self.refresh_text(cx);
+        self.session.update(cx, |s, cx| {
+            s.set_blocked(true);
+            cx.notify();
+        });
+        cx.defer_in(window, |this, window, cx| {
+            if let Some(editor) = &this.text_editing {
+                editor.focus(window, cx);
+            }
+        });
+        cx.notify();
+    }
+
+    fn refresh_text(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = &mut self.text_editing else {
+            return;
+        };
+        editor.refresh(cx);
+        let (bounds, value) = (editor.bounds(), editor.value(cx));
+        self.session.update(cx, |s, cx| {
+            s.preview_text(bounds, value);
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    fn finish_text(&mut self, commit: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.text_editing.take() else {
+            return;
+        };
+        self.text_subscription.take();
+        let value = editor.value(cx);
+        self.session.update(cx, |s, cx| {
+            s.clear_text_preview();
+            s.set_blocked(false);
+            if commit {
+                s.edit_annotations(|a| a.add_text(editor.bounds(), value));
+            }
+            cx.notify();
+        });
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
     }
 
     /// WindowOptions for the overlay window. Linux: a layer-shell surface
@@ -511,6 +606,10 @@ impl Render for Overlay {
             .id("shotori-overlay")
             .key_context(if self.ocr_setup.is_some() {
                 "ShotoriOcrSetup"
+            } else if self.text_editing.is_some() {
+                "ShotoriTextEditing"
+            } else if self.session.read(cx).blocked() {
+                "ShotoriBlocked"
             } else if drawing_polyline {
                 "ShotoriOverlay PolylineDrawing"
             } else {
@@ -520,6 +619,7 @@ impl Render for Overlay {
             .relative()
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|this, _: &ToggleRectangle, window, cx| {
+                this.finish_text(true, window, cx);
                 window.focus(&this.focus_handle, cx);
                 this.session.update(cx, |s, cx| {
                     s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Rectangle));
@@ -527,6 +627,7 @@ impl Render for Overlay {
                 });
             }))
             .on_action(cx.listener(|this, _: &ToggleEllipse, window, cx| {
+                this.finish_text(true, window, cx);
                 window.focus(&this.focus_handle, cx);
                 this.session.update(cx, |s, cx| {
                     s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Ellipse));
@@ -534,6 +635,7 @@ impl Render for Overlay {
                 });
             }))
             .on_action(cx.listener(|this, _: &ToggleLine, window, cx| {
+                this.finish_text(true, window, cx);
                 window.focus(&this.focus_handle, cx);
                 this.session.update(cx, |s, cx| {
                     s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Line));
@@ -541,13 +643,44 @@ impl Render for Overlay {
                 });
             }))
             .on_action(cx.listener(|this, _: &ToggleArrow, window, cx| {
+                this.finish_text(true, window, cx);
                 window.focus(&this.focus_handle, cx);
                 this.session.update(cx, |s, cx| {
                     s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Arrow));
                     cx.notify();
                 });
             }))
+            .on_action(cx.listener(|this, _: &ToggleText, window, cx| {
+                this.finish_text(true, window, cx);
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Text));
+                    cx.notify();
+                });
+            }))
+            .on_action(
+                cx.listener(|this, _: &CancelText, window, cx| this.finish_text(false, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &gpui_kit::base::input::Enter, _, cx| {
+                    if this.text_editing.is_some() {
+                        cx.stop_propagation();
+                    } else {
+                        cx.propagate();
+                    }
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &gpui_kit::base::input::Escape, window, cx| {
+                    if this.text_editing.is_some() {
+                        this.finish_text(false, window, cx);
+                    } else {
+                        cx.propagate();
+                    }
+                }),
+            )
             .on_action(cx.listener(|this, _: &ToggleNumber, window, cx| {
+                this.finish_text(true, window, cx);
                 window.focus(&this.focus_handle, cx);
                 this.session.update(cx, |s, cx| {
                     s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Number));
@@ -555,6 +688,7 @@ impl Render for Overlay {
                 });
             }))
             .on_action(cx.listener(|this, _: &TogglePencil, window, cx| {
+                this.finish_text(true, window, cx);
                 window.focus(&this.focus_handle, cx);
                 this.session.update(cx, |s, cx| {
                     s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Pencil));
@@ -562,6 +696,7 @@ impl Render for Overlay {
                 });
             }))
             .on_action(cx.listener(|this, _: &ToggleHighlighter, window, cx| {
+                this.finish_text(true, window, cx);
                 window.focus(&this.focus_handle, cx);
                 this.session.update(cx, |s, cx| {
                     s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Highlighter));
@@ -569,6 +704,7 @@ impl Render for Overlay {
                 });
             }))
             .on_action(cx.listener(|this, _: &ToggleMosaic, window, cx| {
+                this.finish_text(true, window, cx);
                 window.focus(&this.focus_handle, cx);
                 this.session.update(cx, |s, cx| {
                     s.edit_annotations(|a| {
@@ -583,6 +719,7 @@ impl Render for Overlay {
                 });
             }))
             .on_action(cx.listener(|this, _: &TogglePolyline, window, cx| {
+                this.finish_text(true, window, cx);
                 window.focus(&this.focus_handle, cx);
                 this.session.update(cx, |s, cx| {
                     s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Polyline));
@@ -611,6 +748,7 @@ impl Render for Overlay {
                 });
             }))
             .on_action(cx.listener(|this, _: &CopySelection, window, cx| {
+                this.finish_text(true, window, cx);
                 if this.session.read(cx).blocked() {
                     return; // setup dialog is modal
                 }
@@ -628,12 +766,14 @@ impl Render for Overlay {
                 });
             }))
             .on_action(cx.listener(|this, _: &SaveSelection, window, cx| {
+                this.finish_text(true, window, cx);
                 if this.session.read(cx).blocked() {
                     return; // setup dialog is modal
                 }
                 this.save_selection(window, cx);
             }))
             .on_action(cx.listener(|this, _: &OcrSelection, window, cx| {
+                this.finish_text(true, window, cx);
                 this.ocr_selection(window, cx);
             }))
             .on_action(cx.listener(
@@ -696,8 +836,16 @@ impl Render for Overlay {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                    if this.text_editing.is_some() {
+                        this.finish_text(true, window, cx);
+                        return;
+                    }
                     if this.session.read(cx).blocked() {
                         return; // modal dialog: no new selections
+                    }
+                    if this.session.read(cx).annotations().tool() == Some(crate::annotation::ShapeKind::Text) {
+                        this.start_text(ev.position,window,cx);
+                        return;
                     }
                     window.focus(&this.focus_handle, cx);
                     this.session.update(cx, |s, cx| {
@@ -708,6 +856,7 @@ impl Render for Overlay {
                 }),
             )
             .on_mouse_down(MouseButton::Right, cx.listener(|this, _, window, cx| {
+                if this.session.read(cx).blocked() { return; }
                 window.focus(&this.focus_handle, cx);
                 this.session.update(cx, |s, cx| {
                     s.edit_annotations(|a| a.finish_polyline());
@@ -844,11 +993,13 @@ impl Render for Overlay {
                 sel.filter(|_| active)
                     .map(|b| selection_label(b, ws, round_px(selection.bounds().unwrap()).size)),
             )
+            .children(self.text_editing.as_ref().map(|editor| editor.render()))
             // ④ Toolbar: appears only after release (no flicker while dragging)
             .children(
                 if selection.is_selected()
                     && active
                     && self.ocr_setup.is_none()
+                    && (!self.session.read(cx).blocked() || self.text_editing.is_some())
                     && let Some(bounds) = sel
                 {
                     Some(selection_toolbar(
@@ -856,7 +1007,7 @@ impl Render for Overlay {
                         ws,
                         self.session.read(cx).annotations(),
                         self.session.clone(),
-                        self.focus_handle.clone(),
+                        self.text_editing.as_ref().map(|e|e.focus_handle(cx)).unwrap_or_else(||self.focus_handle.clone()),
                     ))
                 } else {
                     None
@@ -865,6 +1016,7 @@ impl Render for Overlay {
             // ⑤ OCR busy badge (spinner on the selection)
             .children(busy_el)
             // ⑥ First-run OCR setup dialog (confirm / progress), topmost
+
             .children(setup_el)
     }
 }
@@ -1030,6 +1182,155 @@ mod multi_output_tests {
     #[gpui_kit::test]
     fn mosaic_and_blur_toolbar_share_focus_history(cx: &mut TestAppContext) {
         stroke_and_polyline_workflows(cx, crate::annotation::ShapeKind::Mosaic);
+    }
+
+    #[gpui_kit::test]
+    fn text_input_commit_cancel_and_history(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::base::init(cx);
+            crate::actions::init_annotation_keybindings(cx);
+            crate::actions::bind_keys(cx);
+        });
+        let mut capture = Capture::for_test((0, 0), 1.);
+        capture.output_name = "screen".into();
+        capture.width = 600;
+        capture.height = 500;
+        capture.rgba = vec![255; 600 * 500 * 4];
+        let capture = Arc::new(capture);
+        let session = cx.new(|_| ScreenshotSession::new(vec![capture.clone()], Vec::new()));
+        let (view, cx) =
+            cx.add_window_view(|window, cx| Overlay::new(capture, session.clone(), window, cx));
+        cx.simulate_resize(size(px(600.), px(500.)));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_mouse_down(
+            point(px(20.), px(20.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.simulate_mouse_up(
+            point(px(550.), px(300.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let button = cx.debug_bounds("tb-text").unwrap();
+        cx.simulate_click(button.center(), Default::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let button = cx.debug_bounds("tb-text-size-2").unwrap();
+        cx.simulate_click(button.center(), Default::default());
+        cx.simulate_click(point(px(60.), px(60.)), Default::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("text-editor").unwrap().size.width <= px(2.));
+        assert!(cx.debug_bounds("tb-text").is_some());
+        assert!(cx.debug_bounds("tb-text-size-0").is_some());
+        let color = cx.debug_bounds("tb-color-4").unwrap();
+        cx.simulate_click(color.center(), Default::default());
+        let small = cx.debug_bounds("tb-text-size-0").unwrap();
+        cx.simulate_click(small.center(), Default::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let large = cx.debug_bounds("tb-text-size-2").unwrap();
+        cx.simulate_click(large.center(), Default::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let input = view.read(cx).text_editing.as_ref().unwrap().input().clone();
+            input.update(cx, |s, cx| {
+                gpui_kit::EntityInputHandler::replace_and_mark_text_in_range(
+                    s,
+                    None,
+                    "nihao",
+                    Some(5..5),
+                    window,
+                    cx,
+                )
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            assert_eq!(
+                session
+                    .read(cx)
+                    .annotations()
+                    .visible()
+                    .last()
+                    .unwrap()
+                    .text
+                    .as_deref(),
+                Some("nihao")
+            );
+            let input = view.read(cx).text_editing.as_ref().unwrap().input().clone();
+            input.update(cx, |s, cx| {
+                gpui_kit::EntityInputHandler::replace_text_in_range(s, None, "", window, cx)
+            });
+        });
+        cx.simulate_input("rental 中文");
+        cx.simulate_keystrokes("shift-enter");
+        cx.simulate_input("第二行很长的文字需要自动换行到下一行并立即显示");
+        cx.update(|_, cx| {
+            assert!(session.read(cx).blocked());
+            assert_eq!(
+                view.read(cx).text_editing.as_ref().unwrap().value(cx),
+                "rental 中文
+第二行很长的文字需要自动换行到下一行并立即显示"
+            );
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("text-editor").unwrap().size.height > px(32. * 1.35 * 2.));
+        let live_pixels = cx.update(|_, cx| session.read(cx).crop("screen").unwrap());
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert!(view.read(cx).text_editing.is_none());
+            let s = session.read(cx);
+            assert_eq!(s.crop("screen").unwrap(), live_pixels);
+            assert!(!s.blocked());
+            let shapes = s.annotations().visible().collect::<Vec<_>>();
+            assert_eq!(shapes.len(), 1);
+            assert_eq!(
+                shapes[0].text.as_deref(),
+                Some(
+                    "rental 中文
+第二行很长的文字需要自动换行到下一行并立即显示"
+                )
+            );
+            assert_eq!(shapes[0].width, 32.);
+            assert_ne!(s.crop("screen"), s.crop_original("screen"));
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_keystrokes("ctrl-z");
+        cx.update(|_, cx| assert!(session.read(cx).annotations().visible().next().is_none()));
+        cx.simulate_keystrokes("ctrl-y");
+        cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 1));
+        cx.simulate_click(point(px(90.), px(90.)), Default::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_input("discard");
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert!(view.read(cx).text_editing.is_none());
+            assert!(!session.read(cx).blocked());
+            assert_eq!(session.read(cx).annotations().visible().count(), 1);
+        });
+        // Empty confirmation must not add an invisible history entry.
+        cx.simulate_click(point(px(90.), px(90.)), Default::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert!(view.read(cx).text_editing.is_none());
+            assert_eq!(session.read(cx).annotations().visible().count(), 1);
+        });
+        cx.simulate_click(point(px(90.), px(90.)), Default::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_input("click outside");
+        cx.simulate_click(point(px(540.), px(290.)), Default::default());
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert!(view.read(cx).text_editing.is_none());
+            assert!(!session.read(cx).blocked());
+            assert_eq!(session.read(cx).annotations().visible().count(), 2);
+        });
     }
 
     fn stroke_and_polyline_workflows(cx: &mut TestAppContext, kind: crate::annotation::ShapeKind) {

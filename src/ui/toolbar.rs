@@ -12,12 +12,12 @@ use crate::ui::theme;
 use crate::actions::{
     CopySelection, OcrSelection, QuitOverlay, SaveSelection, ToggleArrow, ToggleEllipse,
     ToggleHighlighter, ToggleLine, ToggleMosaic, ToggleNumber, TogglePencil, TogglePolyline,
-    ToggleRectangle,
+    ToggleRectangle, ToggleText,
 };
 use crate::model::placement::{ROW_H, TB_H, TB_W, toolbar_anchor};
 
 // The default GPUI asset bundle does not include every toolbar icon.
-gpui_kit::assets::icon_assets!(pub ToolbarAssets, [MirrorRectangular, Highlighter, Pencil, Square, Circle, Slash, Waypoints, ArrowUpRight, ListOrdered, ScanText, Save, X, Copy]);
+gpui_kit::assets::icon_assets!(pub ToolbarAssets, [Type, MirrorRectangular, Highlighter, Pencil, Square, Circle, Slash, Waypoints, ArrowUpRight, ListOrdered, ScanText, Save, X, Copy]);
 
 pub(crate) fn selection_toolbar(
     b: Bounds<Pixels>,
@@ -35,7 +35,10 @@ pub(crate) fn selection_toolbar(
     );
     let highlighter_tool = annotations.tool() == Some(crate::annotation::ShapeKind::Highlighter);
     let number_tool = annotations.tool() == Some(crate::annotation::ShapeKind::Number);
-    let selected_width = if number_tool {
+    let text_tool = annotations.tool() == Some(crate::annotation::ShapeKind::Text);
+    let selected_width = if text_tool {
+        annotations.text_size()
+    } else if number_tool {
         annotations.number_size()
     } else {
         annotations.width()
@@ -162,6 +165,18 @@ pub(crate) fn selection_toolbar(
                     .selected(filter_tool)
                     .child(mosaic_icon()),
                 )
+                .child(
+                    icon_button(
+                        "tb-text",
+                        "Text · T",
+                        IconName::Type,
+                        focus.clone(),
+                        |window, cx| {
+                            window.dispatch_action(Box::new(ToggleText), cx);
+                        },
+                    )
+                    .selected(text_tool),
+                )
                 .child(div().flex_1())
                 .child(icon_button(
                     "tb-ocr",
@@ -272,7 +287,9 @@ pub(crate) fn selection_toolbar(
                 return options;
             }
 
-            let sizes = if number_tool {
+            let sizes = if text_tool {
+                [16., 24., 32.]
+            } else if number_tool {
                 [24., 32., 40.]
             } else if highlighter_tool {
                 [12., 20., 32.]
@@ -283,12 +300,16 @@ pub(crate) fn selection_toolbar(
                 let session = session.clone();
                 options = options.child(
                     control(
-                        if number_tool {
+                        if text_tool {
+                            format!("tb-text-size-{ix}")
+                        } else if number_tool {
                             format!("tb-number-size-{ix}")
                         } else {
                             format!("tb-width-{ix}")
                         },
-                        if number_tool {
+                        if text_tool {
+                            format!("Font size: {width} px")
+                        } else if number_tool {
                             format!("Marker size: {width} px")
                         } else {
                             format!("Line width: {width} px")
@@ -296,8 +317,10 @@ pub(crate) fn selection_toolbar(
                         settings_focus.clone(),
                         move |_, cx| {
                             session.update(cx, |s, cx| {
-                                s.edit_annotations(|a| {
-                                    if number_tool {
+                                s.edit_annotation_settings(|a| {
+                                    if text_tool {
+                                        a.set_text_size(ix)
+                                    } else if number_tool {
                                         a.set_number_size(ix)
                                     } else {
                                         a.set_width(ix)
@@ -309,7 +332,12 @@ pub(crate) fn selection_toolbar(
                     )
                     .w(px(26.))
                     .selected(selected_width == width)
-                    .child(if number_tool {
+                    .child(if text_tool {
+                        div()
+                            .text_size(px(12.))
+                            .child(format!("{width:.0}"))
+                            .into_any_element()
+                    } else if number_tool {
                         div()
                             .text_size(px(12.))
                             .child(["S", "M", "L"][ix])
@@ -338,7 +366,7 @@ pub(crate) fn selection_toolbar(
                         settings_focus.clone(),
                         move |_, cx| {
                             session.update(cx, |s, cx| {
-                                s.edit_annotations(|a| a.set_color(ix));
+                                s.edit_annotation_settings(|a| a.set_color(ix));
                                 cx.notify();
                             })
                         },
@@ -482,6 +510,7 @@ mod tests {
     fn toolbar_icons_are_bundled() {
         use gpui_kit::{AssetSource, assets::IconName};
         for icon in [
+            IconName::Type,
             IconName::MirrorRectangular,
             IconName::Highlighter,
             IconName::Pencil,

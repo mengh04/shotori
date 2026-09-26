@@ -217,6 +217,12 @@ screens, while OCR continues to use the original image.
 
 Brush mode, editing existing filter regions and smart erasing remain follow-ups.
 
+### Text annotations
+
+Click the text icon or press `T`, choose a font size (16 / 24 / 32) and color, then click inside the selection to edit directly in a transparent text box. Text previews live in its actual color and size, grows with the content without a preset width, and wraps only at the selection’s right edge. The box grows vertically within the selection. Both toolbar rows remain available while editing; color and size changes apply immediately. IME preedit text, its underline, the caret and candidate placement use the same layout as the annotation. Supports multilingual, multiline input: click outside the box or press `Enter` to confirm, `Shift+Enter` inserts a line break, and `Esc` cancels. Confirmed text supports undo/redo and is included in copied and saved images.
+
+Text uses system fonts and fallback; install appropriate fonts for CJK characters. Text wraps at the selection’s right edge and clips to the selection, including across monitors with different scales. Editing confirmed text, font selection, bold/italic, and rotation are not included yet.
+
 ### OCR
 
 The first `Ctrl+O` asks before downloading the models (~31 MB, one time);
@@ -225,6 +231,7 @@ after that everything runs fully offline. Models are cached in
 on Windows). Recognition is prewarmed while you
 draw, so it usually completes within a few hundred milliseconds. Very small
 text strains the model; HiDPI screens fare better.
+
 
 ## Building from source
 

@@ -6716,6 +6716,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "cosmic-text",
  "gpui-kit",
  "gpui-tray",
  "image",
