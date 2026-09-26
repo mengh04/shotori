@@ -1,14 +1,16 @@
-//! Compact screenshot toolbar and rectangle appearance controls.
+//! Compact screenshot toolbar and geometry appearance controls.
 use gpui_kit::{assets::IconName, base::Button, *};
 
 use crate::{
-    overlay::{CopySelection, OcrSelection, QuitOverlay, SaveSelection, ToggleRectangle},
+    overlay::{
+        CopySelection, OcrSelection, QuitOverlay, SaveSelection, ToggleEllipse, ToggleRectangle,
+    },
     session::ScreenshotSession,
     theme,
 };
 
 // The default GPUI asset bundle does not include every toolbar icon.
-gpui_kit::assets::icon_assets!(pub ToolbarAssets, [Square, ScanText, Save, X, Copy]);
+gpui_kit::assets::icon_assets!(pub ToolbarAssets, [Square, Circle, ScanText, Save, X, Copy]);
 
 const TB_W: f32 = 332.;
 const ROW_H: f32 = 38.;
@@ -50,7 +52,19 @@ pub(crate) fn selection_toolbar(
                             window.dispatch_action(Box::new(ToggleRectangle), cx);
                         },
                     )
-                    .selected(annotations.enabled()),
+                    .selected(annotations.tool() == Some(crate::annotation::ShapeKind::Rectangle)),
+                )
+                .child(
+                    icon_button(
+                        "tb-ellipse",
+                        "Ellipse · E",
+                        IconName::Circle,
+                        focus.clone(),
+                        |window, cx| {
+                            window.dispatch_action(Box::new(ToggleEllipse), cx);
+                        },
+                    )
+                    .selected(annotations.tool() == Some(crate::annotation::ShapeKind::Ellipse)),
                 )
                 .child(div().flex_1())
                 .child(icon_button(
@@ -265,6 +279,7 @@ mod tests {
         use gpui_kit::{AssetSource, assets::IconName};
         for icon in [
             IconName::Square,
+            IconName::Circle,
             IconName::ScanText,
             IconName::Save,
             IconName::X,

@@ -26,6 +26,7 @@ gpui_kit::actions!([
     SaveSelection,
     OcrSelection,
     ToggleRectangle,
+    ToggleEllipse,
     UndoAnnotation,
     RedoAnnotation
 ]);
@@ -34,6 +35,7 @@ gpui_kit::actions!([
 pub fn init_annotation_keybindings(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("r", ToggleRectangle, Some("ShotoriOverlay")),
+        KeyBinding::new("e", ToggleEllipse, Some("ShotoriOverlay")),
         KeyBinding::new("ctrl-z", UndoAnnotation, Some("ShotoriOverlay")),
         KeyBinding::new("ctrl-y", RedoAnnotation, Some("ShotoriOverlay")),
         KeyBinding::new("ctrl-shift-z", RedoAnnotation, Some("ShotoriOverlay")),
@@ -444,7 +446,7 @@ impl Render for Overlay {
         let backdrop = shared
             .backdrop_bounds(&self.capture.output_name)
             .map(round_px);
-        let rectangles = shared.local_annotations(&self.capture.output_name);
+        let shapes = shared.local_annotations(&self.capture.output_name);
         let active = shared.active_on(&self.capture.output_name);
         let input_view = cx.entity().downgrade();
         let ws = window.bounds().size; // window logical size (= output logical size)
@@ -465,7 +467,14 @@ impl Render for Overlay {
             .on_action(cx.listener(|this, _: &ToggleRectangle, window, cx| {
                 window.focus(&this.focus_handle, cx);
                 this.session.update(cx, |s, cx| {
-                    s.edit_annotations(|a| a.toggle());
+                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Rectangle));
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &ToggleEllipse, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Ellipse));
                     cx.notify();
                 });
             }))
@@ -583,10 +592,17 @@ impl Render for Overlay {
                             window.with_content_mask(
                                 Some(ContentMask { bounds: clip }),
                                 |window| {
-                                    for rectangle in rectangles {
-                                        for mut stroke in rectangle.strokes() {
+                                    for shape in shapes {
+                                        if shape.kind == crate::annotation::ShapeKind::Ellipse {
+                                            if let Some(path) = shape.ellipse_path(viewport.origin)
+                                            {
+                                                window.paint_path(path, rgba(shape.color));
+                                            }
+                                            continue;
+                                        }
+                                        for mut stroke in shape.strokes() {
                                             stroke.origin += viewport.origin;
-                                            window.paint_quad(fill(stroke, rgba(rectangle.color)));
+                                            window.paint_quad(fill(stroke, rgba(shape.color)));
                                         }
                                     }
                                 },
@@ -871,6 +887,20 @@ mod multi_output_tests {
     }
     #[gpui_kit::test]
     fn rectangle_toolbar_keyboard_and_export_share_the_same_state(cx: &mut TestAppContext) {
+        geometry_toolbar_keyboard_and_export(cx, crate::annotation::ShapeKind::Rectangle);
+    }
+
+    #[gpui_kit::test]
+    fn ellipse_toolbar_keyboard_and_export_share_the_same_state(cx: &mut TestAppContext) {
+        geometry_toolbar_keyboard_and_export(cx, crate::annotation::ShapeKind::Ellipse);
+    }
+
+    fn geometry_toolbar_keyboard_and_export(
+        cx: &mut TestAppContext,
+        kind: crate::annotation::ShapeKind,
+    ) {
+        let is_rectangle = kind == crate::annotation::ShapeKind::Rectangle;
+        let key = if is_rectangle { "r" } else { "e" };
         cx.update(|cx| {
             gpui_kit::base::init(cx);
             super::init_annotation_keybindings(cx);
@@ -909,8 +939,12 @@ mod multi_output_tests {
         cx.run_until_parked();
         cx.update(|window, cx| window.draw(cx).clear(cx));
         let button = cx
-            .debug_bounds("tb-rectangle")
-            .expect("rectangle toolbar button");
+            .debug_bounds(if is_rectangle {
+                "tb-rectangle"
+            } else {
+                "tb-ellipse"
+            })
+            .expect("geometry toolbar button");
         cx.simulate_click(button.center(), Default::default());
         cx.update(|_, cx| assert!(session.read(cx).annotations().enabled()));
         let shift = gpui_kit::Modifiers {
@@ -928,6 +962,7 @@ mod multi_output_tests {
             window.draw(cx).clear(cx);
             let shared = session.read(cx);
             let rectangle = shared.annotations().visible().next().unwrap();
+            assert_eq!(rectangle.kind, kind);
             assert_eq!(rectangle.bounds.size, size(px(60.), px(60.)));
             assert_eq!(
                 shared.selection().bounds().unwrap().size,
@@ -939,7 +974,7 @@ mod multi_output_tests {
             );
             let painted = window.painted_quads();
             let scale = window.scale_factor();
-            for stroke in rectangle.strokes() {
+            for stroke in rectangle.strokes().into_iter().filter(|_| is_rectangle) {
                 assert!(
                     painted.iter().any(|quad| {
                         quad.bounds.origin.x.0 == f32::from(stroke.origin.x) * scale
@@ -977,13 +1012,13 @@ mod multi_output_tests {
             assert!(!session.read(cx).annotations().enabled());
             assert_eq!(session.read(cx).annotations().visible().count(), 1);
         });
-        cx.simulate_keystrokes("r");
+        cx.simulate_keystrokes(key);
         cx.update(|_, cx| assert!(session.read(cx).annotations().enabled()));
         cx.update(|window, cx| window.draw(cx).clear(cx));
         // Even keyboard focus on a settings button must survive that row's
-        // removal when R leaves the tool.
+        // removal when the active tool is toggled off.
         cx.simulate_keystrokes("tab tab tab tab tab tab");
-        cx.simulate_keystrokes("r");
+        cx.simulate_keystrokes(key);
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.simulate_keystrokes("ctrl-z");
         cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 0));

@@ -60,22 +60,23 @@ the screen's native resolution.
 | `Esc` (dragging) | abandon the current drag                      |
 | `Esc`            | exit                                          |
 
-### Rectangle annotations
+### Rectangle and ellipse annotations
 
-After selecting a region, click the rectangle icon or press `R`, then drag inside the
-selection to draw rectangles. Hold `Shift` for a square. Annotations can span
-outputs within a cross-screen selection.
+After selecting a region, click the rectangle icon (`R`) or ellipse icon (`E`),
+then drag inside the selection. Hold `Shift` for a square or circle. Annotations
+can span outputs within a cross-screen selection. Both tools share colors, stroke
+widths and undo/redo history.
 
 - Pick a color swatch directly (red, orange, yellow, green, blue, black or white)
   and choose a stroke-width dot (1, 3 or 5 logical pixels) in the second row.
 - `Ctrl+Z` undoes; `Ctrl+Y` or `Ctrl+Shift+Z` redoes. History actions are
   keyboard-only to keep the toolbar compact.
-- `Esc` cancels the current stroke; another `Esc`, or `R`, leaves the tool
+- `Esc` cancels the current stroke; another `Esc`, or the active tool’s key, leaves the tool
   while keeping completed annotations.
 - Drawing a new selection after leaving the tool clears the old annotations.
 - Copy and save include annotations; OCR reads the unmarked capture.
 
-This first step provides rectangle outlines. Moving, resizing, rotation,
+Rectangle and ellipse outlines are available. Moving, resizing, rotation,
 fill and rounded corners are not implemented yet.
 
 ### OCR

@@ -675,7 +675,8 @@ time, with shared desktop coordinates, preview, history, and PNG export.
 
 1. Implemented: rectangle outlines — drag, Shift-square, preset colors/widths, undo/redo,
    multi-output preview and export. OCR continues to use the original image.
-2. Ellipse outlines and Shift-circle.
+2. Implemented: ellipse outlines and Shift-circle, sharing styles/history with
+   rectangles and supporting mixed-DPI preview/export with antialiased edges.
 3. Lines and polylines.
 4. Arrows.
 5. Sequence numbers.
@@ -691,5 +692,7 @@ time, with shared desktop coordinates, preview, history, and PNG export.
 Follow-up geometry enhancements: select existing annotations, move/resize,
 delete, fill, line styles, rounded corners, rotation, sectors and arcs.
 Rectangle strokes use the same four inward bands for GPU preview and raster
-export; history and drafts belong to the shared screenshot session. Starting
+export. Ellipses use an outer contour and an inward inner contour for both GPU
+paths and antialiased raster export. History and drafts belong to the shared
+screenshot session. Starting
 a new screenshot selection clears its old annotations and redo history.

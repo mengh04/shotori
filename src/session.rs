@@ -194,7 +194,7 @@ impl ScreenshotSession {
         !self.blocked && self.annotations.cancel()
     }
 
-    pub(crate) fn local_annotations(&self, name: &str) -> Vec<crate::annotation::Rectangle> {
+    pub(crate) fn local_annotations(&self, name: &str) -> Vec<crate::annotation::Shape> {
         let origin = self.screen(name).bounds().origin;
         self.annotations
             .visible()
@@ -418,7 +418,7 @@ mod tests {
         let mut s = session();
         s.begin("left", point(px(80.), px(20.)));
         s.end("right", point(px(20.), px(60.)));
-        s.edit_annotations(|a| a.toggle());
+        s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Rectangle));
         s.pointer_down("left", point(px(90.), px(25.)));
         s.pointer_up("right", point(px(10.), px(55.)), false);
         let (w, h, pixels) = s.crop("right").unwrap();
@@ -431,6 +431,36 @@ mod tests {
         let (_, _, original) = s.crop_original("left").unwrap();
         assert_eq!(
             &original[(10 * w as usize + 40) * 4..(10 * w as usize + 40) * 4 + 4],
+            &[0, 255, 0, 255]
+        );
+    }
+    #[test]
+    fn ellipse_crosses_mixed_dpi_outputs_with_an_unmarked_center_and_ocr_source() {
+        let mut s = session();
+        s.begin("left", point(px(80.), px(20.)));
+        s.end("right", point(px(20.), px(60.)));
+        s.edit_annotations(|a| {
+            a.toggle(crate::annotation::ShapeKind::Ellipse);
+            a.set_color(4);
+        });
+        s.pointer_down("left", point(px(90.), px(25.)));
+        s.pointer_up("right", point(px(10.), px(55.)), false);
+        let left = s.local_annotations("left")[0];
+        let right = s.local_annotations("right")[0];
+        assert_eq!(left.bounds.origin, point(px(90.), px(25.)));
+        assert_eq!(right.bounds.origin, point(px(-10.), px(45.)));
+        let (w, h, pixels) = s.crop("right").unwrap();
+        let png = crate::export::encode_png(w, h, &pixels).unwrap();
+        let decoded = image::load_from_memory(&png).unwrap().into_rgba8();
+        let color = s.annotations().color().0.to_be_bytes();
+        for (x, y) in [(21, 20), (58, 20), (40, 11), (40, 28)] {
+            assert_eq!(decoded.get_pixel(x, y).0, color);
+        }
+        assert_eq!(decoded.get_pixel(40, 20).0, [0, 255, 0, 255]);
+        assert_eq!(decoded.get_pixel(20, 10).0, [255, 0, 0, 255]);
+        let (_, _, original) = s.crop_original("left").unwrap();
+        assert_eq!(
+            &original[(11 * w as usize + 40) * 4..(11 * w as usize + 40) * 4 + 4],
             &[0, 255, 0, 255]
         );
     }
