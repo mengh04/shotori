@@ -469,8 +469,13 @@ fn grip(
         .h(px(ROW_H))
         .w(px(GRIP_W))
         .flex()
+        // gap between the dot COLUMNS — do not lose this again: without
+        // it the three columns pack solid and the airy matte matrix
+        // collapses into tight triple lines (user-noticed regression).
+        // No justify_center either: flush-left is the exact look that
+        // was approved (pixel-verified against the liked build).
+        .gap(px(1.75))
         .items_center()
-        .justify_center()
         .on_mouse_down(MouseButton::Left, move |ev, _, cx| {
             session.update(cx, |s, cx| {
                 if s.toolbar_drag_begin(&output, ev.position) {
