@@ -784,6 +784,23 @@ toolbar drag is in flight.
   asserts the composed `toolbar_bounds` (full + narrow width clamp)
 - 161 green; live vision check of the dot-matrix grips
 
+### The grip/cursor alignment trap (same day)
+
+User report: "part of the first row's edge drags but shows no hand."
+Root cause: TWO geometries. The cursor strip was computed as
+full-toolbar-height × GRIP_W from the toolbar's origin, while the
+actual grip ELEMENT was a 30px-tall flex child sitting after the bar's
+5px padding — the rects overlapped but were not equal (5px-wide and
+4px-tall bands disagreed on each side, plus all of row two). A first
+"fix" made the element a full-height overlay (row two draggable too) —
+user-rejected: row two should NOT be a grip. Final shape: grips stay
+flex children of ROW ONE, `h(ROW_H)` (no vertical slack), and
+`toolbar_grips` returns the element's literal rect (origin + BAR_PAD,
+GRIP_W × ROW_H, row one only). BAR_PAD is a placement constant both
+sides share — one geometry, pixel-identical by construction. Rule:
+never compute a hit-test rect from layout side effects; derive both
+the element and the hit-test from the same constants.
+
 ## Custom icon assets + toolbar cursor fix (2026-09-27)
 
 Two follow-ups from the selection-editing release, both user-reported:

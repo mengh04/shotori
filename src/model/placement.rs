@@ -29,6 +29,10 @@ const INSET: f32 = 12.;
 pub(crate) const TB_W: f32 = 512.;
 /// Width of one drag-grip strip at the toolbar's left/right edge.
 pub(crate) const GRIP_W: f32 = 12.;
+/// The bar rows' horizontal padding. The grip elements sit INSIDE that
+/// padding on row one — `session::toolbar_grips` uses the same constant
+/// so the cursor strip and the element rect stay identical.
+pub(crate) const BAR_PAD: f32 = 5.;
 /// Single-row height (tools inactive)
 pub(crate) const ROW_H: f32 = 38.;
 /// Two-row height (the tall case used for placement decisions)

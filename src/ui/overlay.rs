@@ -1427,7 +1427,10 @@ mod multi_output_tests {
 
     #[gpui_kit::test]
     fn toolbar_drag_works_through_the_event_pipeline(cx: &mut TestAppContext) {
-        cx.update(gpui_kit::base::init);
+        cx.update(|cx| {
+            gpui_kit::base::init(cx);
+            crate::actions::init_annotation_keybindings(cx);
+        });
         let mut capture = Capture::for_test((0, 0), 1.);
         capture.output_name = "main".into();
         capture.width = 800;
@@ -1514,6 +1517,83 @@ mod multi_output_tests {
             let b = session.read(cx).selection().bounds().unwrap();
             assert_eq!(b.origin, point(px(100.), px(200.)));
             assert_eq!(b.size, size(px(500.), px(360.)));
+        });
+
+        // A tool active → row two appears. Its edges are NOT grips (by
+        // design): cursor stays Arrow there and a press does not drag.
+        // Regression pair for the "draggable but not a hand" mismatch:
+        // the cursor strip and the element rect are now one geometry.
+        vcx.simulate_keystrokes("r");
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            assert_eq!(
+                session.read(cx).toolbar_bounds("main").unwrap().size.height,
+                px(crate::model::placement::TB_H)
+            );
+        });
+        // row TWO's left edge: plain toolbar body
+        vcx.simulate_mouse_move(
+            point(px(255.), px(153.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        vcx.update(|_, cx| assert_eq!(overlay.read(cx).cursor.get(), CursorStyle::Arrow));
+        vcx.simulate_mouse_down(
+            point(px(255.), px(153.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_move(
+            point(px(300.), px(300.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_up(
+            point(px(300.), px(300.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            assert!(!session.read(cx).toolbar_drag_active());
+            assert_eq!(
+                session.read(cx).toolbar_bounds("main").unwrap().origin,
+                point(px(244.), px(81.)) // unmoved
+            );
+        });
+
+        // row ONE's strip still grabs with two rows on screen
+        vcx.simulate_mouse_move(
+            point(px(255.), px(100.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        vcx.update(|_, cx| assert_eq!(overlay.read(cx).cursor.get(), CursorStyle::OpenHand));
+        vcx.simulate_mouse_down(
+            point(px(255.), px(100.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_move(
+            point(px(200.), px(300.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_up(
+            point(px(200.), px(300.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            assert!(!session.read(cx).toolbar_drag_active());
+            // grab was (11,19) from the row-one press
+            assert_eq!(
+                session.read(cx).toolbar_bounds("main").unwrap().origin,
+                point(px(189.), px(281.))
+            );
         });
     }
 
