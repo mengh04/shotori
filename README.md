@@ -2,10 +2,11 @@
 
 [![Crates.io](https://img.shields.io/crates/v/shotori.svg)](https://crates.io/crates/shotori)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Wayland-8892bf)
+![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-8892bf)
 
 A Wayland-native screenshot tool with built-in, on-device OCR — the entire UI
-hand-drawn with [gpui-kit](https://crates.io/crates/gpui-kit).
+hand-drawn with [gpui-kit](https://crates.io/crates/gpui-kit). Also runs on
+Windows (GDI capture, Win32 clipboard, toast notifications).
 
 Freeze the screen, drag a selection, then copy it, save it, or read the text
 out of it — all without leaving the keyboard.
@@ -23,24 +24,48 @@ out of it — all without leaving the keyboard.
 
 ## Requirements
 
-- Linux with a wlroots-adjacent Wayland compositor (niri, sway, Hyprland, …)
+**Linux** (the first-class platform):
+
+- A wlroots-adjacent Wayland compositor (niri, sway, Hyprland, …)
 - `xdg-desktop-portal` for the save dialog (installed by default on most
   desktops)
 - A notification daemon (dunst, mako, swaync, …) is optional
 
+**Windows** (10/11):
+
+- Nothing beyond the OS: capture uses GDI, the clipboard is Win32,
+  notifications are WinRT toasts, and clicking a window snaps to it via
+  `EnumWindows`
+
 ## Installation
 
 ```bash
-cargo install shotori        # crates.io
+cargo install shotori        # crates.io (Linux & Windows)
 paru -S shotori              # AUR (prebuilt binary)
 ```
 
-Or grab a binary from [GitHub Releases](https://github.com/mengh04/shotori/releases).
-Bind it to a key, e.g. in niri:
+Or grab a binary from [GitHub Releases](https://github.com/mengh04/shotori/releases)
+(Linux tarball, Windows zip). Bind it to a key, e.g. in niri:
 
 ```kdl
 Mod+Shift+S { spawn "shotori"; }
 ```
+
+On Windows bind it to a key and/or keep a tray icon:
+
+- **Tray** (recommended): `shotori --tray` stays resident with a tray
+  icon; click it (or its menu) to start a screenshot. Autostart it via a
+  shortcut in `shell:startup`.
+- **Hotkey only**: create a shortcut to `shotori.exe` on the Desktop (or
+  Start Menu), open its properties and fill the *Shortcut key* field —
+  Explorer registers that hotkey globally. Note the field requires
+  modifier keys (a bare key or exotic combo needs PowerToys Keyboard
+  Manager's "Run Program" action or a one-line AutoHotkey script), and
+  the Explorer shortcut path adds a noticeable launch delay.
+
+On Linux the same `shotori --tray` speaks StatusNotifierItem (waybar,
+KDE Plasma, a GNOME appindicator extension) — or keep binding `spawn
+"shotori"` to a compositor key.
 
 ## Usage
 
@@ -55,6 +80,8 @@ shotori full                 # capture every screen → clipboard
 shotori full -p ~/Pictures   # → timestamped PNG in a directory
 shotori full -p shot.png -c  # → file AND clipboard
 shotori full -d 2            # wait 2 s first
+shotori --tray               # stay resident as a tray icon; click to
+                             # start a screenshot (quit via its menu)
 ```
 
 The full capture spans every screen (highest density wins, gaps stay
@@ -87,7 +114,8 @@ shotori --print-theme   # dump the resolved values and exit
 
 For anything beyond the built-ins, write a JSON override file — copy
 [`docs/theme.example.json`](docs/theme.example.json) to
-`~/.config/shotori/theme.json` (picked up automatically) or point at it
+`~/.config/shotori/theme.json` (`%APPDATA%\shotori\theme.json` on Windows;
+picked up automatically) or point at it
 explicitly with `--theme /path/to/theme.json`. Every field is optional and
 layers on the chosen `base`; bad values are reported to stderr and fall
 back, never blocking a screenshot. The annotation color palette is
@@ -193,7 +221,8 @@ Brush mode, editing existing filter regions and smart erasing remain follow-ups.
 
 The first `Ctrl+O` asks before downloading the models (~31 MB, one time);
 after that everything runs fully offline. Models are cached in
-`~/.local/share/shotori/ocr-models/`. Recognition is prewarmed while you
+`~/.local/share/shotori/ocr-models/` (`%LOCALAPPDATA%\shotori\ocr-models\`
+on Windows). Recognition is prewarmed while you
 draw, so it usually completes within a few hundred milliseconds. Very small
 text strains the model; HiDPI screens fare better.
 

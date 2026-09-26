@@ -4,10 +4,10 @@
 //! heritage): no subcommand / `gui` opens the interactive overlay,
 //! `full` captures without any UI. Theme flags apply to both modes.
 //!
-//! The internal child-process entry points (`--notify`,
-//! `--clipboard-daemon`) are matched on `argv[1]` in `main.rs` BEFORE
-//! clap runs — they carry free-form trailing arguments and must not be
-//! validated as flags.
+//! The internal child-process entry points (`--notify`, and
+//! `--clipboard-daemon` on Linux) are matched on `argv[1]` in `main.rs`
+//! BEFORE clap runs — they carry free-form trailing arguments and must
+//! not be validated as flags.
 
 use std::path::PathBuf;
 
@@ -17,7 +17,7 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "shotori",
     version,
-    about = "Wayland-first screenshot tool",
+    about = "Screenshot tool — Wayland-first, Windows supported",
     disable_help_subcommand = true
 )]
 pub struct Cli {
@@ -29,7 +29,8 @@ pub struct Cli {
     #[arg(long)]
     pub print_theme: bool,
 
-    /// Skip ~/.config/shotori/theme.json auto-pickup
+    /// Skip the config-file theme auto-pickup (~/.config/shotori/theme.json
+    /// on Linux, %APPDATA%\shotori\theme.json on Windows)
     #[arg(long)]
     pub no_config: bool,
 
@@ -57,6 +58,9 @@ pub enum Command {
         #[arg(short, long, default_value_t = 0.)]
         delay: f32,
     },
+
+    /// Stay resident as a tray icon; activating it starts a screenshot
+    Tray,
 }
 
 #[cfg(test)]

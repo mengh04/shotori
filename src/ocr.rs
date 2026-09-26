@@ -14,14 +14,19 @@ use std::time::Duration;
 use anyhow::Context as _;
 use rapidocr_core::model::{ModelAssetSpec, PPOCRV6_SMALL};
 
-/// Model cache directory (XDG-aware)
+/// Model cache directory (XDG-aware on Linux, %LOCALAPPDATA% on Windows)
 fn model_dir() -> anyhow::Result<PathBuf> {
+    #[cfg(target_os = "linux")]
     let base = if let Ok(d) = std::env::var("XDG_DATA_HOME") {
         PathBuf::from(d)
     } else {
         let home = std::env::var("HOME").context("HOME environment variable is not set")?;
         PathBuf::from(home).join(".local/share")
     };
+    #[cfg(target_os = "windows")]
+    let base = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .context("LOCALAPPDATA is not set")?;
     Ok(base.join("shotori/ocr-models"))
 }
 

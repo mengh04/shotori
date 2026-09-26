@@ -10,7 +10,17 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: release-tarball-linux
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: release-zip-windows
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -18,7 +28,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install native build deps
+      - name: Install native build deps (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -28,17 +39,26 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
-      - name: Package (strip + tarball)
+      - name: Package (strip + tarball, Linux)
+        if: runner.os == 'Linux'
         run: |
           strip target/release/shotori
           mkdir dist
           cp target/release/shotori LICENSE dist/
           tar -C dist -czf "shotori-${GITHUB_REF_NAME}-x86_64.tar.gz" shotori LICENSE
 
+      - name: Package (zip, Windows)
+        if: runner.os == 'Windows'
+        run: |
+          mkdir dist
+          cp target/release/shotori.exe LICENSE dist/
+          Compress-Archive -Path dist/shotori.exe,dist/LICENSE `
+            -DestinationPath "shotori-${GITHUB_REF_NAME}-x86_64-pc-windows-msvc.zip"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: release-tarball
-          path: shotori-*-x86_64.tar.gz
+          name: ${{ matrix.artifact }}
+          path: shotori-*
 
   github-release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -49,14 +69,18 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: release-tarball
+          name: release-tarball-linux
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-zip-windows
 
       - name: Create release with artifact
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ARTIFACT=$(ls shotori-*-x86_64.tar.gz)
-          gh release create "${GITHUB_REF_NAME}" "$ARTIFACT" \
+          ARTIFACTS=$(ls shotori-*.tar.gz shotori-*.zip)
+          gh release create "${GITHUB_REF_NAME}" $ARTIFACTS \
             --title "shotori ${GITHUB_REF_NAME}" \
             --generate-notes
 
@@ -71,7 +95,7 @@ jobs:
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: release-tarball
+          name: release-tarball-linux
           path: artifact
 
       - name: Push PKGBUILD update to AUR

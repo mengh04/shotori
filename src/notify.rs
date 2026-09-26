@@ -3,13 +3,19 @@
 //! Why a child process: shotori calls `cx.quit()` right after saving / OCR.
 //! A plain background thread would be killed mid-send when the process
 //! exits; a detached child (`shotori --notify <summary> <body> [image]`,
-//! same pattern as the clipboard daemon) outlives the parent and always
+//! same pattern as the Linux clipboard daemon) outlives the parent and always
 //! delivers. Failures are silent by design — a missing notification daemon
 //! must never break a screenshot tool.
 //!
-//! Image previews: the freedesktop `image-path` hint with a `file://` URL
-//! (verified against noctalia). Thumbnails are written to the cache dir
-//! and must outlive the notification — cleaned up lazily (24h).
+//! Backends: freedesktop `org.freedesktop.Notifications` over D-Bus
+//! (Linux) or WinRT toast (Windows; the PowerShell AppUserModelID is the
+//! standard no-install trick — the toast then reports "Windows
+//! PowerShell" as its source).
+//!
+//! Image previews: the freedesktop `image-path` hint / the toast image
+//! with a `file://`-style local path (verified against noctalia).
+//! Thumbnails are written to the cache dir and must outlive the
+//! notification — cleaned up lazily (24h).
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -53,7 +59,7 @@ fn spawn_child(summary: &str, body: &str, image: Option<&std::path::Path>) {
         // stderr inherited: real failures stay visible in the terminal
         .spawn();
     // Detached: dropping the handle leaves the child running; the parent
-    // usually exits a moment later and init reaps it.
+    // usually exits a moment later and the OS reaps it.
 }
 
 /// Child entry point: `shotori --notify <summary> <body> [image path]`
@@ -64,18 +70,12 @@ pub fn notify_main() -> i32 {
         eprintln!("[shotori] notify child: usage: --notify <summary> <body> [image]");
         return 1;
     };
-    let mut n = notify_rust::Notification::new();
-    n.appname("Shotori")
-        .summary(&summary)
-        .body(&body)
-        .timeout(notify_rust::Timeout::Milliseconds(3500));
-    if let Some(path) = args.next() {
-        n.image_path(&format!("file://{path}"));
-    }
-    match n.show() {
-        Ok(_) => 0,
+    let image = args.next();
+    let image_path = image.as_deref().map(std::path::Path::new);
+    match show(&summary, &body, image_path) {
+        Ok(()) => 0,
         Err(e) => {
-            // No daemon on the bus, session bus missing, … — not fatal for
+            // No daemon on the bus, toast disabled, … — not fatal for
             // the caller (the action already succeeded), just report it.
             eprintln!("[shotori] notification not delivered: {e}");
             1
@@ -83,14 +83,61 @@ pub fn notify_main() -> i32 {
     }
 }
 
+// ── Linux: org.freedesktop.Notifications over D-Bus ──────────────────
+
+#[cfg(target_os = "linux")]
+fn show(summary: &str, body: &str, image: Option<&std::path::Path>) -> anyhow::Result<()> {
+    let mut n = notify_rust::Notification::new();
+    n.appname("Shotori")
+        .summary(summary)
+        .body(body)
+        .timeout(notify_rust::Timeout::Milliseconds(3500));
+    if let Some(path) = image {
+        n.image_path(&format!("file://{path}"));
+    }
+    n.show()?;
+    Ok(())
+}
+
+// ── Windows: WinRT toast ─────────────────────────────────────────────
+
+#[cfg(target_os = "windows")]
+fn show(summary: &str, body: &str, image: Option<&std::path::Path>) -> anyhow::Result<()> {
+    use tauri_winrt_notification::Toast;
+
+    let mut toast = Toast::new(Toast::POWERSHELL_APP_ID)
+        .title(summary)
+        .text1(body)
+        .duration(tauri_winrt_notification::Duration::Short);
+    if let Some(path) = image {
+        // Local absolute paths are accepted as toast image sources
+        if path.is_absolute() {
+            toast = toast.image(path, "screenshot preview");
+        }
+    }
+    toast.show()?;
+    Ok(())
+}
+
 // ── Preview thumbnails ────────────────────────────────────────────────
 
+#[cfg(target_os = "linux")]
 fn cache_dir() -> Option<PathBuf> {
     let base = match std::env::var("XDG_CACHE_HOME") {
         Ok(d) => PathBuf::from(d),
         Err(_) => PathBuf::from(std::env::var("HOME").ok()?).join(".cache"),
     };
     let dir = base.join("shotori");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+#[cfg(target_os = "windows")]
+fn cache_dir() -> Option<PathBuf> {
+    let base = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let dir = base.join("shotori").join("cache");
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir)
 }

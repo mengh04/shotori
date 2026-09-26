@@ -2,7 +2,7 @@
 name = "shotori"
 version = "0.10.0-dev"
 edition = "2024"
-description = "Shotori — Wayland-first screenshot tool with optional OCR (gpui-kit)"
+description = "Shotori — Wayland-first screenshot tool with optional OCR, Windows supported (gpui-kit)"
 license = "MIT"
 repository = "https://github.com/mengh04/shotori"
 keywords = ["screenshot", "wayland", "gpui", "screencopy", "clipboard"]
@@ -11,13 +11,19 @@ categories = ["graphics", "multimedia::images", "command-line-utilities"]
 [dependencies]
 gpui-kit = "0.6"
 anyhow = "1.0"
-
-# screencopy capture + wlr-data-control clipboard (raw wayland-client)
-wayland-client = "0.31"
-wayland-protocols-wlr = "0.3"
-memmap2 = "0.9"
-tempfile = "3"
 png = "0.18"
+
+# Native window-handle access (overlay alignment fixup on Windows);
+# same 0.6 line the gpui tree already uses
+raw-window-handle = "0.6"
+
+# System tray (Windows Shell_NotifyIcon, Linux StatusNotifierItem over
+# zbus, macOS AppKit — one crate). The gpui-kit feature makes its types
+# interoperate with our gpui-pre 0.3.x directly.
+gpui-tray = { version = "0.1.4", default-features = false, features = [
+    "gpui-kit",
+    "menu-state",
+] }
 
 # In-memory pixels → gpui display (RenderImage is built from the image
 # crate's Frames; must match gpui-pre's version, currently 0.25.10)
@@ -31,19 +37,49 @@ ab_glyph = "0.2.32"
 # gpui dep tree — zero extra compile)
 chrono = "0.4"
 
-# Desktop notifications (org.freedesktop.Notifications over D-Bus).
-# Sent from a detached child process (see src/notify.rs) so a quick
-# cx.quit() can never cut a notification off
-notify-rust = "4"
-rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
-niri-ipc = "26.4.0"
+# Native "save as" dialog. The backend is picked per-platform: GTK-free
+# xdg-portal on Linux, Win32 on Windows (rfd's windows backend needs no
+# feature). Declared again under the linux target to add the feature
+# there only.
+rfd = { version = "0.17.2", default-features = false }
+
+# Scratch files (OCR model download staging; wayland shm)
+tempfile = "3"
+
 # window-snap backends: sway (i3 GET_TREE) and Hyprland (j/clients) speak
 # JSON over their unix sockets; parsed with serde_json Values (their
 # schemas drift across versions, tolerant field-by-field beats typed)
 serde_json = "1"
-wayland-protocols = { version = "0.32.13", features = ["client", "unstable"] }
 serde = { version = "1.0.229", features = ["derive"] }
 clap = { version = "4.6.7", features = ["derive"] }
+
+# ── Linux (Wayland): screencopy capture, wlr-data-control clipboard,
+#    D-Bus notifications, compositor IPC for window snapping ──────────
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = "0.31"
+wayland-protocols-wlr = "0.3"
+wayland-protocols = { version = "0.32.13", features = ["client", "unstable"] }
+memmap2 = "0.9"
+niri-ipc = "26.4.0"
+notify-rust = "4"
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+
+# ── Windows: GDI capture, Win32 clipboard, WinRT toast notifications,
+#    EnumWindows snap backend ─────────────────────────────────────────
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Console",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Threading",
+] }
+tauri-winrt-notification = "0.8"
 
 [dependencies.rapidocr-core]
 version = "0.2"

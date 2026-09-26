@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+#[cfg(target_os = "linux")]
 use gpui_kit::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui_kit::*;
 
@@ -60,6 +61,12 @@ impl Overlay {
             crate::ui::e2e::spawn_debug_action(window, cx);
         }
 
+        // Windows: the platform's frame-inset compensation has a 4 px
+        // vertical asymmetry (see platform::overlay_fixup) — realign the
+        // client origin to the monitor before the first frame is drawn
+        #[cfg(target_os = "windows")]
+        crate::platform::overlay_fixup::align_client_to_monitor(window, &capture);
+
         session.update(cx, |session, cx| {
             session.set_size(&capture.output_name, window.bounds().size);
             if let Selection::Selected { bounds } = crate::ui::e2e::debug_selection(debug_targeted)
@@ -100,41 +107,62 @@ impl Overlay {
         }
     }
 
-    /// WindowOptions for the overlay window (anchored on all four edges +
-    /// Exclusive keyboard). display_id: pin to the output the capture came
-    /// from (without it the compositor picks — multi-monitor = lottery).
+    /// WindowOptions for the overlay window. Linux: a layer-shell surface
+    /// anchored on all four edges with Exclusive keyboard. Windows: a
+    /// borderless popup (gpui's windows backend gives `WindowKind::PopUp`
+    /// `WS_EX_TOOLWINDOW | WS_EX_TOPMOST` + no decorations — its overlay
+    /// equivalent: topmost band, no taskbar entry). display_id: pin to the
+    /// output the capture came from (without it the compositor / Win32
+    /// placement picks — multi-monitor = lottery).
     ///
-    /// `logical_size` (the output's TRUE size from zxdg_output_v1, falling
-    /// back to width÷scale) rides along as window_bounds: the wayland
-    /// backend forwards it as the layer surface's `set_size`. niri ignores
-    /// client sizes on fully-anchored surfaces, but Hyprland honors them —
-    /// and the backend's own default bounds (computed from the INTEGER
-    /// wl_output scale, no transform) requested 960×540 for a 720×1280
-    /// 1.5x-rotated output (measured live). Passing the correct size makes
-    /// both behaviors coincide. A 0×0 "compositor, you decide" was tried
-    /// and rejected: the surface never maps on Hyprland (no configure, no
-    /// first commit — dead loop).
+    /// `logical_size` (the output's TRUE size, see
+    /// [`Capture::logical_size_f32`]) rides along as window_bounds: the
+    /// wayland backend forwards it as the layer surface's `set_size`.
+    /// niri ignores client sizes on fully-anchored surfaces, but Hyprland
+    /// honors them — and the backend's own default bounds (computed from
+    /// the INTEGER wl_output scale, no transform) requested 960×540 for a
+    /// 720×1280 1.5x-rotated output (measured live). Passing the correct
+    /// size makes both behaviors coincide. A 0×0 "compositor, you decide"
+    /// was tried and rejected: the surface never maps on Hyprland (no
+    /// configure, no first commit — dead loop).
+    ///
+    /// `origin` is only read on Windows: window bounds there are absolute
+    /// gpui-logical coordinates (the monitor's physical origin ÷ its
+    /// scale — `capture/windows.rs` explains the spaces); (0,0) would
+    /// resolve to the primary monitor and the window would default-size.
     pub fn window_options(
         display_id: Option<DisplayId>,
         logical_size: Size<Pixels>,
+        origin: Point<Pixels>,
     ) -> WindowOptions {
+        #[cfg(target_os = "linux")]
+        let kind = WindowKind::LayerShell(LayerShellOptions {
+            namespace: "shotori-overlay".into(),
+            layer: Layer::Overlay,
+            anchor: Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
+            exclusive_zone: Some(px(-1.)),
+            keyboard_interactivity: KeyboardInteractivity::Exclusive,
+            ..Default::default()
+        });
+        #[cfg(target_os = "windows")]
+        let kind = WindowKind::PopUp;
+
         WindowOptions {
             titlebar: None,
             window_background: WindowBackgroundAppearance::Transparent,
             focus: true,
             display_id,
+            #[cfg(target_os = "linux")]
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: point(px(0.), px(0.)),
                 size: logical_size,
             })),
-            kind: WindowKind::LayerShell(LayerShellOptions {
-                namespace: "shotori-overlay".into(),
-                layer: Layer::Overlay,
-                anchor: Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
-                exclusive_zone: Some(px(-1.)),
-                keyboard_interactivity: KeyboardInteractivity::Exclusive,
-                ..Default::default()
-            }),
+            #[cfg(target_os = "windows")]
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin,
+                size: logical_size,
+            })),
+            kind,
             ..Default::default()
         }
     }
