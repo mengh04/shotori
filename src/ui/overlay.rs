@@ -21,9 +21,11 @@ use crate::actions::{
     ToggleMosaic, ToggleNumber, TogglePencil, TogglePolyline, ToggleRectangle, ToggleText,
     UndoAnnotation,
 };
-use crate::model::selection::Selection;
+use crate::model::selection::{PressTarget, Selection};
 use crate::platform::capture::Capture;
-use crate::ui::hud::{hover_outline, selection_backdrop, selection_label};
+use crate::ui::hud::{
+    handle_cursor, hover_outline, selection_backdrop, selection_handles, selection_label,
+};
 use crate::ui::image_util;
 use crate::ui::toolbar::selection_toolbar;
 
@@ -44,6 +46,14 @@ pub struct Overlay {
     ocr_busy: bool,
     text_editing: Option<crate::ui::text_editor::TextEditor>,
     text_subscription: Option<Subscription>,
+    /// The window cursor for the current pointer position/state
+    /// (crosshair / open hand / resize), refreshed by the pointer-move
+    /// path and pushed during paint by the handles canvas.
+    cursor: std::rc::Rc<std::cell::Cell<CursorStyle>>,
+    /// Last pointer position in THIS window's coordinates (None before
+    /// the first move) — lets the cursor recompute when the state changes
+    /// without the pointer moving (Ctrl+A, snap, undo…).
+    pointer_local: std::rc::Rc<std::cell::Cell<Option<Point<Pixels>>>>,
 }
 
 impl Overlay {
@@ -92,6 +102,8 @@ impl Overlay {
             ocr_busy: false,
             text_editing: None,
             text_subscription: None,
+            cursor: std::rc::Rc::new(std::cell::Cell::new(CursorStyle::Crosshair)),
+            pointer_local: std::rc::Rc::new(std::cell::Cell::new(None)),
         };
         overlay.attach_observers(window, cx);
         overlay
@@ -111,6 +123,9 @@ impl Overlay {
                 if this.ocr_setup.is_none() && this.text_editing.is_none() {
                     window.focus(&this.focus_handle, cx);
                 }
+                // State changed without motion (Ctrl+A, snap, undo…): the
+                // cursor must follow the new state, not the stale pointer.
+                this.refresh_cursor(cx);
                 cx.notify();
             }),
             cx.observe_window_bounds(window, |this, window, cx| {
@@ -121,6 +136,52 @@ impl Overlay {
                 });
             }),
         ];
+    }
+
+    /// The window cursor for the current interaction state, hit-tested
+    /// against the selection at the last known pointer position:
+    /// crosshair for (new) selection drawing and annotation tools, the
+    /// resize arrows on the handles, an open hand over the interior,
+    /// a closed hand while moving.
+    fn cursor_style(&self, cx: &App) -> CursorStyle {
+        let session = self.session.read(cx);
+        if session.blocked() {
+            return CursorStyle::Arrow;
+        }
+        let selection = session.selection();
+        if selection.is_dragging() {
+            return CursorStyle::Crosshair;
+        }
+        match selection {
+            Selection::Moving { .. } => CursorStyle::ClosedHand,
+            Selection::Resizing { handle, .. } => handle_cursor(handle),
+            _ => {
+                if session.annotations().enabled() {
+                    return CursorStyle::Crosshair;
+                }
+                if let (Some(bounds), Some(local)) = (selection.bounds(), self.pointer_local.get())
+                {
+                    let global = session.to_global(&self.capture.output_name, local);
+                    return match crate::model::selection::press_target(bounds, global) {
+                        PressTarget::Handle(h) => handle_cursor(h),
+                        PressTarget::Interior => CursorStyle::OpenHand,
+                        PressTarget::Outside => CursorStyle::Crosshair,
+                    };
+                }
+                CursorStyle::Crosshair
+            }
+        }
+    }
+
+    /// Recompute and store the cursor; returns whether it changed (the
+    /// caller decides on cx.notify()). Cheap enough to run on every move.
+    fn refresh_cursor(&self, cx: &App) -> bool {
+        let style = self.cursor_style(cx);
+        if self.cursor.get() == style {
+            return false;
+        }
+        self.cursor.set(style);
+        true
     }
     fn subscribe_text(
         &mut self,
@@ -821,11 +882,13 @@ impl Render for Overlay {
                     cx.stop_propagation();
                     return;
                 }
-                if this.session.read(cx).selection().is_dragging() {
+                if this.session.read(cx).selection().is_dragging()
+                    || this.session.read(cx).selection().is_editing()
+                {
                     this.session.update(cx, |s, cx| {
-                        s.cancel_drag();
+                        s.cancel_drag(); // stage one: abandon this drag / revert the edit
                         cx.notify();
-                    }); // stage one: abandon this drag
+                    });
                 } else {
                     cx.quit(); // stage two: exit
                 }
@@ -848,10 +911,15 @@ impl Render for Overlay {
                         return;
                     }
                     window.focus(&this.focus_handle, cx);
+                    this.pointer_local.set(Some(ev.position));
                     this.session.update(cx, |s, cx| {
                         s.pointer_down(&this.capture.output_name, ev.position);
                         cx.notify();
                     });
+                    // the press itself can flip the state (an edit grab) —
+                    // the cursor must follow before the next move; the
+                    // repaint is already covered by the notify above
+                    this.refresh_cursor(cx);
                     cx.notify();
                 }),
             )
@@ -932,6 +1000,15 @@ impl Render for Overlay {
             )
             // Paint the border above the export-backed preview as well as vector marks.
             .child(selection_backdrop(backdrop))
+            // ②¼ Resize handles (above the border; the toolbar paints later
+            // and stays on top). Drawn whenever the selection is finalized
+            // or being edited — not during a fresh drag.
+            .child(selection_handles(
+                backdrop,
+                selection.is_selected() || selection.is_editing(),
+                self.cursor.clone(),
+                self.text_editing.is_none() && self.ocr_setup.is_none(),
+            ))
             // ②½ Window-snap hover outline (above the dim, below all
             // selection chrome: it is a hint, not a selection)
             .children(hover.map(hover_outline))
@@ -947,10 +1024,12 @@ impl Render for Overlay {
                                 return;
                             }
                             let _ = view.update(cx, |this, cx| {
+                                this.pointer_local.set(Some(event.position));
+                                // one event feed drives selection
+                                // drag, annotation drawing, hover
+                                // tracking and the cursor alike
+                                let cursor_changed = this.refresh_cursor(cx);
                                 this.session.update(cx, |s, cx| {
-                                    // one event feed drives selection
-                                    // drag, annotation drawing and hover
-                                    // tracking alike
                                     let changed = s.pointer_move(
                                         &this.capture.output_name,
                                         event.position,
@@ -958,7 +1037,7 @@ impl Render for Overlay {
                                     );
                                     let hovered =
                                         s.hover_at(&this.capture.output_name, event.position);
-                                    if changed || hovered {
+                                    if changed || hovered || cursor_changed {
                                         cx.notify();
                                     }
                                 });
@@ -1144,6 +1223,96 @@ mod multi_output_tests {
             assert_eq!(shared.crop("right").unwrap().0, 100);
         });
     }
+
+    #[gpui_kit::test]
+    fn selection_moves_and_resizes_after_release_through_the_event_pipeline(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::base::init);
+        let mut capture = Capture::for_test((0, 0), 1.);
+        capture.output_name = "main".into();
+        capture.width = 400;
+        capture.height = 400;
+        capture.rgba = vec![255; 400 * 400 * 4];
+        let capture = Arc::new(capture);
+        let session = cx.new(|_| ScreenshotSession::new(vec![capture.clone()], Vec::new()));
+        let (_, vcx) =
+            cx.add_window_view(|window, cx| Overlay::new(capture, session.clone(), window, cx));
+        vcx.simulate_resize(size(px(400.), px(400.)));
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        vcx.run_until_parked();
+
+        // draw a selection (50,50)-(150,120)
+        vcx.simulate_mouse_down(
+            point(px(50.), px(50.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_move(
+            point(px(150.), px(120.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_up(
+            point(px(150.), px(120.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+
+        // press the interior and drag: the whole selection translates
+        vcx.simulate_mouse_down(
+            point(px(100.), px(80.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_move(
+            point(px(140.), px(110.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_up(
+            point(px(140.), px(110.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            let shared = session.read(cx);
+            assert!(shared.selection().is_selected());
+            let b = shared.selection().bounds().unwrap();
+            assert_eq!(b.origin, point(px(90.), px(80.)));
+            assert_eq!(b.size, size(px(100.), px(70.)));
+        });
+
+        // press exactly the bottom-right corner and drag: resize only that
+        // corner; the top-left stays pinned
+        vcx.simulate_mouse_down(
+            point(px(190.), px(150.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_move(
+            point(px(230.), px(190.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_up(
+            point(px(230.), px(190.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            let shared = session.read(cx);
+            assert!(shared.selection().is_selected());
+            let b = shared.selection().bounds().unwrap();
+            assert_eq!(b.origin, point(px(90.), px(80.)));
+            assert_eq!(b.size, size(px(140.), px(110.)));
+            assert_eq!(shared.crop("main").unwrap().0, 140); // export follows
+        });
+    }
+
     #[gpui_kit::test]
     fn rectangle_toolbar_keyboard_and_export_share_the_same_state(cx: &mut TestAppContext) {
         geometry_toolbar_keyboard_and_export(cx, crate::annotation::ShapeKind::Rectangle);

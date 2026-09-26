@@ -6,6 +6,7 @@
 use gpui_kit::*;
 
 use crate::model::placement::label_anchor;
+use crate::model::selection::{HANDLE_VIS, Handle};
 use crate::ui::theme;
 
 /// Paint the dim layer and border together. Separate positioned divs snap
@@ -63,6 +64,76 @@ pub(crate) fn hover_outline(b: Bounds<Pixels>) -> impl IntoElement {
         .h(b.size.height)
         .border_2()
         .border_color(rgba(theme::c().accent))
+}
+
+/// Cursor shape for a resize grab, by handle.
+pub(crate) fn handle_cursor(h: Handle) -> CursorStyle {
+    match h {
+        Handle::Left | Handle::Right => CursorStyle::ResizeLeftRight,
+        Handle::Top | Handle::Bottom => CursorStyle::ResizeUpDown,
+        Handle::TopLeft | Handle::BottomRight => CursorStyle::ResizeUpLeftDownRight,
+        Handle::TopRight | Handle::BottomLeft => CursorStyle::ResizeUpRightDownLeft,
+    }
+}
+
+/// Resize handles over a finalized (or being-edited) selection, plus the
+/// window cursor. The cursor lives in a shared cell that the
+/// pointer-move path refreshes (see `Overlay::cursor_style`); this canvas
+/// pushes it during paint. Handles sit at the selection's TRUE edges — a
+/// selection spanning outputs shows them on whichever screen contains
+/// the edge, never at the monitor seam (same contract as the border).
+///
+/// Window-level cursor push is safe: nothing else in the overlay sets a
+/// cursor today (gpui-kit buttons included — verified), so it cannot
+/// shadow an existing affordance. `cursor_active` false (text editor /
+/// setup dialog open) leaves the cursor to whoever owns focus.
+pub(crate) fn selection_handles(
+    sel: Option<Bounds<Pixels>>,
+    visible: bool,
+    cursor: std::rc::Rc<std::cell::Cell<CursorStyle>>,
+    cursor_active: bool,
+) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |viewport, (), window, _| {
+            if cursor_active {
+                window.set_window_cursor_style(cursor.get());
+            }
+            let Some(mut b) = sel.filter(|_| visible) else {
+                return;
+            };
+            b.origin += viewport.origin;
+            let half = HANDLE_VIS / 2.;
+            let (l, r, t, bt) = (
+                f32::from(b.left()),
+                f32::from(b.right()),
+                f32::from(b.top()),
+                f32::from(b.bottom()),
+            );
+            let (cx, cy) = ((l + r) / 2., (t + bt) / 2.);
+            for (x, y) in [
+                (l, t),
+                (cx, t),
+                (r, t),
+                (l, cy),
+                (r, cy),
+                (l, bt),
+                (cx, bt),
+                (r, bt),
+            ] {
+                let h = Bounds {
+                    origin: point(px(x - half), px(y - half)),
+                    size: size(px(HANDLE_VIS), px(HANDLE_VIS)),
+                };
+                window.paint_quad(fill(h, rgba(0xFFFFFFFF)));
+                window.paint_quad(outline(h, rgba(theme::c().accent), BorderStyle::default()));
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
 }
 
 /// Selection size label. The label tries above the selection,

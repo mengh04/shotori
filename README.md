@@ -16,6 +16,8 @@ out of it — all without leaving the keyboard.
 ## Features
 
 - Region selection with a live size label; everything else dims
+- Adjust a drawn selection in place: drag inside to move, grab an edge or
+  corner to resize
 - Multi-monitor aware, including mixed scales and rotated outputs
 - Copy to clipboard (`Enter` / `Ctrl+C`)
 - Save to disk (`Ctrl+S`) via the system "save as" dialog
