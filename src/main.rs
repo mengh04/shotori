@@ -12,6 +12,7 @@
 
 use gpui_kit::*;
 
+use clap::Parser as _;
 use shotori::actions::QuitOverlay;
 use shotori::clipboard;
 use shotori::platform::capture;
@@ -36,27 +37,22 @@ fn main() {
 
     // Command line (after the two internal child-process entry points
     // above, which take free-form trailing arguments and must not be
-    // flag-parsed). --help/--version print and exit here.
-    let args = match shotori::args::Args::parse(std::env::args().skip(1)) {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("shotori: {e}");
-            eprintln!("Try 'shotori --help' for more information.");
-            std::process::exit(2);
-        }
-    };
-    if args.help {
-        print!("{}", shotori::args::Args::help_text());
-        return;
-    }
-    if args.version {
-        println!("shotori {}", env!("CARGO_PKG_VERSION"));
-        return;
-    }
+    // flag-parsed). clap handles --help/--version and bad arguments.
+    let args = shotori::args::Cli::parse();
 
     // ⓪ Theme resolution (--theme / --print-theme / XDG config file);
-    // must run before any window opens
+    // must run before any window opens. --print-theme exits inside.
     shotori::ui::theme::load::init(&args);
+
+    // ⓪' Non-interactive full capture (`shotori full`) — no overlay
+    if let Some(shotori::args::Command::Full {
+        clipboard,
+        path,
+        delay,
+    }) = &args.command
+    {
+        full_capture(*clipboard, path.clone(), *delay);
+    }
 
     // ① Freeze all screens (must complete before the overlays appear)
     let caps = match capture::capture_all_outputs() {
@@ -163,4 +159,75 @@ fn main() {
     // native save dialog can take over the screen. No-op on every other
     // exit path.
     shotori::save_dialog::complete_pending();
+}
+
+/// `shotori full`: capture every screen with no overlay. The session
+/// machinery is reused as-is (`select_all` builds the union selection,
+/// `crop_original` walks the same cross-screen export path as the
+/// interactive flow), so density/gap semantics cannot drift between
+/// modes. Clipboard when no `--path` is given; a directory `--path`
+/// gets the dialog-style timestamped name.
+fn full_capture(clipboard: bool, path: Option<std::path::PathBuf>, delay: f32) -> ! {
+    use shotori::model::session::ScreenshotSession;
+
+    if delay > 0. {
+        std::thread::sleep(std::time::Duration::from_secs_f32(delay));
+    }
+    let caps = match capture::capture_all_outputs() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[shotori] capture failed: {e:#}");
+            shotori::notify::send("Shotori", "Capture failed");
+            std::process::exit(1);
+        }
+    };
+    let first = caps[0].output_name.clone();
+    let mut session = ScreenshotSession::new(
+        caps.into_iter().map(std::sync::Arc::new).collect(),
+        Vec::new(),
+    );
+    session.select_all();
+    let Some((w, h, rgba)) = session.crop_original(&first) else {
+        eprintln!("[shotori] full capture produced nothing");
+        std::process::exit(1);
+    };
+
+    let mut ok = true;
+    // Clipboard: the default, and alongside --path when asked explicitly
+    if clipboard || path.is_none() {
+        match shotori::model::export::encode_png(w, h, &rgba).and_then(clipboard::copy_image) {
+            Ok(()) => shotori::notify::send_with_preview(
+                "Shotori",
+                "Full screenshot copied to the clipboard",
+                w,
+                h,
+                &rgba,
+            ),
+            Err(e) => {
+                eprintln!("[shotori] clipboard: {e:#}");
+                ok = false;
+            }
+        }
+    }
+    if let Some(p) = path {
+        let file = if p.is_dir() {
+            p.join(shotori::save_dialog::suggested_name())
+        } else {
+            p
+        };
+        match shotori::model::export::save_png(&file, w, h, &rgba) {
+            Ok(()) => shotori::notify::send_with_preview(
+                "Shotori",
+                &format!("Saved to {}", file.display()),
+                w,
+                h,
+                &rgba,
+            ),
+            Err(e) => {
+                eprintln!("[shotori] save: {e:#}");
+                ok = false;
+            }
+        }
+    }
+    std::process::exit(i32::from(!ok));
 }
