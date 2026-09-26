@@ -35,6 +35,11 @@ pub fn copy_text(text: String) -> anyhow::Result<()> {
 
 // ── Linux: resident daemon over zwlr_data_control ────────────────────
 
+// main.rs dispatches the daemon child on these; re-exported at the
+// crate surface so the internal `imp` split stays private.
+#[cfg(target_os = "linux")]
+pub use imp::{DAEMON_ARG, daemon_main};
+
 #[cfg(target_os = "linux")]
 mod imp {
     use std::io::{Read as _, Write as _};

@@ -93,7 +93,7 @@ fn show(summary: &str, body: &str, image: Option<&std::path::Path>) -> anyhow::R
         .body(body)
         .timeout(notify_rust::Timeout::Milliseconds(3500));
     if let Some(path) = image {
-        n.image_path(&format!("file://{path}"));
+        n.image_path(&format!("file://{}", path.display()));
     }
     n.show()?;
     Ok(())
