@@ -3,15 +3,15 @@ use gpui_kit::{assets::IconName, base::Button, *};
 
 use crate::{
     overlay::{
-        CopySelection, OcrSelection, QuitOverlay, SaveSelection, ToggleEllipse, ToggleLine,
-        TogglePolyline, ToggleRectangle,
+        CopySelection, OcrSelection, QuitOverlay, SaveSelection, ToggleArrow, ToggleEllipse,
+        ToggleLine, TogglePolyline, ToggleRectangle,
     },
     session::ScreenshotSession,
     theme,
 };
 
 // The default GPUI asset bundle does not include every toolbar icon.
-gpui_kit::assets::icon_assets!(pub ToolbarAssets, [Square, Circle, Slash, Waypoints, ScanText, Save, X, Copy]);
+gpui_kit::assets::icon_assets!(pub ToolbarAssets, [Square, Circle, Slash, Waypoints, ArrowUpRight, ScanText, Save, X, Copy]);
 
 const TB_W: f32 = 332.;
 const ROW_H: f32 = 38.;
@@ -90,6 +90,18 @@ pub(crate) fn selection_toolbar(
                         },
                     )
                     .selected(annotations.tool() == Some(crate::annotation::ShapeKind::Polyline)),
+                )
+                .child(
+                    icon_button(
+                        "tb-arrow",
+                        "Arrow · A",
+                        IconName::ArrowUpRight,
+                        focus.clone(),
+                        |window, cx| {
+                            window.dispatch_action(Box::new(ToggleArrow), cx);
+                        },
+                    )
+                    .selected(annotations.tool() == Some(crate::annotation::ShapeKind::Arrow)),
                 )
                 .child(div().flex_1())
                 .child(icon_button(
@@ -307,6 +319,7 @@ mod tests {
             IconName::Circle,
             IconName::Slash,
             IconName::Waypoints,
+            IconName::ArrowUpRight,
             IconName::ScanText,
             IconName::Save,
             IconName::X,

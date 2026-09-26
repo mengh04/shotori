@@ -8,6 +8,7 @@ pub(crate) enum ShapeKind {
     Rectangle,
     Ellipse,
     Line,
+    Arrow,
     Polyline,
 }
 
@@ -22,7 +23,7 @@ pub(crate) struct Shape {
 
 impl Shape {
     pub(crate) fn line_paths(&self, offset: Point<Pixels>) -> Vec<Path<Pixels>> {
-        line::paths(&self.points, self.width, offset)
+        line::paths(self, offset)
     }
 
     /// Match export's inward ellipse ring; reverse the inner contour to cut a hole.
@@ -228,7 +229,10 @@ impl Annotations {
                 bounds: Bounds::new(p, size(px(0.), px(0.))),
                 color: self.color().0,
                 width: self.width(),
-                points: if matches!(self.tool, Some(ShapeKind::Line | ShapeKind::Polyline)) {
+                points: if matches!(
+                    self.tool,
+                    Some(ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Polyline)
+                ) {
                     vec![p, p]
                 } else {
                     Vec::new()
@@ -246,7 +250,10 @@ impl Annotations {
         let Some(draft) = self.draft.as_mut() else {
             return false;
         };
-        if matches!(draft.shape.kind, ShapeKind::Line | ShapeKind::Polyline) {
+        if matches!(
+            draft.shape.kind,
+            ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Polyline
+        ) {
             let last = draft.shape.points.len() - 1;
             let start = draft.shape.points[last - 1];
             let end = line_endpoint(start, p, selection, square);
@@ -308,7 +315,7 @@ impl Annotations {
             return;
         }
         if let Some(draft) = self.draft.take() {
-            let valid = if draft.shape.kind == ShapeKind::Line {
+            let valid = if matches!(draft.shape.kind, ShapeKind::Line | ShapeKind::Arrow) {
                 distance(draft.shape.points[0], draft.shape.points[1]) >= 2.
             } else {
                 draft.shape.bounds.size.width >= px(2.) && draft.shape.bounds.size.height >= px(2.)
@@ -387,7 +394,10 @@ impl Annotations {
         scale: f32,
     ) {
         for shape in self.visible() {
-            if matches!(shape.kind, ShapeKind::Line | ShapeKind::Polyline) {
+            if matches!(
+                shape.kind,
+                ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Polyline
+            ) {
                 line::rasterize(shape, rgba, w, h, origin, scale);
                 continue;
             }

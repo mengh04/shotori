@@ -472,6 +472,7 @@ mod tests {
     fn line_and_polyline_cross_outputs_and_export_without_floating_preview() {
         for kind in [
             crate::annotation::ShapeKind::Line,
+            crate::annotation::ShapeKind::Arrow,
             crate::annotation::ShapeKind::Polyline,
         ] {
             let mut s = session();

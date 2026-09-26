@@ -680,7 +680,9 @@ time, with shared desktop coordinates, preview, history, and PNG export.
 3. Implemented: lines and polylines — drag or click-to-add vertices, 45° constraints,
    double-click/right-click/Enter completion, rounded strokes, shared history,
    cross-output preview and antialiased export.
-4. Arrows.
+4. Implemented: arrows — drag, 45° constraints, width-scaled triangular heads,
+   shared styles/history and mixed-DPI preview/export. Endpoint editing, alternate
+   arrow styles and comments remain follow-ups.
 5. Sequence numbers.
 6. Pencil.
 7. Highlighter.

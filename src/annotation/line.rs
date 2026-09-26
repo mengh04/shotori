@@ -29,23 +29,51 @@ fn polygons(points: &[Point<Pixels>], width: f32) -> Vec<Vec<Point<Pixels>>> {
         .collect()
 }
 
-pub(super) fn paths(
-    points: &[Point<Pixels>],
-    width: f32,
-    offset: Point<Pixels>,
-) -> Vec<Path<Pixels>> {
-    polygons(points, width)
-        .into_iter()
-        .filter_map(|polygon| {
-            let mut builder = PathBuilder::fill();
-            builder.move_to(polygon[0] + offset);
-            for p in &polygon[1..] {
-                builder.line_to(*p + offset);
-            }
-            builder.close();
-            builder.build().ok()
-        })
-        .collect()
+/// Keep the tip exactly at the release position; shorten both head and shaft
+/// proportionally for small arrows instead of letting the head point backwards.
+fn geometry(points: &[Point<Pixels>], width: f32, arrow: bool) -> Vec<Vec<Point<Pixels>>> {
+    if !arrow {
+        return polygons(points, width);
+    }
+    let [start, tip] = points else {
+        return Vec::new();
+    };
+    let delta = *tip - *start;
+    let length = f32::from(delta.x).hypot(f32::from(delta.y));
+    if length < 0.001 {
+        return Vec::new();
+    }
+    let unit = delta / length;
+    let normal = point(-unit.y, unit.x);
+    let head = (width * 4.).max(10.).min(length * 0.6);
+    let shaft = width.min(length * 0.25);
+    let base = *tip - unit * head;
+    let mut result = polygons(&[*start, base], shaft);
+    result.push(vec![
+        *tip,
+        base + normal * (head * 0.45),
+        base - normal * (head * 0.45),
+    ]);
+    result
+}
+
+pub(super) fn paths(shape: &super::Shape, offset: Point<Pixels>) -> Vec<Path<Pixels>> {
+    geometry(
+        &shape.points,
+        shape.width,
+        shape.kind == super::ShapeKind::Arrow,
+    )
+    .into_iter()
+    .filter_map(|polygon| {
+        let mut builder = PathBuilder::fill();
+        builder.move_to(polygon[0] + offset);
+        for p in &polygon[1..] {
+            builder.line_to(*p + offset);
+        }
+        builder.close();
+        builder.build().ok()
+    })
+    .collect()
 }
 
 pub(super) fn rasterize(
@@ -56,8 +84,20 @@ pub(super) fn rasterize(
     origin: Point<Pixels>,
     scale: f32,
 ) {
-    let points: Vec<_> = shape.points.iter().map(|p| (*p - origin) * scale).collect();
-    let polygons = polygons(&points, shape.width * scale);
+    // Build in logical units before scaling so the minimum head size scales too.
+    let polygons = geometry(
+        &shape.points,
+        shape.width,
+        shape.kind == super::ShapeKind::Arrow,
+    )
+    .into_iter()
+    .map(|polygon| {
+        polygon
+            .into_iter()
+            .map(|p| (p - origin) * scale)
+            .collect::<Vec<_>>()
+    })
+    .collect::<Vec<_>>();
     if polygons.is_empty() {
         return;
     }
@@ -142,6 +182,76 @@ pub(super) fn rasterize(
                     + color[channel] as f32 * coverage)
                     .round() as u8;
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arrow_tip_and_head_direction_survive_reverse_diagonal_and_short_drags() {
+        let start = point(px(40.), px(40.));
+        for (dx, dy) in [
+            (1., 0.),
+            (-1., 0.),
+            (0., 1.),
+            (0., -1.),
+            (1., 1.),
+            (-1., 1.),
+            (1., -1.),
+            (-1., -1.),
+        ] {
+            for length in [2., 5., 60.] {
+                let tip = start + point(px(dx * length), px(dy * length));
+                let geometry = geometry(&[start, tip], 5., true);
+                assert_eq!(geometry.len(), 2);
+                let head = &geometry[1];
+                assert_eq!(head[0], tip);
+                let delta = tip - start;
+                let norm_squared = f32::from(delta.x).powi(2) + f32::from(delta.y).powi(2);
+                for vertex in head {
+                    let relative = *vertex - start;
+                    let along = (f32::from(relative.x) * f32::from(delta.x)
+                        + f32::from(relative.y) * f32::from(delta.y))
+                        / norm_squared;
+                    assert!((0.39..=1.001).contains(&along));
+                }
+            }
+        }
+        assert!(geometry(&[start, start], 5., true).is_empty());
+    }
+
+    #[test]
+    fn arrow_export_contains_a_head_without_overshooting_and_preserves_gaps() {
+        let shape = super::super::Shape {
+            kind: super::super::ShapeKind::Arrow,
+            bounds: gpui_kit::Bounds::default(),
+            points: vec![point(px(20.), px(30.)), point(px(70.), px(30.))],
+            width: 3.,
+            color: 0xff0000ff,
+        };
+        for scale in [1., 1.25, 1.73, 2.] {
+            let w = (100. * scale) as u32;
+            let mut pixels = [0, 0, 0, 255].repeat((w * w) as usize);
+            let at =
+                |x: f32, y: f32| (((y * scale) as usize) * w as usize + (x * scale) as usize) * 4;
+            let gap = at(40., 30.);
+            pixels[gap..gap + 4].fill(0);
+            rasterize(&shape, &mut pixels, w, w, point(px(0.), px(0.)), scale);
+            assert_eq!(&pixels[at(45., 30.)..at(45., 30.) + 4], &[255, 0, 0, 255]);
+            assert_eq!(&pixels[at(60., 33.)..at(60., 33.) + 4], &[255, 0, 0, 255]);
+            assert_eq!(&pixels[at(71., 30.)..at(71., 30.) + 4], &[0, 0, 0, 255]);
+            assert_eq!(&pixels[gap..gap + 4], &[0; 4]);
+            assert!(
+                pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|p| p[0] > 0 && p[0] < 255)
+            );
+            assert_eq!(paths(&shape, point(px(0.), px(0.))).len(), 2);
         }
     }
 }

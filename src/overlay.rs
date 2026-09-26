@@ -28,6 +28,7 @@ gpui_kit::actions!([
     ToggleRectangle,
     ToggleEllipse,
     ToggleLine,
+    ToggleArrow,
     TogglePolyline,
     FinishPolyline,
     UndoAnnotation,
@@ -40,6 +41,7 @@ pub fn init_annotation_keybindings(cx: &mut App) {
         KeyBinding::new("r", ToggleRectangle, Some("ShotoriOverlay")),
         KeyBinding::new("e", ToggleEllipse, Some("ShotoriOverlay")),
         KeyBinding::new("l", ToggleLine, Some("ShotoriOverlay")),
+        KeyBinding::new("a", ToggleArrow, Some("ShotoriOverlay")),
         KeyBinding::new("p", TogglePolyline, Some("ShotoriOverlay")),
         KeyBinding::new("enter", FinishPolyline, Some("PolylineDrawing")),
         KeyBinding::new("ctrl-z", UndoAnnotation, Some("ShotoriOverlay")),
@@ -503,6 +505,13 @@ impl Render for Overlay {
                     cx.notify();
                 });
             }))
+            .on_action(cx.listener(|this, _: &ToggleArrow, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Arrow));
+                    cx.notify();
+                });
+            }))
             .on_action(cx.listener(|this, _: &TogglePolyline, window, cx| {
                 window.focus(&this.focus_handle, cx);
                 this.session.update(cx, |s, cx| {
@@ -639,7 +648,7 @@ impl Render for Overlay {
                                 Some(ContentMask { bounds: clip }),
                                 |window| {
                                     for shape in shapes {
-                                        if matches!(shape.kind, crate::annotation::ShapeKind::Line | crate::annotation::ShapeKind::Polyline) {
+                                        if matches!(shape.kind, crate::annotation::ShapeKind::Line | crate::annotation::ShapeKind::Arrow | crate::annotation::ShapeKind::Polyline) {
                                             for path in shape.line_paths(viewport.origin) {
                                                 window.paint_path(path, rgba(shape.color));
                                             }
@@ -739,6 +748,7 @@ impl Render for Overlay {
             )
             // ⑤ Bottom hint bar
             .child(hint_bar(match active_tool {
+                Some(crate::annotation::ShapeKind::Arrow) => Some("Drag to draw an arrow · Shift 45° · Esc leave tool"),
                 Some(crate::annotation::ShapeKind::Line) => Some("Drag to draw a line · Shift 45° · Esc leave tool"),
                 Some(crate::annotation::ShapeKind::Polyline) => Some("Click to add nodes · Double-click / Right-click / Enter finish · Shift 45° · Esc cancel"),
                 _ => None,
@@ -957,6 +967,15 @@ mod multi_output_tests {
 
     #[gpui_kit::test]
     fn line_and_polyline_pointer_keyboard_and_toolbar_workflows(cx: &mut TestAppContext) {
+        stroke_and_polyline_workflows(cx, crate::annotation::ShapeKind::Line);
+    }
+
+    #[gpui_kit::test]
+    fn arrow_and_polyline_share_keyboard_focus_history_and_export(cx: &mut TestAppContext) {
+        stroke_and_polyline_workflows(cx, crate::annotation::ShapeKind::Arrow);
+    }
+
+    fn stroke_and_polyline_workflows(cx: &mut TestAppContext, kind: crate::annotation::ShapeKind) {
         cx.update(|cx| {
             gpui_kit::base::init(cx);
             super::init_annotation_keybindings(cx);
@@ -988,8 +1007,21 @@ mod multi_output_tests {
             Default::default(),
         );
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let line_button = cx.debug_bounds("tb-line").unwrap();
+        let line_button = cx
+            .debug_bounds(if kind == crate::annotation::ShapeKind::Arrow {
+                "tb-arrow"
+            } else {
+                "tb-line"
+            })
+            .unwrap();
         cx.simulate_click(line_button.center(), Default::default());
+        if kind == crate::annotation::ShapeKind::Arrow {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.simulate_keystrokes("a");
+            cx.update(|_, cx| assert!(!session.read(cx).annotations().enabled()));
+            cx.simulate_keystrokes("a");
+            cx.update(|_, cx| assert_eq!(session.read(cx).annotations().tool(), Some(kind)));
+        }
         cx.simulate_mouse_down(
             point(px(50.), px(50.)),
             MouseButton::Left,
@@ -1009,7 +1041,7 @@ mod multi_output_tests {
                     .next()
                     .unwrap()
                     .kind,
-                crate::annotation::ShapeKind::Line
+                kind
             )
         });
         cx.simulate_keystrokes("p");

@@ -94,6 +94,16 @@ fill and rounded corners are not implemented yet.
 Currently supports solid strokes with round caps and joins. Vertex editing,
 dashes and configurable endpoint styles are planned follow-ups.
 
+### Arrow annotations
+
+Click the arrow icon or press `A`, then drag from the start toward the target and
+release to finish. Hold `Shift` for 45° increments. Arrows share colors, widths
+and undo history, with cross-screen preview and antialiased export. The head
+scales with stroke width and shrinks for short arrows.
+
+Currently supports a filled triangular head and a solid shaft. Endpoint editing,
+alternative arrow styles and comment text are planned follow-ups.
+
 ### OCR
 
 The first `Ctrl+O` asks before downloading the models (~31 MB, one time);
