@@ -121,7 +121,7 @@ fn main() {
 
     // ② Overlays (one per screen)
     gpui_kit::application()
-        .with_assets(shotori::ui::toolbar::ToolbarAssets)
+        .with_assets(shotori::ui::toolbar::ToolbarSource)
         .run(move |cx| {
             gpui_kit::base::init(cx);
             shotori::ui::ocr_setup::init(cx);

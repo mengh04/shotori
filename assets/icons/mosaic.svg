@@ -1,0 +1,29 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="none"
+  role="img"
+  aria-label="mosaic"
+>
+  <!-- Mosaic / pixelate. Lucide has no fitting glyph (its grids read as
+       "table"), so this is shotori's own icon. Lucide conventions kept
+       (24×24 canvas, currentColor) so it tints with the toolbar text
+       color like every other icon; filled rounded blocks of MIXED sizes
+       are the point — uniform cells would read as a plain grid. -->
+  <g fill="currentColor">
+    <rect x="1.5" y="1.5" width="10" height="10" rx="1.5" />
+    <rect x="12.5" y="1.5" width="4.5" height="4.5" rx="1" />
+    <rect x="18" y="1.5" width="4.5" height="4.5" rx="1" />
+    <rect x="12.5" y="7" width="4.5" height="4.5" rx="1" />
+    <rect x="18" y="7" width="4.5" height="4.5" rx="1" />
+    <rect x="1.5" y="12.5" width="4.5" height="10" rx="1.5" />
+    <rect x="7" y="12.5" width="4.5" height="4.5" rx="1" />
+    <rect x="7" y="18" width="4.5" height="4.5" rx="1" />
+    <rect x="12.5" y="12.5" width="10" height="4.5" rx="1.5" />
+    <rect x="12.5" y="18" width="4.5" height="4.5" rx="1" />
+    <rect x="18" y="18" width="4.5" height="4.5" rx="1" />
+  </g>
+</svg>

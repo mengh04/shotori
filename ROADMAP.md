@@ -733,6 +733,56 @@ platform, never back up. OCR's download orchestration (~120 lines) stays
 in overlay for now — it is entangled with the Overlay entity state and
 moving it is risk without payoff. overlay.rs: 783 → 709 lines.
 
+## Custom icon assets + toolbar cursor fix (2026-09-27)
+
+Two follow-ups from the selection-editing release, both user-reported:
+
+### 1. The mosaic icon
+
+The toolbar's mosaic glyph was a hand-built 3×3 checkerboard of divs
+(two fixed grays, rounded cells) — it didn't tint with the theme, didn't
+match the Lucide stroke icons around it, and read as noise. The Lucide
+catalog (1830 icons in gpui-kit-assets 0.6.6) has no true
+mosaic/pixelate glyph — `grid-2x2`/`grid-3x3` are line grids that read
+as "table", `layout-grid` as "dashboard".
+
+So shotori now maintains its own icons: `assets/icons/mosaic.svg`
+(Mondrian-style blocks of MIXED sizes on a Lucide-convention 24×24
+canvas, `fill="currentColor"` so it follows the toolbar text color like
+every other icon; uniform cells were rejected — they read as a plain
+grid). Wiring follows the gpui-kit-assets composition contract:
+
+- `rust_embed` (same 8.x line the kit already compiles) embeds
+  `assets/icons` as `OwnIcons`
+- `ToolbarSource` implements `AssetSource`: own icons first, then the
+  `icon_assets!`-selected Lucide set — registered app-wide via
+  `with_assets` in main.rs
+- `mosaic_dark`/`mosaic_light` theme keys removed everywhere (theme
+  struct, load.rs parser/serializer, example json); serde ignores
+  unknown fields, so existing user theme files still load
+
+### 2. Cursor over the inset toolbar
+
+When a selection reaches the screen bottom, the toolbar parks INSIDE
+the box (bottom-left) — and the window-level cursor push reported the
+press-target beneath it (open hand), which felt wrong. The cursor
+computation now hit-tests the toolbar rect FIRST and yields Arrow over
+it. The rect is recomputed from the same pure geometry the render side
+uses (`local_bounds` + `round_px` + `toolbar_anchor` + the toolbar's
+actual width clamp), so the two cannot drift; `session.overlay_size()`
+exposes the window size the render path gets from the platform.
+
+### Verification
+
+- `toolbar_icons_are_bundled` now loads through the composed source and
+  asserts `icons/mosaic.svg` resolves
+- new pipeline test `cursor_reflects_interior_handles_and_the_inset_toolbar`:
+  interior → OpenHand, over the inset toolbar (still inside the
+  selection) → Arrow, corner handle → its resize arrow
+- full suite 158 green; clippy/fmt clean; slim build ok
+- Live: vision-checked the toolbar render — Mondrian glyph present,
+  consistent color/size with neighbors, aligned, no blur
+
 ## Selection editing in place: move + resize (2026-09-27)
 
 A drawn selection is no longer set in stone (previously ANY press while

@@ -59,10 +59,6 @@ pub struct Theme {
     /// without it), so it does not simply reuse `toolbar_border`.
     pub swatch_border: u32,
 
-    /// Mosaic tool icon grays (keep the filled icon visually quiet).
-    pub mosaic_dark: u32,
-    pub mosaic_light: u32,
-
     /// Annotation swatch palette (opaque — exported PNGs must be solid).
     pub annotation_colors: [u32; PALETTE],
 }
@@ -85,8 +81,6 @@ impl Theme {
             toolbar_hover: 0x2C2C3AFF,
             toolbar_selected: 0x453528FF,
             swatch_border: 0xFFFFFF38,
-            mosaic_dark: 0x858A93FF,
-            mosaic_light: 0xCDD0D6FF,
             annotation_colors: [
                 0xFF4545FF, 0xFF8A32FF, 0xFFD43BFF, 0x40C878FF, 0x409CFFFF, 0x222222FF, 0xFFFFFFFF,
             ],

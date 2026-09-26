@@ -42,8 +42,6 @@ pub struct ThemeFile {
     pub toolbar_hover: Option<String>,
     pub toolbar_selected: Option<String>,
     pub swatch_border: Option<String>,
-    pub mosaic_dark: Option<String>,
-    pub mosaic_light: Option<String>,
     /// Up to [`PALETTE`] colors; missing tail keeps the base values.
     pub annotation_colors: Option<Vec<String>>,
 }
@@ -127,8 +125,6 @@ pub fn apply(theme: &mut Theme, file: &ThemeFile) -> Result<(), Vec<String>> {
     color!(toolbar_hover);
     color!(toolbar_selected);
     color!(swatch_border);
-    color!(mosaic_dark);
-    color!(mosaic_light);
 
     if let Some(list) = &file.annotation_colors {
         if list.len() > PALETTE {
@@ -249,8 +245,6 @@ fn print_theme(theme: &Theme, source: &Source) {
     let _ = writeln!(out, "toolbar_hover  {}", to_hex(theme.toolbar_hover));
     let _ = writeln!(out, "toolbar_selected {}", to_hex(theme.toolbar_selected));
     let _ = writeln!(out, "swatch_border   {}", to_hex(theme.swatch_border));
-    let _ = writeln!(out, "mosaic_dark    {}", to_hex(theme.mosaic_dark));
-    let _ = writeln!(out, "mosaic_light   {}", to_hex(theme.mosaic_light));
     let palette = theme
         .annotation_colors
         .iter()

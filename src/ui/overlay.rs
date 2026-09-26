@@ -21,6 +21,7 @@ use crate::actions::{
     ToggleMosaic, ToggleNumber, TogglePencil, TogglePolyline, ToggleRectangle, ToggleText,
     UndoAnnotation,
 };
+use crate::model::placement::{ROW_H, TB_H, TB_W, toolbar_anchor};
 use crate::model::selection::{PressTarget, Selection};
 use crate::platform::capture::Capture;
 use crate::ui::hud::{
@@ -156,6 +157,36 @@ impl Overlay {
             Selection::Moving { .. } => CursorStyle::ClosedHand,
             Selection::Resizing { handle, .. } => handle_cursor(handle),
             _ => {
+                // The toolbar can sit INSIDE the box (selection reaching the
+                // screen bottom): over it the toolbar owns the cursor, not
+                // the move/resize affordance. Same geometry the render side
+                // uses (local intersection + anchor), so the two cannot
+                // drift apart.
+                if session.active_on(&self.capture.output_name)
+                    && let Some(sel) = session
+                        .local_bounds(&self.capture.output_name)
+                        .map(round_px)
+                    && let Some(ws) = session.overlay_size(&self.capture.output_name)
+                {
+                    let height = if session.annotations().enabled() {
+                        TB_H
+                    } else {
+                        ROW_H
+                    };
+                    let (x, y) = toolbar_anchor(&sel, ws, height);
+                    let w = TB_W.min((f32::from(ws.width) - 16.).max(1.));
+                    let toolbar = Bounds {
+                        origin: point(px(x), px(y)),
+                        size: size(px(w), px(height)),
+                    };
+                    if self
+                        .pointer_local
+                        .get()
+                        .is_some_and(|p| toolbar.contains(&p))
+                    {
+                        return CursorStyle::Arrow;
+                    }
+                }
                 if session.annotations().enabled() {
                     return CursorStyle::Crosshair;
                 }
@@ -1121,7 +1152,7 @@ fn round_px(b: Bounds<Pixels>) -> Bounds<Pixels> {
 mod multi_output_tests {
     use super::Overlay;
     use crate::{model::session::ScreenshotSession, platform::capture::Capture};
-    use gpui_kit::{AppContext, MouseButton, TestAppContext, point, px, size};
+    use gpui_kit::{AppContext, CursorStyle, MouseButton, TestAppContext, point, px, size};
     use std::sync::Arc;
 
     #[gpui_kit::test]
@@ -1310,6 +1341,76 @@ mod multi_output_tests {
             assert_eq!(b.origin, point(px(90.), px(80.)));
             assert_eq!(b.size, size(px(140.), px(110.)));
             assert_eq!(shared.crop("main").unwrap().0, 140); // export follows
+        });
+    }
+
+    #[gpui_kit::test]
+    fn cursor_reflects_interior_handles_and_the_inset_toolbar(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::base::init);
+        let mut capture = Capture::for_test((0, 0), 1.);
+        capture.output_name = "main".into();
+        capture.width = 400;
+        capture.height = 400;
+        capture.rgba = vec![255; 400 * 400 * 4];
+        let capture = Arc::new(capture);
+        let session = cx.new(|_| ScreenshotSession::new(vec![capture.clone()], Vec::new()));
+        let (overlay, vcx) =
+            cx.add_window_view(|window, cx| Overlay::new(capture, session.clone(), window, cx));
+        vcx.simulate_resize(size(px(400.), px(400.)));
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        vcx.run_until_parked();
+
+        // A selection that reaches the screen bottom parks the toolbar
+        // INSIDE the box (bottom-left): anchor math puts it at (8,344) —
+        // width clamped to 384 on this narrow window.
+        vcx.simulate_mouse_down(
+            point(px(50.), px(150.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_move(
+            point(px(350.), px(390.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_up(
+            point(px(350.), px(390.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+
+        // interior (above the toolbar): move affordance
+        vcx.simulate_mouse_move(
+            point(px(200.), px(200.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        vcx.update(|_, cx| assert_eq!(overlay.read(cx).cursor.get(), CursorStyle::OpenHand));
+
+        // over the inset toolbar: the toolbar owns the cursor, even though
+        // the point is still inside the selection
+        vcx.simulate_mouse_move(
+            point(px(200.), px(363.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        vcx.update(|_, cx| assert_eq!(overlay.read(cx).cursor.get(), CursorStyle::Arrow));
+
+        // the bottom-right corner handle: its resize arrow
+        vcx.simulate_mouse_move(
+            point(px(350.), px(390.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            assert_eq!(
+                overlay.read(cx).cursor.get(),
+                CursorStyle::ResizeUpLeftDownRight
+            )
         });
     }
 
