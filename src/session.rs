@@ -474,6 +474,7 @@ mod tests {
             crate::annotation::ShapeKind::Line,
             crate::annotation::ShapeKind::Arrow,
             crate::annotation::ShapeKind::Polyline,
+            crate::annotation::ShapeKind::Pencil,
         ] {
             let mut s = session();
             s.begin("left", point(px(80.), px(20.)));

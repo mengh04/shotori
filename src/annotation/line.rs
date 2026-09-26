@@ -4,6 +4,16 @@ use gpui_kit::{Path, PathBuilder, Pixels, Point, point, px};
 /// A stroke is a union of capsules: round endpoints and round joins, including
 /// reversals and self-intersections. Both rendering paths use these polygons.
 fn polygons(points: &[Point<Pixels>], width: f32) -> Vec<Vec<Point<Pixels>>> {
+    if let [center] = points {
+        return vec![
+            (0..32)
+                .map(|i| {
+                    let (sin, cos) = (i as f32 * std::f32::consts::TAU / 32.).sin_cos();
+                    *center + point(px(cos * width / 2.), px(sin * width / 2.))
+                })
+                .collect(),
+        ];
+    }
     points
         .windows(2)
         .filter_map(|pair| {
@@ -122,6 +132,16 @@ pub(super) fn rasterize(
         .fold(f32::NEG_INFINITY, f32::max)
         .ceil()
         .clamp(0., w as f32) as usize;
+    let vertical_bounds: Vec<_> = polygons
+        .iter()
+        .map(|polygon| {
+            polygon
+                .iter()
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(top, bottom), p| {
+                    (top.min(f32::from(p.y)), bottom.max(f32::from(p.y)))
+                })
+        })
+        .collect();
     let mut coverage = vec![0_f32; right - left];
     let mut intervals = Vec::with_capacity(polygons.len());
     let color = shape.color.to_be_bytes();
@@ -130,7 +150,10 @@ pub(super) fn rasterize(
         for sample in 0..8 {
             let y = row as f32 + (sample as f32 + 0.5) / 8.;
             intervals.clear();
-            for polygon in &polygons {
+            for (polygon, &(top, bottom)) in polygons.iter().zip(&vertical_bounds) {
+                if y < top || y >= bottom {
+                    continue;
+                }
                 let mut lo = f32::INFINITY;
                 let mut hi = f32::NEG_INFINITY;
                 for (a, b) in polygon.iter().zip(polygon.iter().cycle().skip(1)) {

@@ -123,6 +123,16 @@ custom digit-outline code. Preview and export share badge rasterization at their
 target scale; preview images are cached by position, style and DPI. See the
 [font license](assets/DejaVuSans-LICENSE.txt).
 
+### Pencil annotations
+
+Click the pencil icon or press `B`, then drag inside the selection to draw freely.
+A click places a round dot. Colors and the three stroke widths are shared with
+other drawing tools. Each drag is one undo/redo step; `Esc` cancels an unfinished
+stroke. Supports cross-screen drawing and antialiased export.
+
+Straight-segment mode, wheel width adjustment and configurable smoothing remain
+follow-ups.
+
 ### OCR
 
 The first `Ctrl+O` asks before downloading the models (~31 MB, one time);

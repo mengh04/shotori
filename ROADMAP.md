@@ -687,7 +687,9 @@ time, with shared desktop coordinates, preview, history, and PNG export.
    shared colors/history, global numbering across screens, multi-digit labels
    and shared `ab_glyph` rasterization with a bundled font for preview/export. Custom starting values, alternate
    sequences, leader arrows and comments remain follow-ups.
-6. Pencil.
+6. Implemented: pencil — freehand strokes and click dots, shared colors/widths,
+   whole-stroke history, cross-output preview and antialiased export. Straight-segment
+   mode, wheel width adjustment and configurable smoothing remain follow-ups.
 7. Highlighter.
 8. Mosaic and blur (smart erasing requires a separate feasibility review).
 9. Text.

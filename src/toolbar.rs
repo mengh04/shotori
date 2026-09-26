@@ -4,16 +4,16 @@ use gpui_kit::{assets::IconName, base::Button, *};
 use crate::{
     overlay::{
         CopySelection, OcrSelection, QuitOverlay, SaveSelection, ToggleArrow, ToggleEllipse,
-        ToggleLine, ToggleNumber, TogglePolyline, ToggleRectangle,
+        ToggleLine, ToggleNumber, TogglePencil, TogglePolyline, ToggleRectangle,
     },
     session::ScreenshotSession,
     theme,
 };
 
 // The default GPUI asset bundle does not include every toolbar icon.
-gpui_kit::assets::icon_assets!(pub ToolbarAssets, [Square, Circle, Slash, Waypoints, ArrowUpRight, ListOrdered, ScanText, Save, X, Copy]);
+gpui_kit::assets::icon_assets!(pub ToolbarAssets, [Pencil, Square, Circle, Slash, Waypoints, ArrowUpRight, ListOrdered, ScanText, Save, X, Copy]);
 
-const TB_W: f32 = 364.;
+const TB_W: f32 = 396.;
 const ROW_H: f32 = 38.;
 pub(crate) const TB_H: f32 = ROW_H * 2. + 6.;
 const EDGE_B: f32 = 12.;
@@ -119,6 +119,18 @@ pub(crate) fn selection_toolbar(
                         },
                     )
                     .selected(number_tool),
+                )
+                .child(
+                    icon_button(
+                        "tb-pencil",
+                        "Pencil · B",
+                        IconName::Pencil,
+                        focus.clone(),
+                        |window, cx| {
+                            window.dispatch_action(Box::new(TogglePencil), cx);
+                        },
+                    )
+                    .selected(annotations.tool() == Some(crate::annotation::ShapeKind::Pencil)),
                 )
                 .child(div().flex_1())
                 .child(icon_button(
@@ -357,6 +369,7 @@ mod tests {
     fn toolbar_icons_are_bundled() {
         use gpui_kit::{AssetSource, assets::IconName};
         for icon in [
+            IconName::Pencil,
             IconName::Square,
             IconName::Circle,
             IconName::Slash,

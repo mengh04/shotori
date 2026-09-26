@@ -30,6 +30,7 @@ gpui_kit::actions!([
     ToggleLine,
     ToggleArrow,
     ToggleNumber,
+    TogglePencil,
     TogglePolyline,
     FinishPolyline,
     UndoAnnotation,
@@ -43,6 +44,7 @@ pub fn init_annotation_keybindings(cx: &mut App) {
         KeyBinding::new("e", ToggleEllipse, Some("ShotoriOverlay")),
         KeyBinding::new("l", ToggleLine, Some("ShotoriOverlay")),
         KeyBinding::new("a", ToggleArrow, Some("ShotoriOverlay")),
+        KeyBinding::new("b", TogglePencil, Some("ShotoriOverlay")),
         KeyBinding::new("n", ToggleNumber, Some("ShotoriOverlay")),
         KeyBinding::new("p", TogglePolyline, Some("ShotoriOverlay")),
         KeyBinding::new("enter", FinishPolyline, Some("PolylineDrawing")),
@@ -524,6 +526,13 @@ impl Render for Overlay {
                     cx.notify();
                 });
             }))
+            .on_action(cx.listener(|this, _: &TogglePencil, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Pencil));
+                    cx.notify();
+                });
+            }))
             .on_action(cx.listener(|this, _: &TogglePolyline, window, cx| {
                 window.focus(&this.focus_handle, cx);
                 this.session.update(cx, |s, cx| {
@@ -670,7 +679,7 @@ impl Render for Overlay {
                                             }
                                             continue;
                                         }
-                                        if matches!(shape.kind, crate::annotation::ShapeKind::Line | crate::annotation::ShapeKind::Arrow | crate::annotation::ShapeKind::Polyline) {
+                                        if matches!(shape.kind, crate::annotation::ShapeKind::Line | crate::annotation::ShapeKind::Arrow | crate::annotation::ShapeKind::Polyline | crate::annotation::ShapeKind::Pencil) {
                                             for path in shape.line_paths(viewport.origin) {
                                                 window.paint_path(path, rgba(shape.color));
                                             }
@@ -773,6 +782,7 @@ impl Render for Overlay {
                 Some(crate::annotation::ShapeKind::Number) => Some("Click to add a number · Drag to position · Ctrl+Z undo · Esc leave tool"),
                 Some(crate::annotation::ShapeKind::Arrow) => Some("Drag to draw an arrow · Shift 45° · Esc leave tool"),
                 Some(crate::annotation::ShapeKind::Line) => Some("Drag to draw a line · Shift 45° · Esc leave tool"),
+                Some(crate::annotation::ShapeKind::Pencil) => Some("Drag to draw · Click for a dot · Esc cancel"),
                 Some(crate::annotation::ShapeKind::Polyline) => Some("Click to add nodes · Double-click / Right-click / Enter finish · Shift 45° · Esc cancel"),
                 _ => None,
             }))
@@ -1003,6 +1013,11 @@ mod multi_output_tests {
         stroke_and_polyline_workflows(cx, crate::annotation::ShapeKind::Number);
     }
 
+    #[gpui_kit::test]
+    fn pencil_toolbar_and_curve_share_history(cx: &mut TestAppContext) {
+        stroke_and_polyline_workflows(cx, crate::annotation::ShapeKind::Pencil);
+    }
+
     fn stroke_and_polyline_workflows(cx: &mut TestAppContext, kind: crate::annotation::ShapeKind) {
         cx.update(|cx| {
             gpui_kit::base::init(cx);
@@ -1039,6 +1054,7 @@ mod multi_output_tests {
             .debug_bounds(match kind {
                 crate::annotation::ShapeKind::Arrow => "tb-arrow",
                 crate::annotation::ShapeKind::Number => "tb-number",
+                crate::annotation::ShapeKind::Pencil => "tb-pencil",
                 _ => "tb-line",
             })
             .unwrap();
@@ -1068,6 +1084,13 @@ mod multi_output_tests {
             MouseButton::Left,
             Default::default(),
         );
+        if kind == crate::annotation::ShapeKind::Pencil {
+            cx.simulate_mouse_move(
+                point(px(90.), px(90.)),
+                MouseButton::Left,
+                Default::default(),
+            );
+        }
         cx.simulate_mouse_up(
             point(px(180.), px(50.)),
             MouseButton::Left,
@@ -1085,6 +1108,22 @@ mod multi_output_tests {
                 kind
             )
         });
+        if kind == crate::annotation::ShapeKind::Pencil {
+            cx.update(|_, cx| {
+                let marks = session.read(cx).annotations();
+                assert_eq!(
+                    marks.visible().next().unwrap().points,
+                    vec![
+                        point(px(50.), px(50.)),
+                        point(px(90.), px(90.)),
+                        point(px(180.), px(50.))
+                    ]
+                );
+            });
+            cx.simulate_keystrokes("b");
+            cx.update(|_, cx| assert!(!session.read(cx).annotations().enabled()));
+            cx.simulate_keystrokes("b");
+        }
         cx.simulate_keystrokes("p");
         cx.update(|window, cx| window.draw(cx).clear(cx));
         for (x, y) in [(50., 80.), (100., 150.), (180., 80.)] {

@@ -8,6 +8,7 @@ use gpui_kit::{Bounds, Path, PathBuilder, Pixels, Point, point, px, size};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ShapeKind {
     Number,
+    Pencil,
     Rectangle,
     Ellipse,
     Line,
@@ -266,6 +267,8 @@ impl Annotations {
                     Some(ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Polyline)
                 ) {
                     vec![p, p]
+                } else if self.tool == Some(ShapeKind::Pencil) {
+                    vec![p]
                 } else {
                     Vec::new()
                 },
@@ -282,6 +285,14 @@ impl Annotations {
         let Some(draft) = self.draft.as_mut() else {
             return false;
         };
+        if draft.shape.kind == ShapeKind::Pencil {
+            let end = line_endpoint(draft.start, p, selection, false);
+            if draft.shape.points.last() == Some(&end) {
+                return false;
+            }
+            draft.shape.points.push(end);
+            return true;
+        }
         if draft.shape.kind == ShapeKind::Number {
             let bounds = number_bounds(p, selection, f32::from(draft.shape.bounds.size.width));
             let changed = bounds != draft.shape.bounds;
@@ -355,6 +366,8 @@ impl Annotations {
         if let Some(draft) = self.draft.take() {
             let valid = if matches!(draft.shape.kind, ShapeKind::Line | ShapeKind::Arrow) {
                 distance(draft.shape.points[0], draft.shape.points[1]) >= 2.
+            } else if draft.shape.kind == ShapeKind::Pencil {
+                true
             } else {
                 draft.shape.bounds.size.width >= px(2.) && draft.shape.bounds.size.height >= px(2.)
             };
@@ -438,7 +451,7 @@ impl Annotations {
             }
             if matches!(
                 shape.kind,
-                ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Polyline
+                ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Polyline | ShapeKind::Pencil
             ) {
                 line::rasterize(shape, rgba, w, h, origin, scale);
                 continue;
@@ -557,6 +570,63 @@ mod tests {
         a.begin(point(px(10.), px(10.)), selection());
         a.drag_to(point(px(30.), px(40.)), selection(), false);
         a.end();
+    }
+
+    #[test]
+    fn pencil_records_curve_and_release_as_one_history_entry() {
+        let mut a = Annotations::default();
+        a.toggle(super::ShapeKind::Pencil);
+        let points =
+            [(0., 10.), (15., 25.), (30., 10.), (40., 35.)].map(|(x, y)| point(px(x), px(y)));
+        a.begin(points[0], selection());
+        for p in &points[1..] {
+            assert!(a.drag_to(*p, selection(), false));
+            assert!(!a.drag_to(*p, selection(), false));
+        }
+        a.end();
+        assert!(!a.drag_to(point(px(70.), px(70.)), selection(), false));
+        assert_eq!(a.visible().next().unwrap().points, points);
+        a.undo();
+        assert_eq!(a.visible().count(), 0);
+        a.redo();
+        assert_eq!(a.visible().next().unwrap().points, points);
+        a.begin(points[0], selection());
+        a.drag_to(point(px(200.), px(-40.)), selection(), false);
+        assert_eq!(
+            *a.visible().last().unwrap().points.last().unwrap(),
+            point(px(80.), px(0.))
+        );
+        a.cancel();
+        assert_eq!(a.visible().count(), 1);
+    }
+
+    #[test]
+    fn pencil_click_exports_round_dot_at_fractional_scales() {
+        let mut a = Annotations::default();
+        a.toggle(super::ShapeKind::Pencil);
+        a.set_width(2);
+        a.begin(point(px(20.), px(20.)), selection());
+        a.end();
+        assert_eq!(a.visible().count(), 1);
+        assert_eq!(
+            a.visible()
+                .next()
+                .unwrap()
+                .line_paths(point(px(0.), px(0.)))
+                .len(),
+            1
+        );
+        for scale in [1., 1.25, 1.7, 2.] {
+            let mut pixels = vec![255; 100 * 100 * 4];
+            let center = (20. * scale) as usize;
+            // Transparent gaps between screens must remain transparent.
+            pixels[(center * 100 + center + 1) * 4 + 3] = 0;
+            a.rasterize(&mut pixels, 100, 100, point(px(0.), px(0.)), scale);
+            let at = |x, y| &pixels[(y * 100 + x) * 4..(y * 100 + x) * 4 + 4];
+            assert_eq!(at(center, center), a.color().0.to_be_bytes());
+            assert_eq!(at(center + 1, center)[3], 0);
+            assert_eq!(at(center + 5, center + 5), [255; 4]);
+        }
     }
 
     #[test]
