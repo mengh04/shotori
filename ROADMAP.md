@@ -799,7 +799,12 @@ flex children of ROW ONE, `h(ROW_H)` (no vertical slack), and
 GRIP_W × ROW_H, row one only). BAR_PAD is a placement constant both
 sides share — one geometry, pixel-identical by construction. Rule:
 never compute a hit-test rect from layout side effects; derive both
-the element and the hit-test from the same constants.
+the element and the hit-test from the same constants. (Same-day
+footnote: the fix rewrite dropped the outer flex `gap` between dot
+columns — the airy matte matrix collapsed into tight triple lines;
+caught by the user, restored, and pixel-verified against the liked
+build with a thresholded crop comparison. Vision models misjudge
+textures at this scale; pixels don't lie.)
 
 ## Custom icon assets + toolbar cursor fix (2026-09-27)
 
