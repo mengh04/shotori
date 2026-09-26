@@ -2,10 +2,11 @@
 
 [![Crates.io](https://img.shields.io/crates/v/shotori.svg)](https://crates.io/crates/shotori)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Wayland-8892bf)
+![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-8892bf)
 
 Wayland 原生的截图工具，内置本地 OCR——整套 UI 用
-[gpui-kit](https://crates.io/crates/gpui-kit) 手绘。
+[gpui-kit](https://crates.io/crates/gpui-kit) 手绘。同样支持
+Windows（GDI 捕获、Win32 剪贴板、Toast 通知）。
 
 冻结屏幕、拖框选区，然后复制、保存，或者把图里的文字直接读出来——
 全程不用碰鼠标。
@@ -23,23 +24,44 @@ Wayland 原生的截图工具，内置本地 OCR——整套 UI 用
 
 ## 环境要求
 
-- Linux + wlroots 系 Wayland 合成器（niri、sway、Hyprland……）
+**Linux**（第一梯队平台）：
+
+- wlroots 系 Wayland 合成器（niri、sway、Hyprland……）
 - 保存对话框依赖 `xdg-desktop-portal`（绝大多数桌面发行版默认就有）
 - 通知 daemon（dunst、mako、swaync……）可选
+
+**Windows**（10/11）：
+
+- 系统自带的一切即可：捕获走 GDI，剪贴板是 Win32，通知为 WinRT
+  Toast，点击吸附窗口通过 `EnumWindows` 实现
 
 ## 安装
 
 ```bash
-cargo install shotori        # crates.io
+cargo install shotori        # crates.io（Linux 和 Windows）
 paru -S shotori              # AUR（预编译二进制）
 ```
 
 也可以从 [GitHub Releases](https://github.com/mengh04/shotori/releases)
-直接下载二进制。绑到键位上，比如 niri：
+直接下载二进制（Linux tar 包、Windows zip）。绑到键位上，比如 niri：
 
 ```kdl
 Mod+Shift+S { spawn "shotori"; }
 ```
+
+Windows 上绑键位和托盘两种方式都行：
+
+- **托盘**（推荐）：`shotori tray` 常驻系统托盘，点击图标（或菜单）即
+  可截图。把快捷方式放进 `shell:startup` 即可开机自启。
+- **纯热键**：在桌面（或开始菜单）创建指向 `shotori.exe` 的快捷方式，
+  属性里填好"快捷键"一栏，Explorer 会全局注册该热键。注意快捷键栏
+  强制要求修饰键（单键或特殊组合需 PowerToys Keyboard Manager 的
+  "运行程序"映射或一行 AutoHotkey 脚本），且 Explorer 快捷方式链路
+  的启动延迟比较明显。
+
+Linux 上同一个 `shotori tray` 走 StatusNotifierItem（waybar、KDE
+Plasma、GNOME appindicator 扩展）；也可以继续用合成器键位
+`spawn "shotori"`。
 
 ## 用法
 
@@ -129,7 +151,8 @@ Mod+Shift+S { spawn "shotori"; }
 ### OCR
 
 首次按 `Ctrl+O` 会先询问再下载模型（~31MB，仅一次），之后完全离线。
-模型缓存在 `~/.local/share/shotori/ocr-models/`。画选区的同时引擎在
+模型缓存在 `~/.local/share/shotori/ocr-models/`（Windows 为
+`%LOCALAPPDATA%\shotori\ocr-models\`）。画选区的同时引擎在
 后台预热，通常几百毫秒内出结果。过小的文字识别吃力，HiDPI 屏表现
 更好。
 

@@ -8,11 +8,12 @@
 //! connection — geometry is the only way to line them up.
 //!
 //! **Matching algorithm (one rule only — resist adding complexity)**:
-//! gpui's display bounds origin = the output's logical position ÷ the
-//! wl_output integer scale (the backend does the division itself; measured
-//! by comparison: eDP 1920,0→960,0; DP-2 -720,-100→-360,-50).
-//! Positions are unique in a multi-monitor layout → match on position only,
-//! ignore sizes (fractional scales report no true value, see
+//! gpui's display bounds origin = the capture's logical position ÷ its
+//! scale. On Linux the backend divides the output's logical position by
+//! the wl_output integer scale and on Windows by the effective-DPI scale
+//! (both verified against the backend sources); positions are unique in
+//! a multi-monitor layout → match on position only, ignore sizes
+//! (fractional scales report no true value, see
 //! [`crate::platform::capture::Capture::scale`]).
 //!
 //! **Timing**: displays() is always empty during synchronous startup
@@ -83,7 +84,8 @@ fn match_all(cx: &App, targets: &mut [(Capture, Option<DisplayId>)], final_round
 }
 
 /// The origin this capture should have in gpui coordinates
-/// (logical position ÷ integer scale)
+/// (logical position ÷ scale — the same division both gpui backends
+/// perform on their display bounds)
 fn expected_origin(cap: &Capture) -> (f32, f32) {
     (
         cap.logical_pos.0 as f32 / cap.scale,

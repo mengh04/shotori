@@ -20,7 +20,26 @@ use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_manager_v1::{self, ZwlrScreencopyManagerV1},
 };
 
-pub(super) use wl_output::Transform as OutputTransform;
+use super::Transform;
+
+/// Map the protocol's transform onto the platform-neutral enum (the
+/// word around `_90` semantics is preserved by pixels::rotate_rgba)
+impl From<wl_output::Transform> for Transform {
+    fn from(t: wl_output::Transform) -> Self {
+        use wl_output::Transform as T;
+        match t {
+            T::Normal => Self::Normal,
+            T::_90 => Self::Rot90,
+            T::_180 => Self::Rot180,
+            T::_270 => Self::Rot270,
+            T::Flipped => Self::Flipped,
+            T::Flipped90 => Self::Flipped90,
+            T::Flipped180 => Self::Flipped180,
+            T::Flipped270 => Self::Flipped270,
+            _ => Self::Normal,
+        }
+    }
+}
 
 #[derive(Default)]
 pub(super) struct App {
@@ -42,7 +61,7 @@ pub(super) struct OutputState {
     /// until the event arrives (or ever, if the protocol is absent)
     pub logical_size: Option<(i32, i32)>,
     pub scale: f32,
-    pub transform: OutputTransform,
+    pub transform: Transform,
     pub frame: Option<FrameState>,
 }
 
@@ -163,7 +182,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for App {
                         logical_pos: (0, 0),
                         logical_size: None,
                         scale: 1.,
-                        transform: OutputTransform::Normal,
+                        transform: Transform::Normal,
                         frame: None,
                     });
                 }
@@ -191,7 +210,10 @@ impl Dispatch<wl_output::WlOutput, usize> for App {
                 x, y, transform, ..
             } => {
                 o.logical_pos = (x, y);
-                o.transform = transform.into_result().unwrap_or(OutputTransform::Normal);
+                o.transform = transform
+                    .into_result()
+                    .map(Transform::from)
+                    .unwrap_or(Transform::Normal);
             }
             wl_output::Event::Scale { factor } => o.scale = factor as f32,
             _ => {}

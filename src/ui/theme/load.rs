@@ -165,12 +165,16 @@ pub fn load_file(path: &Path) -> Result<(Theme, Vec<String>), String> {
     Ok((theme, errs))
 }
 
-/// `$XDG_CONFIG_HOME/shotori/theme.json`, falling back to
-/// `~/.config/shotori/theme.json`.
+/// The auto-pickup config file: `$XDG_CONFIG_HOME/shotori/theme.json`
+/// (falling back to `~/.config/shotori/theme.json`) on Linux,
+/// `%APPDATA%\shotori\theme.json` on Windows.
 pub fn config_path() -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    #[cfg(target_os = "windows")]
+    let base = std::env::var_os("APPDATA").map(PathBuf::from)?;
     Some(base.join("shotori").join("theme.json"))
 }
 

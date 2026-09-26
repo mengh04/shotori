@@ -3,7 +3,9 @@
 //! No wayland/gpui dependencies; everything is unit-testable (rotation
 //! semantics were calibrated against grim; small matrices lock them in here).
 
-use super::wayland::OutputTransform;
+use super::Transform;
+
+#[cfg(target_os = "linux")]
 use wayland_client::protocol::wl_shm;
 
 /// wl_shm format names describe the byte order of the 32-bit word
@@ -12,6 +14,7 @@ use wayland_client::protocol::wl_shm;
 ///   Xbgr8888 (XB24) → memory R,G,B,X   Abgr8888 → memory R,G,B,A
 /// Note: the core wl_shm protocol's format is an ordinal (xrgb8888=1),
 /// NOT a DRM fourcc!
+#[cfg(target_os = "linux")]
 pub(super) fn convert_to_rgba(
     bytes: &[u8],
     format: wl_shm::Format,
@@ -50,22 +53,25 @@ pub(super) fn convert_to_rgba(
 
 /// Size after transform (90/270 swap width and height; 180 and the flipped
 /// family keep them)
-pub(super) fn rotated_size(w: u32, h: u32, t: OutputTransform) -> (u32, u32) {
-    use OutputTransform::*;
+// only the wayland backend captures un-rotated buffers today; the windows
+// backend keeps the pure functions exercised through tests
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(super) fn rotated_size(w: u32, h: u32, t: Transform) -> (u32, u32) {
+    use Transform::*;
     match t {
-        Normal | _180 | Flipped | Flipped180 => (w, h),
+        Normal | Rot180 | Flipped | Flipped180 => (w, h),
         _ => (h, w),
     }
 }
 
-/// Rotate pixels per the wl_output transform so the orientation matches what
+/// Rotate pixels per the output transform so the orientation matches what
 /// the screen shows. The physical buffer is in the untransformed orientation.
-/// Note: niri's "90° counter-clockwise" (_90) actually fills the panel by
+/// Note: niri's "90° counter-clockwise" (Rot90) actually fills the panel by
 /// rotating the buffer **clockwise** 90° (opposite of the protocol wording;
 /// pinned down by comparing against grim).
-#[allow(clippy::just_underscores_and_digits)] // _90/_180/_270 are protocol-generated enum names
-pub(super) fn rotate_rgba(rgba: Vec<u8>, w: u32, h: u32, t: OutputTransform) -> Vec<u8> {
-    use OutputTransform::*;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(super) fn rotate_rgba(rgba: Vec<u8>, w: u32, h: u32, t: Transform) -> Vec<u8> {
+    use Transform::*;
     let (rw, _rh) = rotated_size(w, h, t);
     let mut out = vec![0u8; rgba.len()];
     for y in 0..h {
@@ -73,10 +79,10 @@ pub(super) fn rotate_rgba(rgba: Vec<u8>, w: u32, h: u32, t: OutputTransform) -> 
             let src = ((y * w + x) * 4) as usize;
             let (dx, dy) = match t {
                 Normal | Flipped => (x, y),
-                _90 => (h - 1 - y, x),
-                _180 | Flipped180 => (w - 1 - x, h - 1 - y),
-                _270 => (y, w - 1 - x),
-                // Flipped90/Flipped270 and other rare combos: treat as _90
+                Rot90 => (h - 1 - y, x),
+                Rot180 | Flipped180 => (w - 1 - x, h - 1 - y),
+                Rot270 => (y, w - 1 - x),
+                // Flipped90/Flipped270 and other rare combos: treat as Rot90
                 // for now (handle when actually encountered)
                 _ => (h - 1 - y, x),
             };
@@ -93,7 +99,6 @@ pub(super) fn rotate_rgba(rgba: Vec<u8>, w: u32, h: u32, t: OutputTransform) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wayland_client::protocol::wl_output;
 
     /// 3×2 pixel grid, values encode coordinates (x*10+y):
     /// ```text
@@ -120,7 +125,7 @@ mod tests {
         // 00 10 20        01 00
         // 01 11 21   →    11 10
         //                 21 20
-        let out = rotate_rgba(grid(3, 2), 3, 2, wl_output::Transform::_90);
+        let out = rotate_rgba(grid(3, 2), 3, 2, Transform::Rot90);
         assert_eq!(out.len(), grid(3, 2).len());
         assert_eq!(px_at(&out, 2, 0, 0), 1); // 01
         assert_eq!(px_at(&out, 2, 1, 0), 0); // 00
@@ -133,7 +138,7 @@ mod tests {
         // 00 10 20        20 21
         // 01 11 21   →    10 11
         //                 00 01
-        let out = rotate_rgba(grid(3, 2), 3, 2, wl_output::Transform::_270);
+        let out = rotate_rgba(grid(3, 2), 3, 2, Transform::Rot270);
         assert_eq!(px_at(&out, 2, 0, 0), 20);
         assert_eq!(px_at(&out, 2, 1, 0), 21);
         assert_eq!(px_at(&out, 2, 0, 2), 0); // 00 (bottom-left = original top-left)
@@ -142,7 +147,7 @@ mod tests {
 
     #[test]
     fn rotate_180() {
-        let out = rotate_rgba(grid(3, 2), 3, 2, wl_output::Transform::_180);
+        let out = rotate_rgba(grid(3, 2), 3, 2, Transform::Rot180);
         // all four corners correct (rotated_size's _180 branch was once wrong
         // and fake-passed via unwritten memory)
         assert_eq!(px_at(&out, 3, 0, 0), 21); // original bottom-right
@@ -153,13 +158,14 @@ mod tests {
 
     #[test]
     fn rotate_swaps_size() {
-        use wl_output::Transform::*;
+        use Transform::*;
         assert_eq!(rotated_size(3, 2, Normal), (3, 2));
-        assert_eq!(rotated_size(3, 2, _90), (2, 3));
-        assert_eq!(rotated_size(3, 2, _270), (2, 3));
-        assert_eq!(rotated_size(3, 2, _180), (3, 2));
+        assert_eq!(rotated_size(3, 2, Rot90), (2, 3));
+        assert_eq!(rotated_size(3, 2, Rot270), (2, 3));
+        assert_eq!(rotated_size(3, 2, Rot180), (3, 2));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn convert_xrgb_little_endian_swizzle() {
         // 1×2 pixels, stride=12: each row = [B,G,R,X] + 8 bytes of other
@@ -172,6 +178,7 @@ mod tests {
         assert_eq!(&out[..8], &[30, 20, 10, 255, 31, 21, 11, 255]);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn convert_y_invert() {
         // 1×2, stride=8: two rows, each [B,G,R,X]

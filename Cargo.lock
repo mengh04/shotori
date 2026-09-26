@@ -3035,6 +3035,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1bb25850ad31b88bbdef454afb93ec4cdb81f5e200ba5b3f1a0368111780d2c"
 
 [[package]]
+name = "gpui-tray"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c01af03fe16178c6051e7611ae1699d4d6d5b537d579e38aea7efeec0af2a433"
+dependencies = [
+ "async-channel",
+ "gpui-pre",
+ "image",
+ "log",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "thiserror 2.0.21",
+ "windows 0.62.2",
+ "zbus",
+]
+
+[[package]]
 name = "granit-parser"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4403,7 +4421,7 @@ dependencies = [
  "log",
  "mac-notification-sys",
  "serde",
- "tauri-winrt-notification",
+ "tauri-winrt-notification 0.7.3",
  "zbus",
 ]
 
@@ -6699,22 +6717,26 @@ dependencies = [
  "chrono",
  "clap",
  "gpui-kit",
+ "gpui-tray",
  "image",
  "memmap2",
  "niri-ipc",
  "notify-rust",
  "png 0.18.1",
  "rapidocr-core",
+ "raw-window-handle",
  "reqwest",
  "rfd",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "smallvec",
+ "tauri-winrt-notification 0.8.1",
  "tempfile",
  "wayland-client",
  "wayland-protocols",
  "wayland-protocols-wlr",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -7211,6 +7233,17 @@ checksum = "9ed071c670382e85fc2f48ae706492d8c338f4f89bf72520d32f8abfe880aade"
 dependencies = [
  "thiserror 2.0.21",
  "windows 0.61.3",
+ "windows-version",
+]
+
+[[package]]
+name = "tauri-winrt-notification"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f37a6c354fd28fc9e322ed9bd47e3959576dad28c9d58ea1cf888cce1c7ccb36"
+dependencies = [
+ "thiserror 2.0.21",
+ "windows 0.62.2",
  "windows-version",
 ]
 
