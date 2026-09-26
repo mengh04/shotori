@@ -4,9 +4,9 @@
 //! "sees through", everything around it dims) → Enter copies to clipboard /
 //! Ctrl+S saves PNG / Ctrl+O OCR / Esc exits.
 //!
-//! Division of labor: pure logic lives in [`crate::selection`] (state
-//! machine) and [`crate::export`] (crop/encode), visuals in [`crate::hud`]
-//! and [`crate::toolbar`] — this file only does gpui assembly:
+//! Division of labor: pure logic lives in [`crate::model::selection`] (state
+//! machine) and [`crate::model::export`] (crop/encode), visuals in [`crate::ui::hud`]
+//! and [`crate::ui::toolbar`] — this file only does gpui assembly:
 //! window, events → state-machine calls, state → rendering.
 
 use std::sync::Arc;
@@ -14,13 +14,12 @@ use std::sync::Arc;
 use gpui_kit::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui_kit::*;
 
-use crate::capture::Capture;
-use crate::hud::{hint_bar, hover_outline, selection_backdrop, selection_label};
-use crate::image_util;
-use crate::selection::Selection;
-use crate::toolbar::selection_toolbar;
-
-gpui_kit::actions!([QuitOverlay, CopySelection, SaveSelection, OcrSelection]);
+use crate::actions::{CopySelection, OcrSelection, QuitOverlay, SaveSelection};
+use crate::model::selection::Selection;
+use crate::platform::capture::Capture;
+use crate::ui::hud::{hint_bar, hover_outline, selection_backdrop, selection_label};
+use crate::ui::image_util;
+use crate::ui::toolbar::selection_toolbar;
 
 pub struct Overlay {
     focus_handle: FocusHandle,
@@ -28,11 +27,11 @@ pub struct Overlay {
     frozen: Arc<RenderImage>,
     /// Raw pixels (for cropping)
     capture: Arc<Capture>,
-    session: Entity<crate::session::ScreenshotSession>,
+    session: Entity<crate::model::session::ScreenshotSession>,
     _subscriptions: Vec<Subscription>,
     /// First-run OCR setup (confirm → download progress), open while active
-    ocr_setup: Option<Box<crate::ocr_setup::OcrSetup>>,
-    setup_focus: crate::ocr_setup::SetupFocus,
+    ocr_setup: Option<Box<crate::ui::ocr_setup::OcrSetup>>,
+    setup_focus: crate::ui::ocr_setup::SetupFocus,
     /// OCR inference in flight → show the busy badge (spinner)
     ocr_busy: bool,
 }
@@ -40,7 +39,7 @@ pub struct Overlay {
 impl Overlay {
     pub fn new(
         capture: Arc<Capture>,
-        session: Entity<crate::session::ScreenshotSession>,
+        session: Entity<crate::model::session::ScreenshotSession>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -50,14 +49,15 @@ impl Overlay {
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
 
-        let debug_targeted = debug_targeted(&capture.output_name);
+        let debug_targeted = crate::ui::e2e::debug_targeted(&capture.output_name);
         if debug_targeted {
-            spawn_debug_action(window, cx);
+            crate::ui::e2e::spawn_debug_action(window, cx);
         }
 
         session.update(cx, |session, cx| {
             session.set_size(&capture.output_name, window.bounds().size);
-            if let Selection::Selected { bounds } = debug_selection(debug_targeted) {
+            if let Selection::Selected { bounds } = crate::ui::e2e::debug_selection(debug_targeted)
+            {
                 session.begin(&capture.output_name, bounds.origin);
                 session.end(&capture.output_name, bounds.bottom_right());
             }
@@ -80,7 +80,7 @@ impl Overlay {
             session,
             _subscriptions: subscriptions,
             ocr_setup: None,
-            setup_focus: crate::ocr_setup::SetupFocus::new(cx),
+            setup_focus: crate::ui::ocr_setup::SetupFocus::new(cx),
             ocr_busy: false,
         }
     }
@@ -120,7 +120,7 @@ impl Overlay {
                 return;
             }
         };
-        let png = match crate::export::encode_png(w, h, &rgba) {
+        let png = match crate::model::export::encode_png(w, h, &rgba) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("[shotori] PNG encoding failed: {e:#}");
@@ -179,7 +179,7 @@ impl Overlay {
 
     /// Ctrl+O / toolbar [OCR]. With cached models this runs immediately; on
     /// the very first use it opens the setup dialog (confirm → progress →
-    /// cancel) instead — [`crate::ocr_setup`].
+    /// cancel) instead — [`crate::ui::ocr_setup`].
     fn ocr_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.session.read(cx).blocked() {
             return; // dialog open or an OCR already running
@@ -188,14 +188,14 @@ impl Overlay {
             println!("[shotori] empty selection, ignoring");
             return;
         };
-        let snapshot = crate::ocr_setup::Snapshot { w, h, rgba };
+        let snapshot = crate::ui::ocr_setup::Snapshot { w, h, rgba };
 
         self.session.update(cx, |s, cx| {
             s.set_blocked(true);
             cx.notify();
         });
         if crate::ocr::models_missing() {
-            self.ocr_setup = Some(Box::new(crate::ocr_setup::OcrSetup::new(snapshot)));
+            self.ocr_setup = Some(Box::new(crate::ui::ocr_setup::OcrSetup::new(snapshot)));
             self.setup_focus.focus_confirm(window, cx);
             cx.notify();
         } else {
@@ -209,11 +209,11 @@ impl Overlay {
     /// download poll loop can call it.
     fn spawn_ocr(
         &mut self,
-        snapshot: crate::ocr_setup::Snapshot,
+        snapshot: crate::ui::ocr_setup::Snapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let crate::ocr_setup::Snapshot { w, h, rgba } = snapshot;
+        let crate::ui::ocr_setup::Snapshot { w, h, rgba } = snapshot;
         let window_handle = window.window_handle();
         let entity = cx.entity();
         cx.spawn(async move |_, cx| {
@@ -231,13 +231,13 @@ impl Overlay {
         // Retry after a failure needs a fresh progress arc
         let fresh = std::sync::Arc::new(crate::ocr::DownloadProgress::default());
         if let Some(setup) = self.ocr_setup.as_mut() {
-            if !matches!(setup.stage, crate::ocr_setup::Stage::Confirm)
-                && !matches!(setup.stage, crate::ocr_setup::Stage::Failed(_))
+            if !matches!(setup.stage, crate::ui::ocr_setup::Stage::Confirm)
+                && !matches!(setup.stage, crate::ui::ocr_setup::Stage::Failed(_))
             {
                 return; // already downloading
             }
             setup.progress = fresh;
-            setup.stage = crate::ocr_setup::Stage::Downloading;
+            setup.stage = crate::ui::ocr_setup::Stage::Downloading;
         } else {
             return; // nothing to confirm (no dialog open)
         }
@@ -293,7 +293,7 @@ impl Overlay {
                         None
                     }
                 });
-                if let Some(crate::ocr_setup::Snapshot { w, h, rgba }) = snap {
+                if let Some(crate::ui::ocr_setup::Snapshot { w, h, rgba }) = snap {
                     let _ = window_handle.update(cx, |_, window, cx| {
                         let focus = entity.read(cx).focus_handle.clone();
                         window.focus(&focus, cx);
@@ -307,7 +307,7 @@ impl Overlay {
                         if let Some(setup) = this.ocr_setup.as_mut()
                             && setup.owns_download(&progress)
                         {
-                            setup.stage = crate::ocr_setup::Stage::Failed(err);
+                            setup.stage = crate::ui::ocr_setup::Stage::Failed(err);
                             this.setup_focus.focus_confirm(window, cx);
                             cx.notify();
                         }
@@ -448,28 +448,28 @@ impl Render for Overlay {
             .on_action(cx.listener(|this, _: &OcrSelection, window, cx| {
                 this.ocr_selection(window, cx);
             }))
-            .on_action(
-                cx.listener(|this, _: &crate::ocr_setup::OcrSetupConfirm, window, cx| {
+            .on_action(cx.listener(
+                |this, _: &crate::ui::ocr_setup::OcrSetupConfirm, window, cx| {
                     this.ocr_setup_confirm(window, cx);
-                }),
-            )
-            .on_action(
-                cx.listener(|this, _: &crate::ocr_setup::OcrSetupCancel, window, cx| {
+                },
+            ))
+            .on_action(cx.listener(
+                |this, _: &crate::ui::ocr_setup::OcrSetupCancel, window, cx| {
                     this.ocr_setup_cancel(window, cx);
                     cx.stop_propagation();
-                }),
-            );
+                },
+            ));
 
         // ⑥ First-run OCR setup dialog (confirm / progress), topmost
         let setup_el: Option<AnyElement> = self
             .ocr_setup
             .as_ref()
-            .map(|s| crate::ocr_setup::setup_card(s, &self.setup_focus).into_any_element());
+            .map(|s| crate::ui::ocr_setup::setup_card(s, &self.setup_focus).into_any_element());
 
         // OCR-in-flight spinner badge, centered on the selection
         let busy_el: Option<AnyElement> = self
             .ocr_busy
-            .then(|| crate::hud::ocr_busy_badge(sel, ws).into_any_element());
+            .then(|| crate::ui::hud::ocr_busy_badge(sel, ws).into_any_element());
 
         base
             // Two-stage Esc (handled in place, no reliance on bubbling):
@@ -584,8 +584,7 @@ impl Render for Overlay {
     }
 }
 
-// ── Debug backdoors (entry points for automated e2e; normal launches are
-// unaffected) ─────────────────────────────────────────────────────────
+// ── Render helpers ──────────────────────────────────────────────────
 
 /// Snap a bounds to whole pixels for DISPLAY (dim strips, chrome,
 /// toolbar). Edges are rounded independently (round(origin)+round(size)
@@ -602,82 +601,10 @@ fn round_px(b: Bounds<Pixels>) -> Bounds<Pixels> {
     }
 }
 
-/// Does the backdoor target this overlay? SHOTORI_DEBUG_TARGET=<output name>
-/// (with multiple overlays all running this code, enabling all of them makes
-/// them fight each other); unset = enabled everywhere
-fn debug_targeted(output_name: &str) -> bool {
-    std::env::var("SHOTORI_DEBUG_TARGET")
-        .map(|t| t == output_name)
-        .unwrap_or(true)
-}
-
-/// SHOTORI_DEBUG_SELECTION=x,y,w,h: inject a ready-made selection
-fn debug_selection(targeted: bool) -> Selection {
-    if !targeted {
-        return Selection::Idle;
-    }
-    std::env::var("SHOTORI_DEBUG_SELECTION")
-        .ok()
-        .and_then(|s| {
-            let v: Vec<f32> = s.split(',').filter_map(|n| n.trim().parse().ok()).collect();
-            (v.len() == 4).then(|| Selection::Selected {
-                bounds: Bounds {
-                    origin: point(px(v[0]), px(v[1])),
-                    size: size(px(v[2]), px(v[3])),
-                },
-            })
-        })
-        .unwrap_or(Selection::Idle)
-}
-
-/// SHOTORI_DEBUG_ACTION=copy|quit|ocr|ocrsetup: fire the action(s)
-/// automatically after 1.5s — the only entry point for headless e2e (the
-/// virtual pointer is dead on niri, see ROADMAP). quit/ocr go through the
-/// real dispatch_action pipeline. "ocrsetup" drives the full first-run flow:
-/// OcrSelection at 1.5s (opens the dialog since models are missing), then
-/// OcrSetupConfirm at 6s (starts the download) — exercise the whole UI path.
-fn spawn_debug_action(window: &mut Window, cx: &mut Context<Overlay>) {
-    let Some(action) = std::env::var("SHOTORI_DEBUG_ACTION")
-        .ok()
-        .filter(|a| a == "copy" || a == "quit" || a == "save" || a == "ocr" || a == "ocrsetup")
-    else {
-        return;
-    };
-    let win = window.window_handle();
-    cx.spawn(async move |_, cx| {
-        cx.background_executor()
-            .timer(std::time::Duration::from_millis(1500))
-            .await;
-        if action == "ocrsetup" {
-            // phase 1: open the setup dialog (models must be missing)
-            let _ = win.update(cx, |_, window, cx| {
-                window.dispatch_action(Box::new(crate::overlay::OcrSelection), cx);
-            });
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(4500))
-                .await;
-            let _ = win.update(cx, |_, window, cx| {
-                window.dispatch_action(Box::new(crate::ocr_setup::OcrSetupConfirm), cx);
-            });
-            return;
-        }
-        let _ = win.update(cx, |_, window, cx| {
-            let action: Box<dyn gpui_kit::Action> = match action.as_str() {
-                "copy" => Box::new(CopySelection),
-                "save" => Box::new(SaveSelection),
-                "ocr" => Box::new(OcrSelection),
-                _ => Box::new(QuitOverlay),
-            };
-            window.dispatch_action(action, cx);
-        });
-    })
-    .detach();
-}
-
 #[cfg(test)]
 mod multi_output_tests {
     use super::Overlay;
-    use crate::{capture::Capture, session::ScreenshotSession};
+    use crate::{model::session::ScreenshotSession, platform::capture::Capture};
     use gpui_kit::{AppContext, MouseButton, TestAppContext, point, px, size};
     use std::sync::Arc;
 

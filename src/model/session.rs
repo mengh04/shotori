@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use gpui_kit::*;
 
-use crate::{capture::Capture, selection::Selection};
+use crate::{model::selection::Selection, platform::capture::Capture};
 
 struct Screen {
     capture: Arc<Capture>,
@@ -28,8 +28,8 @@ pub struct ScreenshotSession {
     active_output: Option<String>,
     blocked: bool,
     /// Window-snap targets in global logical coordinates; empty when the
-    /// compositor exposes no supported IPC — see [`crate::windowsnap`]
-    snaps: Vec<crate::windowsnap::SnapRect>,
+    /// compositor exposes no supported IPC — see [`crate::platform::windowsnap`]
+    snaps: Vec<crate::platform::windowsnap::SnapRect>,
     /// Index into `snaps`: the window under the cursor (hover outline)
     hovered: Option<usize>,
     /// Press point of the ongoing interaction (global). The click-snap
@@ -38,7 +38,10 @@ pub struct ScreenshotSession {
 }
 
 impl ScreenshotSession {
-    pub fn new(captures: Vec<Arc<Capture>>, snaps: Vec<crate::windowsnap::SnapRect>) -> Self {
+    pub fn new(
+        captures: Vec<Arc<Capture>>,
+        snaps: Vec<crate::platform::windowsnap::SnapRect>,
+    ) -> Self {
         Self {
             screens: captures
                 .into_iter()
@@ -143,7 +146,7 @@ impl ScreenshotSession {
         if !self.selection.is_dragging()
             && !self.selection.is_selected()
             && let Some(press) = self.press
-            && let Some(hit) = crate::windowsnap::hit_test(&self.snaps, press)
+            && let Some(hit) = crate::platform::windowsnap::hit_test(&self.snaps, press)
         {
             self.selection = Selection::Selected {
                 bounds: self.snaps[hit].bounds,
@@ -161,7 +164,7 @@ impl ScreenshotSession {
             return false;
         }
         let global = local + self.screen(name).bounds().origin;
-        let hit = crate::windowsnap::hit_test(&self.snaps, global);
+        let hit = crate::platform::windowsnap::hit_test(&self.snaps, global);
         if hit == self.hovered {
             return false;
         }
@@ -210,7 +213,7 @@ impl ScreenshotSession {
             let (screen, mut bounds) = participating[0];
             bounds.origin -= screen.bounds().origin;
             let cap = &screen.capture;
-            return crate::export::crop(
+            return crate::model::export::crop(
                 &cap.rgba,
                 cap.width,
                 cap.height,
@@ -239,7 +242,7 @@ impl ScreenshotSession {
             let mut local = intersection;
             local.origin -= screen.bounds().origin;
             let cap = &screen.capture;
-            let (cw, ch, pixels) = crate::export::crop(
+            let (cw, ch, pixels) = crate::model::export::crop(
                 &cap.rgba,
                 cap.width,
                 cap.height,
@@ -266,7 +269,7 @@ impl ScreenshotSession {
 #[cfg(test)]
 mod tests {
     use super::ScreenshotSession;
-    use crate::capture::Capture;
+    use crate::platform::capture::Capture;
     use gpui_kit::{Bounds, point, px, size};
     use std::sync::Arc;
 
@@ -289,8 +292,8 @@ mod tests {
         )
     }
 
-    fn snap(x: f32, y: f32, w: f32, h: f32) -> crate::windowsnap::SnapRect {
-        crate::windowsnap::SnapRect {
+    fn snap(x: f32, y: f32, w: f32, h: f32) -> crate::platform::windowsnap::SnapRect {
+        crate::platform::windowsnap::SnapRect {
             bounds: Bounds {
                 origin: point(px(x), px(y)),
                 size: size(px(w), px(h)),

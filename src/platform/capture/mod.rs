@@ -20,7 +20,7 @@ pub struct Capture {
     /// The scale reported by wl_output — **the integer version** (a 1.5x
     /// output reports 2). gpui's display bounds origin = logical position ÷
     /// this value (the backend does the division; verified by comparison),
-    /// so matching must use the same algorithm (see crate::display)
+    /// so matching must use the same algorithm (see crate::platform::display)
     pub scale: f32,
     /// Output geometry transform (DP-2 is 90°: the physical buffer is
     /// landscape while the panel is portrait)

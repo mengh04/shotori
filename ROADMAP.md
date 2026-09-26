@@ -699,3 +699,36 @@ lives in the session that shipped this.
 `GET_TREE` rect space; `j/clients` + `j/monitors` active-workspace
 filtering) but have not been exercised on live sessions — fixture-tested
 only. Reports from users on those compositors are welcome.
+
+## Repo reorganization: model / ui / platform (2026-09-26)
+
+A code audit (5.6k lines, 23 files) found the structure sound — every
+module documented, pure logic separated and tested, zero clippy debt —
+but three structural smells: `overlay.rs` had grown to 783 lines holding
+window assembly + three feature flows + OCR orchestration + render + the
+e2e debug backdoors; the four shared actions were defined inside it,
+creating the codebase's only import cycle (toolbar ↔ overlay); and the
+two-zone placement contract was split across `hud.rs` and `toolbar.rs`
+with a cross-module `TB_H` borrow.
+
+Surgery, in one commit on top of `git mv` (history preserved):
+
+- `actions.rs` — the action vocabulary + `bind_keys`; main, toolbar and
+  overlay all consume it, nothing depends on overlay for types anymore
+  → the cycle is gone
+- `model/placement.rs` — `label_anchor`, `toolbar_anchor`, their
+  constants and the grid-sweep invariant test; single source of truth
+  for the chrome layout contract
+- `ui/e2e.rs` — the `SHOTORI_DEBUG_*` backdoors out of the production
+  assembly file
+- directories: `model/` (selection, session, export, placement — pure
+  logic and state), `ui/` (overlay, hud, toolbar, theme, ocr_setup,
+  image_util, e2e), `platform/` (capture, display, windowsnap);
+  clipboard / notify / ocr / save_dialog stay at the root as the four
+  post-selection exits. `core` was rejected as a directory name (bare
+  `core::` path collisions).
+
+Dependency direction now documented in lib.rs: ui → model, model →
+platform, never back up. OCR's download orchestration (~120 lines) stays
+in overlay for now — it is entangled with the Overlay entity state and
+moving it is risk without payoff. overlay.rs: 783 → 709 lines.

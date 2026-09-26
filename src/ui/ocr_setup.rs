@@ -12,7 +12,7 @@ use gpui_kit::base::Button;
 use gpui_kit::*;
 
 use crate::ocr::DownloadProgress;
-use crate::theme;
+use crate::ui::theme;
 
 gpui_kit::actions!([
     OcrSetupConfirm,

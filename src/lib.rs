@@ -1,42 +1,48 @@
 //! # Shotori — a Wayland-first screenshot tool built with gpui-kit
 //!
-//! Module map (assembled in `main.rs`: scoped keybinding + window creation):
-//! - [`capture`]: wlr-screencopy capture (multi-output; the pixels submodule
-//!   is pure pixel processing + tests, wayland is the event state machine)
-//! - [`display`]: capture ↔ gpui display matching (position-based; includes
-//!   the async wait for upstream zed#46378)
-//! - [`clipboard`]: copy to clipboard (zwlr_data_control + resident
-//!   background daemon)
-//! - [`notify`]: desktop notifications (detached child process)
-//! - [`selection`]: selection state machine (pure logic + unit tests)
-//! - [`export`]: crop → PNG encoding → clipboard/disk (pure functions +
-//!   unit tests)
-//! - [`image_util`]: RGBA → RenderImage (the BGRA contract lives here)
-//! - [`overlay`]: overlay assembly (layer-shell Overlay layer, one per screen)
-//! - [`hud`]: overlay visuals (dim strips / selection border / hint bar)
-//! - [`toolbar`]: selection toolbar (buttons share the keyboard action
-//!   pipeline via dispatch_action)
-//! - [`theme`]: visual constants (the seed of a homegrown design system)
-//! - [`ocr`]: selection OCR (rapidocr-core + PP-OCRv6 models)
+//! ## Layout
 //!
-//! The pin (floating image) feature lives on the `pin` branch (it depends on
-//! the vendored set_layer_margin patch; can't ship on crates.io until
+//! ```text
+//! main.rs / actions.rs        entry point, shared action contract
+//! ├─ model/                   pure logic & state (unit-tested)
+//! │  ├─ selection             Idle → Dragging → Selected lifecycle
+//! │  ├─ session               state shared by all overlays (multi-monitor
+//! │  │                        selections, hover, click-snap, cropping)
+//! │  ├─ export                crop → PNG → disk/clipboard bytes
+//! │  └─ placement             two-zone chrome geometry (label top,
+//! │                           toolbar bottom — disjoint by construction)
+//! ├─ platform/                compositor & desktop integration
+//! │  ├─ capture/              wlr-screencopy freeze (wayland + pixels)
+//! │  ├─ display               capture ↔ gpui display matching
+//! │  └─ windowsnap/           niri / sway / Hyprland window-rect backends
+//! ├─ ui/                      gpui windows & elements
+//! │  ├─ overlay               layer-shell assembly (one per screen)
+//! │  ├─ hud / toolbar         selection visuals & buttons
+//! │  ├─ ocr_setup             first-run OCR model dialog
+//! │  ├─ e2e                   SHOTORI_DEBUG_* backdoors for headless tests
+//! │  └─ theme / image_util    constants; RGBA → RenderImage
+//! └─ clipboard / notify / ocr / save_dialog
+//!      the four post-selection exits: clipboard daemon, notifications,
+//!      OCR engine, portal save dialog
+//! ```
+//!
+//! Dependency direction: `ui → model`, `model → platform` (session holds
+//! captures and snap rects); `platform` and `ui` never reach back up.
+//! `actions` is referenced by everyone but references no one — it is the
+//! shared vocabulary between keybindings (main), buttons (toolbar) and
+//! handlers (overlay).
+//!
+//! The pin (floating image) feature lives on the `pin` branch (it depends
+//! on the vendored set_layer_margin patch; can't ship on crates.io until
 //! upstream merges it).
 
-pub mod capture;
-pub mod clipboard;
-pub mod display;
-pub mod export;
-pub mod hud;
-pub mod image_util;
-pub mod notify;
-pub mod overlay;
-pub mod save_dialog;
-pub mod selection;
-pub mod session;
-pub mod theme;
-pub mod toolbar;
-pub mod windowsnap;
+pub mod actions;
 
+pub mod model;
+pub mod platform;
+pub mod ui;
+
+pub mod clipboard;
+pub mod notify;
 pub mod ocr;
-pub mod ocr_setup;
+pub mod save_dialog;

@@ -13,7 +13,7 @@
 //! by comparison: eDP 1920,0→960,0; DP-2 -720,-100→-360,-50).
 //! Positions are unique in a multi-monitor layout → match on position only,
 //! ignore sizes (fractional scales report no true value, see
-//! [`crate::capture::Capture::scale`]).
+//! [`crate::platform::capture::Capture::scale`]).
 //!
 //! **Timing**: displays() is always empty during synchronous startup
 //! (upstream zed#46378) and becomes available after the first event-loop
@@ -21,7 +21,7 @@
 
 use gpui_kit::*;
 
-use crate::capture::Capture;
+use crate::platform::capture::Capture;
 
 /// Wait until displays() is usable and match each capture. Outputs that time
 /// out (1s) get None — falling back to the old "compositor picks" behavior,
@@ -104,7 +104,7 @@ fn display_matches(bounds: &Bounds<Pixels>, cap: &Capture) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{display_matches, expected_origin};
-    use crate::capture::Capture;
+    use crate::platform::capture::Capture;
     use gpui_kit::{Bounds, Pixels, point, px, size};
 
     fn cap(pos: (i32, i32), scale: f32) -> Capture {

@@ -22,7 +22,7 @@ use std::path::PathBuf;
 
 use gpui_kit::{AnyWindowHandle, App, Window};
 
-use crate::export;
+use crate::model::export;
 
 /// A cropped selection waiting for the user to pick a save location.
 pub struct PendingSave {

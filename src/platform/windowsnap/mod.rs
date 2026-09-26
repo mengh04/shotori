@@ -4,7 +4,7 @@
 //! cursor" — no standard protocol exposes other clients' geometry (see
 //! ROADMAP). The practical path is per-compositor IPC. Each backend
 //! reports rects in its compositor's **global logical space**, which is
-//! the same space [`crate::session`]'s selection state machine already
+//! the same space [`crate::model::session`]'s selection state machine already
 //! uses (verified against niri: output logical positions match the
 //! capture geometry).
 //!
@@ -33,7 +33,7 @@
 //! Anything else (GNOME, KDE, river, labwc) → `query()` returns None and
 //! the feature is silently off; behavior is identical to pre-snap builds.
 //!
-//! Interaction (see [`crate::overlay`]): hovering outlines the window
+//! Interaction (see [`crate::ui::overlay`]): hovering outlines the window
 //! under the cursor; an in-place click selects its rect; dragging keeps
 //! the classic freehand region.
 

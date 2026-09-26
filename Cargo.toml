@@ -39,10 +39,6 @@ niri-ipc = "26.4.0"
 # schemas drift across versions, tolerant field-by-field beats typed)
 serde_json = "1"
 
-# The pin (floating image) feature lives on the `pin` branch (it needs the
-# vendored set_layer_margin patch); once upstream merges it, the branch can
-# return to main without a [patch.crates-io] section
-#
 [dependencies.rapidocr-core]
 version = "0.2"
 default-features = false
@@ -61,3 +57,7 @@ version = "0.11"
 
 [dev-dependencies]
 gpui-kit = { version = "0.6", features = ["test-support"] }
+
+# The pin (floating image) feature lives on the `pin` branch (it needs the
+# vendored set_layer_margin patch); once upstream merges it, the branch can
+# return to main without a [patch.crates-io] section

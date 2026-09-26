@@ -3,24 +3,14 @@
 //! Buttons dispatch the exact same actions as the keyboard through
 //! `dispatch_action` — one action, two triggers, one pipeline.
 //! Visibility is decided by the overlay: it only appears after the selection
-//! is finalized ([`crate::selection::Selection::is_selected`]).
+//! is finalized ([`crate::model::selection::Selection::is_selected`]).
 
 use gpui_kit::base::Button;
 use gpui_kit::*;
 
-use crate::overlay::{CopySelection, OcrSelection, QuitOverlay, SaveSelection};
-use crate::theme;
-
-/// Toolbar: BELOW the selection, or — when the selection reaches the
-/// bottom of the screen — INSIDE the box at its bottom-left corner. Never
-/// above: the label owns the top zone, the toolbar the bottom zone, so
-/// they cannot collide by construction (see hud::label_anchor).
-/// [Copy][Save][OCR][Cancel]
-const TB_W: f32 = 320.;
-pub(crate) const TB_H: f32 = 40.;
-/// Breathing room kept between the lowest element and the screen edge —
-/// "fits at exactly zero margin" still looks glued on (measured).
-const EDGE_B: f32 = 12.;
+use crate::actions::{CopySelection, OcrSelection, QuitOverlay, SaveSelection};
+use crate::model::placement::toolbar_anchor;
+use crate::ui::theme;
 
 pub fn selection_toolbar(b: Bounds<Pixels>, ws: Size<Pixels>) -> impl IntoElement {
     let (x, y) = toolbar_anchor(&b, ws);
@@ -77,36 +67,4 @@ fn toolbar_button(
         .text_color(rgba(theme::BTN_TEXT))
         .hover(|s| s.bg(rgba(theme::BTN_HOVER_BG)))
         .child(label)
-}
-
-/// Toolbar placement (pure, tested): below the selection, or inside its
-/// bottom-left corner when the screen ends first. Horizontally clamped.
-pub(crate) fn toolbar_anchor(b: &Bounds<Pixels>, ws: Size<Pixels>) -> (f32, f32) {
-    let inside = f32::from(b.bottom()) + TB_H + 8. + EDGE_B > f32::from(ws.height);
-    let x = (f32::from(b.left()) + if inside { 12. } else { 0. })
-        .clamp(8., (f32::from(ws.width) - TB_W - 8.).max(8.));
-    let y = if inside {
-        // inside, bottom-left corner (inset from the border)
-        f32::from(b.bottom()) - TB_H - 8.
-    } else {
-        f32::from(b.bottom()) + 8.
-    };
-    (x, y)
-}
-
-#[cfg(test)]
-mod tests {
-    // The placement invariants (disjoint zones, on-screen) are swept in
-    // hud::tests; here only the clamp itself.
-    use super::TB_W;
-    use gpui_kit::{px, size};
-
-    #[test]
-    fn toolbar_clamps_horizontally() {
-        // a selection hugging the right edge: the toolbar pins into the screen
-        let left: f32 = 1800.;
-        let ws = size(px(1920.), px(1080.));
-        let x = left.clamp(8., (f32::from(ws.width) - TB_W - 8.).max(8.));
-        assert_eq!(x, 1920. - TB_W - 8.);
-    }
 }

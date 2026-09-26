@@ -12,10 +12,11 @@
 
 use gpui_kit::*;
 
-use shotori::capture;
+use shotori::actions::QuitOverlay;
 use shotori::clipboard;
-use shotori::display;
-use shotori::overlay::{CopySelection, OcrSelection, Overlay, QuitOverlay, SaveSelection};
+use shotori::platform::capture;
+use shotori::platform::display;
+use shotori::ui::overlay::Overlay;
 
 fn main() {
     // Notification child: `shotori --notify <summary> <body>` (see notify.rs)
@@ -65,7 +66,7 @@ fn main() {
     // Window snapping: ask the compositor (niri / sway / Hyprland IPC)
     // where every visible window is. None = compositor without a
     // supported IPC; the feature silently turns off (see windowsnap).
-    let snaps = shotori::windowsnap::query();
+    let snaps = shotori::platform::windowsnap::query();
     println!(
         "[shotori] window snap: {}",
         match &snaps {
@@ -80,16 +81,10 @@ fn main() {
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::base::init(cx);
-            shotori::ocr_setup::init(cx);
+            shotori::ui::ocr_setup::init(cx);
 
-            // Keybindings are scoped by key_context
-            cx.bind_keys([
-                KeyBinding::new("escape", QuitOverlay, Some("ShotoriOverlay")),
-                KeyBinding::new("enter", CopySelection, Some("ShotoriOverlay")),
-                KeyBinding::new("ctrl-c", CopySelection, Some("ShotoriOverlay")),
-                KeyBinding::new("ctrl-s", SaveSelection, Some("ShotoriOverlay")),
-                KeyBinding::new("ctrl-o", OcrSelection, Some("ShotoriOverlay")),
-            ]);
+            // Keybindings are scoped by key_context (see actions.rs)
+            shotori::actions::bind_keys(cx);
             // Backstop: Esc still exits if the overlay somehow loses focus.
             // Note: dispatch_action inside a window does NOT bubble up here
             // (actions stop at the focus path — measured); the overlay's own
@@ -108,7 +103,7 @@ fn main() {
                         .map(|(cap, did)| (std::sync::Arc::new(cap), did))
                         .collect();
                     let session = cx.new(|_| {
-                        shotori::session::ScreenshotSession::new(
+                        shotori::model::session::ScreenshotSession::new(
                             targets.iter().map(|(cap, _)| cap.clone()).collect(),
                             snaps.unwrap_or_default(),
                         )
