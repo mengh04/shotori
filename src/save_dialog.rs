@@ -100,7 +100,8 @@ fn default_dir() -> PathBuf {
 /// Suggested file name, e.g. `Shotori_2026-09-26_18-40-12_789.png`
 /// (milliseconds distinguish rapid consecutive saves). The dialog asks
 /// before overwriting, so no collision suffixing is needed.
-fn suggested_name() -> String {
+/// Also used by the `full` subcommand's directory saves.
+pub fn suggested_name() -> String {
     format!(
         "Shotori_{}.png",
         chrono::Local::now().format("%Y-%m-%d_%H-%M-%S_%3f")

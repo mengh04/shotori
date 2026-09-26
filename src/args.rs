@@ -1,140 +1,132 @@
-//! # Command-line interface: hand-rolled, clap-free
+//! # Command-line interface (clap)
 //!
-//! shotori's surface is four flags; a parser dependency would outweigh
-//! the surface. Rules:
-//!
-//! - `--help`/`-h`, `--version`/`-V` — the basics every binary owes
-//! - `--theme <NAME|FILE>` / `--print-theme` / `--no-config` — see
-//!   [`crate::ui::theme::load`]
-//! - unknown flags and positional arguments are errors (exit 2)
+//! Subcommands follow the screenshot-tool convention (flameshot
+//! heritage): no subcommand / `gui` opens the interactive overlay,
+//! `full` captures without any UI. Theme flags apply to both modes.
 //!
 //! The internal child-process entry points (`--notify`,
 //! `--clipboard-daemon`) are matched on `argv[1]` in `main.rs` BEFORE
-//! this parser runs — they take trailing free-form arguments and must
-//! not be validated as flags.
+//! clap runs — they carry free-form trailing arguments and must not be
+//! validated as flags.
 
-/// Parsed command line (all flags optional, defaults = plain run).
-#[derive(Debug, Default, PartialEq)]
-pub struct Args {
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand};
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "shotori",
+    version,
+    about = "Wayland-first screenshot tool",
+    disable_help_subcommand = true
+)]
+pub struct Cli {
+    /// Built-in theme (dark | light | high_contrast) or a JSON theme file
+    #[arg(long, value_name = "NAME|FILE")]
     pub theme: Option<String>,
+
+    /// Print the resolved theme and exit
+    #[arg(long)]
     pub print_theme: bool,
-    /// Skip the `~/.config/shotori/theme.json` auto-pickup. An explicit
-    /// `--theme` still wins over everything.
+
+    /// Skip ~/.config/shotori/theme.json auto-pickup
+    #[arg(long)]
     pub no_config: bool,
-    pub help: bool,
-    pub version: bool,
+
+    #[command(subcommand)]
+    pub command: Option<Command>,
 }
 
-impl Args {
-    pub fn parse<I, S>(argv: I) -> Result<Self, String>
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        let mut args = Args::default();
-        let mut iter = argv.into_iter().map(Into::into).peekable();
-        while let Some(a) = iter.next() {
-            match a.as_str() {
-                "--help" | "-h" => args.help = true,
-                "--version" | "-V" => args.version = true,
-                "--print-theme" => args.print_theme = true,
-                "--no-config" => args.no_config = true,
-                "--theme" => {
-                    let value = iter.next().ok_or_else(|| {
-                        "missing value for --theme (dark | light | high_contrast | <file>)"
-                            .to_string()
-                    })?;
-                    args.theme = Some(value);
-                }
-                other if other.starts_with('-') => {
-                    return Err(format!("unexpected argument '{other}'"));
-                }
-                other => return Err(format!("unexpected argument '{other}'")),
-            }
-        }
-        Ok(args)
-    }
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Interactive selection overlay (the default when no subcommand is given)
+    Gui,
 
-    /// `--help` text (version line included, generated per build).
-    pub fn help_text() -> String {
-        format!(
-            "shotori {ver} — Wayland-first screenshot tool
+    /// Capture every screen, no overlay
+    Full {
+        /// Copy the result to the clipboard
+        #[arg(short, long)]
+        clipboard: bool,
 
-Usage: shotori [OPTIONS]
+        /// Write to this file, or into this directory with an
+        /// auto-generated name
+        #[arg(short, long, value_name = "FILE|DIR")]
+        path: Option<PathBuf>,
 
-Options:
-  -h, --help               Print help and exit
-  -V, --version            Print version and exit
-      --theme <NAME|FILE>  Built-in theme (dark | light | high_contrast)
-                           or a JSON theme file
-      --print-theme        Print the resolved theme and exit
-      --no-config          Skip ~/.config/shotori/theme.json auto-pickup
-
-Everything else (select, copy, save, OCR, annotate) happens in
-the overlay; see the keybinding table in the README.
-",
-            ver = env!("CARGO_PKG_VERSION"),
-        )
-    }
+        /// Wait SECONDS before capturing
+        #[arg(short, long, default_value_t = 0.)]
+        delay: f32,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn parse(v: &[&str]) -> Result<Args, String> {
-        Args::parse(v.iter().map(|s| s.to_string()))
+    fn cli(v: &[&str]) -> Cli {
+        Cli::try_parse_from(std::iter::once("shotori").chain(v.iter().copied())).unwrap()
     }
 
     #[test]
-    fn empty_is_a_plain_run() {
-        assert_eq!(parse(&[]).unwrap(), Args::default());
+    fn no_subcommand_is_a_gui_run() {
+        let a = cli(&[]);
+        assert!(a.command.is_none());
+        assert_eq!(a.theme, None);
     }
 
     #[test]
-    fn basics() {
-        assert_eq!(
-            parse(&["-h"]).unwrap(),
-            Args {
-                help: true,
-                ..Default::default()
+    fn full_flags() {
+        let a = cli(&["full", "--clipboard", "-p", "/tmp", "-d", "2.5"]);
+        match a.command {
+            Some(Command::Full {
+                clipboard,
+                path,
+                delay,
+            }) => {
+                assert!(clipboard);
+                assert_eq!(path.as_deref(), Some(std::path::Path::new("/tmp")));
+                assert_eq!(delay, 2.5);
             }
-        );
-        assert_eq!(
-            parse(&["--version", "-V"]).unwrap(),
-            Args {
-                version: true,
-                ..Default::default()
-            }
-        );
-        assert_eq!(
-            parse(&["--print-theme", "--no-config"]).unwrap(),
-            Args {
-                print_theme: true,
-                no_config: true,
-                ..Default::default()
-            }
-        );
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
-    fn theme_takes_the_next_token() {
-        let a = parse(&["--theme", "light"]).unwrap();
+    fn theme_flags_carry_into_subcommands() {
+        let a = cli(&["--theme", "light", "--no-config", "full", "-c"]);
         assert_eq!(a.theme.as_deref(), Some("light"));
-        assert!(parse(&["--theme"]).is_err());
+        assert!(a.no_config);
+        assert!(matches!(
+            a.command,
+            Some(Command::Full {
+                clipboard: true,
+                ..
+            })
+        ));
     }
 
     #[test]
-    fn unknown_flags_and_positionals_error() {
-        assert!(parse(&["--them"]).is_err());
-        assert!(parse(&["-x"]).is_err());
-        assert!(parse(&["foo.png"]).is_err());
+    fn gui_is_explicit() {
+        assert!(matches!(cli(&["gui"]).command, Some(Command::Gui)));
     }
 
     #[test]
-    fn internal_entry_points_do_not_reach_the_parser_in_main() {
-        // documented contract: main.rs matches them on argv[1] first;
-        // if they ever leaked through, the error message should say so
-        assert!(parse(&["--notify", "s", "b"]).is_err());
+    fn unknown_arguments_error() {
+        assert!(Cli::try_parse_from(["shotori", "--them"]).is_err());
+        assert!(Cli::try_parse_from(["shotori", "fullscreen"]).is_err());
+        assert!(Cli::try_parse_from(["shotori", "full", "-x"]).is_err());
+    }
+
+    /// The generated help must stay renderable (guards the derive).
+    #[test]
+    fn help_renders() {
+        let mut buf = Vec::new();
+        <Cli as clap::CommandFactory>::command()
+            .write_help(&mut buf)
+            .unwrap();
+        let help = String::from_utf8(buf).unwrap();
+        assert!(help.contains("Usage: shotori"));
+        assert!(help.contains("--theme"));
+        assert!(help.contains("full"));
     }
 }

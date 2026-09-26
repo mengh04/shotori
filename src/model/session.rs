@@ -87,6 +87,27 @@ impl ScreenshotSession {
             .expect("registered overlay output")
     }
 
+    /// Full-screen selection: the union of every screen's bounds — the
+    /// `full` subcommand's non-interactive path. A cross-screen union
+    /// exports at the highest participating density with transparent
+    /// gaps, exactly like a user-drawn spanning selection.
+    pub fn select_all(&mut self) {
+        if let Some(bounds) = self
+            .screens
+            .iter()
+            .map(|s| s.bounds())
+            .reduce(|a, b| a.union(&b))
+        {
+            self.active_output = Some(
+                self.screens
+                    .first()
+                    .map(|s| s.capture.output_name.clone())
+                    .unwrap_or_default(),
+            );
+            self.selection = Selection::Selected { bounds };
+        }
+    }
+
     pub(crate) fn set_size(&mut self, name: &str, logical_size: Size<Pixels>) -> bool {
         if logical_size.width <= px(0.) || logical_size.height <= px(0.) {
             return false;
@@ -297,7 +318,8 @@ impl ScreenshotSession {
         self.crop_impl(output, true)
             .map(|r| (r.width, r.height, r.rgba))
     }
-    pub(crate) fn crop_original(&self, output: &str) -> Option<(u32, u32, Vec<u8>)> {
+    /// Export without annotations — also the `full` subcommand's path
+    pub fn crop_original(&self, output: &str) -> Option<(u32, u32, Vec<u8>)> {
         self.crop_impl(output, false)
             .map(|r| (r.width, r.height, r.rgba))
     }
@@ -476,6 +498,23 @@ mod tests {
             focused: false,
             recency: 0,
         }
+    }
+
+    #[test]
+    fn select_all_spans_every_screen_with_a_ready_selection() {
+        let mut s = session();
+        assert!(s.selection().bounds().is_none());
+        s.select_all();
+        let expected = s
+            .screens
+            .iter()
+            .map(|sc| sc.bounds())
+            .reduce(|a, b| a.union(&b))
+            .unwrap();
+        assert_eq!(s.selection().bounds(), Some(expected));
+        // And it must rasterize through the normal export path
+        let (w, h, _) = s.crop_original("right").unwrap();
+        assert!(w > 0 && h > 0);
     }
 
     #[test]

@@ -871,3 +871,19 @@ BEFORE flag parsing — they carry free-form trailing arguments and
 would be rejected as unknown flags otherwise. Theme flag parsing moved
 out of `theme/load.rs` into the shared `Args`; `--no-config` skips the
 XDG auto-pickup for A/B-ing a config file.
+
+## CLI surface, take two: clap + non-interactive `full` (2026-09-26)
+
+The hand-rolled parser served one session before the real requirement
+showed up: screenshot-tool conventions (a `full` subcommand with
+`-c/-p/-d`, flameshot heritage), where clap's derive is cheaper than
+maintaining a parser. `shotori full` reuses the session machinery as-is
+(`select_all` builds the union selection, `crop_original` walks the
+normal cross-screen export), so density/gap semantics cannot drift
+between interactive and headless modes. Clipboard is the default when
+no `--path` is given; a directory `--path` gets the dialog-style
+timestamped name (`suggested_name` promoted from save_dialog-private).
+The internal entry points (`--notify`, `--clipboard-daemon`) keep their
+argv[1] pre-check ahead of clap. Verified live on the triple-monitor
+layout: 8352x2560 union PNG at density 2x, clipboard offer as
+image/png, delay + custom filename paths.

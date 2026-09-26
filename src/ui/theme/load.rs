@@ -174,9 +174,9 @@ pub fn config_path() -> Option<PathBuf> {
     Some(base.join("shotori").join("theme.json"))
 }
 
-/// Resolve + install from the parsed command line ([`crate::args`]).
+/// Resolve + install from the parsed command line ([`crate::args::Cli`]).
 /// `--print-theme` prints and exits 0 (or 1 on errors).
-pub fn init(args: &crate::args::Args) {
+pub fn init(args: &crate::args::Cli) {
     let (theme, source, errs) = resolve(&args.theme, args.no_config);
     for e in &errs {
         eprintln!("[shotori] theme: {e}");
