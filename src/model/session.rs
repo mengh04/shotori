@@ -62,10 +62,10 @@ impl ScreenshotSession {
             screens: captures
                 .into_iter()
                 .map(|capture| Screen {
-                    logical_size: size(
-                        px(capture.width as f32 / capture.scale),
-                        px(capture.height as f32 / capture.scale),
-                    ),
+                    logical_size: {
+                        let (w, h) = capture.logical_size_f32();
+                        size(px(w), px(h))
+                    },
                     capture,
                 })
                 .collect(),

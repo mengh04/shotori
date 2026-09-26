@@ -102,13 +102,31 @@ impl Overlay {
 
     /// WindowOptions for the overlay window (anchored on all four edges +
     /// Exclusive keyboard). display_id: pin to the output the capture came
-    /// from (without it the compositor picks — multi-monitor = lottery)
-    pub fn window_options(display_id: Option<DisplayId>) -> WindowOptions {
+    /// from (without it the compositor picks — multi-monitor = lottery).
+    ///
+    /// `logical_size` (the output's TRUE size from zxdg_output_v1, falling
+    /// back to width÷scale) rides along as window_bounds: the wayland
+    /// backend forwards it as the layer surface's `set_size`. niri ignores
+    /// client sizes on fully-anchored surfaces, but Hyprland honors them —
+    /// and the backend's own default bounds (computed from the INTEGER
+    /// wl_output scale, no transform) requested 960×540 for a 720×1280
+    /// 1.5x-rotated output (measured live). Passing the correct size makes
+    /// both behaviors coincide. A 0×0 "compositor, you decide" was tried
+    /// and rejected: the surface never maps on Hyprland (no configure, no
+    /// first commit — dead loop).
+    pub fn window_options(
+        display_id: Option<DisplayId>,
+        logical_size: Size<Pixels>,
+    ) -> WindowOptions {
         WindowOptions {
             titlebar: None,
             window_background: WindowBackgroundAppearance::Transparent,
             focus: true,
             display_id,
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: point(px(0.), px(0.)),
+                size: logical_size,
+            })),
             kind: WindowKind::LayerShell(LayerShellOptions {
                 namespace: "shotori-overlay".into(),
                 layer: Layer::Overlay,

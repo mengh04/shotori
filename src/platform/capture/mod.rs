@@ -15,8 +15,14 @@ mod wayland;
 /// One successful capture (one output)
 pub struct Capture {
     pub output_name: String,
-    /// Global logical position of the output (wl_output::Geometry)
+    /// Global logical position of the output (wl_output::Geometry,
+    /// refined by zxdg_output_v1::LogicalPosition when available)
     pub logical_pos: (i32, i32),
+    /// Logical size from zxdg_output_v1: the TRUE size after fractional
+    /// scale and transform (a 1.5x 90° output reports 720x1280 here while
+    /// width/scale gives 540x960). None if the compositor lacks the
+    /// protocol — consumers fall back to width/scale × height/scale
+    pub logical_size: Option<(i32, i32)>,
     /// The scale reported by wl_output — **the integer version** (a 1.5x
     /// output reports 2). gpui's display bounds origin = logical position ÷
     /// this value (the backend does the division; verified by comparison),
@@ -39,6 +45,19 @@ impl Capture {
         self.transform != wayland::OutputTransform::Normal
     }
 
+    /// The TRUE logical size (fractional scale + transform aware):
+    /// zxdg_output_v1's value when present, else width÷scale (the
+    /// integer-scale fallback — wrong on fractional outputs, corrected
+    /// later by the actual window bounds)
+    pub fn logical_size_f32(&self) -> (f32, f32) {
+        self.logical_size
+            .map(|(w, h)| (w as f32, h as f32))
+            .unwrap_or((
+                self.width as f32 / self.scale,
+                self.height as f32 / self.scale,
+            ))
+    }
+
     /// Constructor for unit tests in other modules (the normal path is
     /// [`capture_all_outputs`])
     #[cfg(test)]
@@ -46,6 +65,7 @@ impl Capture {
         Self {
             output_name: "test-output".into(),
             logical_pos,
+            logical_size: None,
             scale,
             transform: wayland::OutputTransform::Normal,
             width: 1920,
@@ -74,7 +94,14 @@ pub fn capture_all_outputs() -> anyhow::Result<Vec<Capture>> {
     if app.outputs.is_empty() {
         anyhow::bail!("no wl_output available");
     }
-    queue.roundtrip(&mut app)?; // each output's name/geometry/scale in hand
+    // Ask for each output's logical geometry (true scale + transform) via
+    // zxdg_output_v1 — the events arrive during the next roundtrip below
+    if let Some(xdg) = app.xdg_manager.as_ref() {
+        for (i, o) in app.outputs.iter().enumerate() {
+            xdg.get_xdg_output(&o.output, &qh, i);
+        }
+    }
+    queue.roundtrip(&mut app)?; // each output's name/geometry/scale/logical-size in hand
 
     // One capture frame per output
     for i in 0..app.outputs.len() {
@@ -108,6 +135,7 @@ pub fn capture_all_outputs() -> anyhow::Result<Vec<Capture>> {
         caps.push(Capture {
             output_name: o.name.clone(),
             logical_pos: o.logical_pos,
+            logical_size: o.logical_size,
             scale: o.scale,
             transform: o.transform,
             width: rw,

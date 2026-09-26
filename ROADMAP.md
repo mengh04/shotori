@@ -805,3 +805,31 @@ be global logical coordinates (cross-checked against the monitor layout:
 a DP-2 window at (-700,-80) against its (-720,-100) origin = local
 (20,20), scale 1.5, transform 90°) — the same space the session state
 machine speaks, tiled and floating alike.
+
+## Hyprland layer sizing: the compositor that listens (2026-09-26)
+
+On niri the overlay windows were always compositor-sized and fine; on
+Hyprland the layers came up wrong (HDMI 1536×1080 instead of 1920×1080,
+DP-2 960×540 landscape instead of 720×1280 portrait). Root cause chain,
+all measured live:
+
+1. gpui's wayland backend sends an explicit `set_size(w, h)` for layer
+   surfaces, with the window's initial bounds as the value.
+2. The layer-shell spec says fully-anchored surfaces are
+   compositor-sized — niri ignores the request (why this never showed
+   there). **Hyprland honors it**, exposing whatever bounds gpui
+   computed: derived from the INTEGER wl_output scale and WITHOUT the
+   transform, hence the garbage on fractional/rotated outputs.
+3. `set_size(0, 0)` (the protocol's "compositor, you decide") was
+   tried and is a dead end: Hyprland never sends a configure for the
+   zero-sized surface, gpui never commits a first buffer, the surface
+   never maps.
+
+Fix: the capture connection now binds `zxdg_output_v1` (one extra
+roundtrip) and records each output's TRUE logical size — fractional
+scale and transform included. `Overlay::window_options` forwards it as
+the window bounds (→ `set_size`), with a `width÷scale` fallback for
+compositors without xdg-output. Same story, three
+compositors-checked-and-matching sizes on a mixed-DPI triple-monitor
+layout. The session's initial screen size uses the same helper, so the
+pre-configure frame is no longer integer-scale-wrong either.

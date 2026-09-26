@@ -116,8 +116,12 @@ fn main() {
                                 cap.output_name
                             );
                         }
+                        // True logical size (fractional scale + transform)
+                        // for the layer surface request; see window_options
+                        let (lw, lh) = cap.logical_size_f32();
+                        let logical = size(px(lw), px(lh));
                         let handle = cx
-                            .open_window(Overlay::window_options(did), |window, cx| {
+                            .open_window(Overlay::window_options(did, logical), |window, cx| {
                                 cx.new(|cx| Overlay::new(cap, session.clone(), window, cx))
                             })
                             .expect("failed to open layer-shell window");

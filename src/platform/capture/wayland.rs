@@ -11,6 +11,10 @@ use wayland_client::{
     Connection, Dispatch, QueueHandle,
     protocol::{wl_buffer, wl_output, wl_registry, wl_shm, wl_shm_pool},
 };
+use wayland_protocols::xdg::xdg_output::zv1::client::{
+    zxdg_output_manager_v1::{self, ZxdgOutputManagerV1},
+    zxdg_output_v1::{self, ZxdgOutputV1},
+};
 use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
     zwlr_screencopy_manager_v1::{self, ZwlrScreencopyManagerV1},
@@ -22,6 +26,10 @@ pub(super) use wl_output::Transform as OutputTransform;
 pub(super) struct App {
     pub shm: Option<wl_shm::WlShm>,
     pub manager: Option<ZwlrScreencopyManagerV1>,
+    /// xdg-output manager: the authoritative source for an output's
+    /// LOGICAL geometry (true fractional scale + transform applied —
+    /// wl_output only reports the integer-rounded scale)
+    pub xdg_manager: Option<ZxdgOutputManagerV1>,
     /// All outputs in registry order (the index doubles as udata everywhere)
     pub outputs: Vec<OutputState>,
 }
@@ -30,6 +38,9 @@ pub(super) struct OutputState {
     pub output: wl_output::WlOutput,
     pub name: String,
     pub logical_pos: (i32, i32),
+    /// Logical size from zxdg_output_v1 (true scale + transform); None
+    /// until the event arrives (or ever, if the protocol is absent)
+    pub logical_size: Option<(i32, i32)>,
     pub scale: f32,
     pub transform: OutputTransform,
     pub frame: Option<FrameState>,
@@ -139,6 +150,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for App {
                 "zwlr_screencopy_manager_v1" => {
                     state.manager = Some(registry.bind(name, version.min(3), qh, ()))
                 }
+                "zxdg_output_manager_v1" => {
+                    state.xdg_manager = Some(registry.bind(name, version.min(3), qh, ()))
+                }
                 "wl_output" => {
                     // Bind all outputs; udata = index
                     let idx = state.outputs.len();
@@ -147,6 +161,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for App {
                         output,
                         name: String::new(),
                         logical_pos: (0, 0),
+                        logical_size: None,
                         scale: 1.,
                         transform: OutputTransform::Normal,
                         frame: None,
@@ -181,6 +196,40 @@ impl Dispatch<wl_output::WlOutput, usize> for App {
             wl_output::Event::Scale { factor } => o.scale = factor as f32,
             _ => {}
         }
+    }
+}
+
+impl Dispatch<ZxdgOutputV1, usize> for App {
+    fn event(
+        state: &mut Self,
+        _: &ZxdgOutputV1,
+        event: zxdg_output_v1::Event,
+        idx: &usize,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(o) = state.outputs.get_mut(*idx) else {
+            return;
+        };
+        match event {
+            zxdg_output_v1::Event::LogicalPosition { x, y } => o.logical_pos = (x, y),
+            zxdg_output_v1::Event::LogicalSize { width, height } => {
+                o.logical_size = Some((width, height))
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZxdgOutputManagerV1, ()> for App {
+    fn event(
+        _: &mut Self,
+        _: &ZxdgOutputManagerV1,
+        _: zxdg_output_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
     }
 }
 
