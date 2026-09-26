@@ -462,11 +462,15 @@ fn grip(
     let grain = (theme::c().toolbar_text & 0xFFFFFF00) | 0x4D;
     div()
         .id(id)
-        .h(px(30.))
+        // Full row height, and offset only by the bar's side padding —
+        // the element's rect is then EXACTLY `session::toolbar_grips`
+        // (row one only, BAR_PAD inset, ROW_H tall): every pixel that
+        // shows the hand grabs, every pixel that grabs shows the hand.
+        .h(px(ROW_H))
         .w(px(GRIP_W))
         .flex()
-        .gap(px(1.75))
         .items_center()
+        .justify_center()
         .on_mouse_down(MouseButton::Left, move |ev, _, cx| {
             session.update(cx, |s, cx| {
                 if s.toolbar_drag_begin(&output, ev.position) {
@@ -490,7 +494,7 @@ fn bar() -> Div {
         .items_center()
         .gap(px(2.))
         .h(px(ROW_H))
-        .px(px(5.))
+        .px(px(crate::model::placement::BAR_PAD))
         .rounded(px(8.))
         .bg(rgba(theme::c().toolbar_bg))
         .border_1()

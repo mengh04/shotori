@@ -299,18 +299,26 @@ impl ScreenshotSession {
 
     /// The left/right drag-grip strips (local coords) — for the cursor's
     /// grab affordance and nothing else; the elements themselves live in
-    /// `ui::toolbar`.
+    /// `ui::toolbar`. ROW ONE ONLY (the settings row does not grab), and
+    /// inset by the bar's padding — this is the grip ELEMENT's exact
+    /// rect, so the hand cursor and the drag trigger coincide
+    /// pixel-for-pixel (a mismatch in either axis shows up instantly as
+    /// "draggable but not a hand" or vice versa — user-reported).
     pub(crate) fn toolbar_grips(&self, name: &str) -> Option<(Bounds<Pixels>, Bounds<Pixels>)> {
         let b = self.toolbar_bounds(name)?;
-        let w = px(crate::model::placement::GRIP_W);
+        let (w, h) = (
+            px(crate::model::placement::GRIP_W),
+            px(crate::model::placement::ROW_H),
+        );
+        let pad = px(crate::model::placement::BAR_PAD);
         Some((
             Bounds {
-                origin: b.origin,
-                size: size(w, b.size.height),
+                origin: point(b.origin.x + pad, b.origin.y),
+                size: size(w, h),
             },
             Bounds {
-                origin: point(b.right() - w, b.origin.y),
-                size: size(w, b.size.height),
+                origin: point(b.right() - pad - w, b.origin.y),
+                size: size(w, h),
             },
         ))
     }
@@ -1134,15 +1142,18 @@ mod tests {
         s.begin("right", point(px(50.), px(50.)));
         s.end("right", point(px(200.), px(150.))); // (50,50)-(200,150), right is host
 
-        // anchored below the box by default; grips line both edges
+        // anchored below the box by default; grips line both edges of ROW ONE
         let anchored = s.toolbar_bounds("right").unwrap();
         assert_eq!(anchored.origin, point(px(50.), px(158.)));
         assert_eq!(anchored.size.width, px(crate::model::placement::TB_W));
         let (lg, rg) = s.toolbar_grips("right").unwrap();
-        assert_eq!(lg.left(), anchored.left());
-        assert_eq!(rg.right(), anchored.right());
+        let pad = px(crate::model::placement::BAR_PAD);
+        // the strips are the grip ELEMENTS' rects: inset by the bar
+        // padding, one row tall — pixel-identical to what renders
+        assert_eq!(lg.left(), anchored.left() + pad);
+        assert_eq!(rg.right(), anchored.right() - pad);
         assert_eq!(lg.size.width, px(crate::model::placement::GRIP_W));
-        assert_eq!(lg.size.height, anchored.size.height);
+        assert_eq!(lg.size.height, px(crate::model::placement::ROW_H));
         // a different output hosts nothing
         assert!(s.toolbar_bounds("left").is_none());
 
