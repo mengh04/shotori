@@ -25,7 +25,10 @@ const INSET: f32 = 12.;
 
 /// Toolbar: [Copy][Save][OCR][Cancel] on row one; annotation tools,
 /// colors and widths on row two (only while a tool is active).
-pub(crate) const TB_W: f32 = 492.;
+/// Includes the two edge drag-grips (see [`GRIP_W`]).
+pub(crate) const TB_W: f32 = 512.;
+/// Width of one drag-grip strip at the toolbar's left/right edge.
+pub(crate) const GRIP_W: f32 = 12.;
 /// Single-row height (tools inactive)
 pub(crate) const ROW_H: f32 = 38.;
 /// Two-row height (the tall case used for placement decisions)
@@ -66,6 +69,34 @@ pub(crate) fn toolbar_anchor(b: &Bounds<Pixels>, ws: Size<Pixels>, height: f32) 
         f32::from(b.bottom()) + 8.
     };
     (x, y.clamp(8., (f32::from(ws.height) - height - 8.).max(8.)))
+}
+
+/// The toolbar's full rect: [`toolbar_anchor`] plus the width clamp the
+/// render side applies (`TB_W`, or the window minus breathing room on
+/// narrow screens). One source of truth for render, cursor hit-tests and
+/// the drag clamp — they cannot drift apart.
+pub(crate) fn toolbar_bounds(b: &Bounds<Pixels>, ws: Size<Pixels>, height: f32) -> Bounds<Pixels> {
+    let (x, y) = toolbar_anchor(b, ws, height);
+    let w = TB_W.min((f32::from(ws.width) - 16.).max(1.));
+    Bounds {
+        origin: point(px(x), px(y)),
+        size: size(px(w), px(height)),
+    }
+}
+
+/// Snap a bounds to whole pixels for DISPLAY (dim strips, chrome,
+/// toolbar). Edges are rounded independently (round(origin)+round(size)
+/// can drift by 1px from round(origin+size)). Cropping keeps its own
+/// physical-pixel rounding — this is purely a rendering concern.
+pub(crate) fn round_px(b: Bounds<Pixels>) -> Bounds<Pixels> {
+    let l = f32::from(b.left()).round();
+    let t = f32::from(b.top()).round();
+    let r = f32::from(b.right()).round();
+    let btm = f32::from(b.bottom()).round();
+    Bounds {
+        origin: point(px(l), px(t)),
+        size: size(px(r - l), px(btm - t)),
+    }
 }
 
 #[cfg(test)]

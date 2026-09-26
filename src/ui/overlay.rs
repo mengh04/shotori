@@ -21,7 +21,7 @@ use crate::actions::{
     ToggleMosaic, ToggleNumber, TogglePencil, TogglePolyline, ToggleRectangle, ToggleText,
     UndoAnnotation,
 };
-use crate::model::placement::{ROW_H, TB_H, TB_W, toolbar_anchor};
+use crate::model::placement::round_px;
 use crate::model::selection::{PressTarget, Selection};
 use crate::platform::capture::Capture;
 use crate::ui::hud::{
@@ -142,12 +142,16 @@ impl Overlay {
     /// The window cursor for the current interaction state, hit-tested
     /// against the selection at the last known pointer position:
     /// crosshair for (new) selection drawing and annotation tools, the
-    /// resize arrows on the handles, an open hand over the interior,
-    /// a closed hand while moving.
+    /// resize arrows on the handles, an open hand over the interior and
+    /// the toolbar grips, a closed hand while moving — or dragging the
+    /// toolbar by a grip.
     fn cursor_style(&self, cx: &App) -> CursorStyle {
         let session = self.session.read(cx);
         if session.blocked() {
             return CursorStyle::Arrow;
+        }
+        if session.toolbar_drag_active() {
+            return CursorStyle::ClosedHand;
         }
         let selection = session.selection();
         if selection.is_dragging() {
@@ -157,32 +161,20 @@ impl Overlay {
             Selection::Moving { .. } => CursorStyle::ClosedHand,
             Selection::Resizing { handle, .. } => handle_cursor(handle),
             _ => {
-                // The toolbar can sit INSIDE the box (selection reaching the
-                // screen bottom): over it the toolbar owns the cursor, not
-                // the move/resize affordance. Same geometry the render side
-                // uses (local intersection + anchor), so the two cannot
-                // drift apart.
-                if session.active_on(&self.capture.output_name)
-                    && let Some(sel) = session
-                        .local_bounds(&self.capture.output_name)
-                        .map(round_px)
-                    && let Some(ws) = session.overlay_size(&self.capture.output_name)
-                {
-                    let height = if session.annotations().enabled() {
-                        TB_H
-                    } else {
-                        ROW_H
-                    };
-                    let (x, y) = toolbar_anchor(&sel, ws, height);
-                    let w = TB_W.min((f32::from(ws.width) - 16.).max(1.));
-                    let toolbar = Bounds {
-                        origin: point(px(x), px(y)),
-                        size: size(px(w), px(height)),
-                    };
-                    if self
-                        .pointer_local
-                        .get()
-                        .is_some_and(|p| toolbar.contains(&p))
+                // Chrome first, selection affordances second: the grips
+                // (open hand — draggable), then the toolbar body (arrow —
+                // the toolbar can sit INSIDE the box and must steal the
+                // cursor from the move affordance beneath it). Geometry
+                // comes from the session — the same rects the render side
+                // draws — so the two cannot drift apart.
+                let p = self.pointer_local.get();
+                if let Some((lg, rg)) = session.toolbar_grips(&self.capture.output_name) {
+                    if p.is_some_and(|p| lg.contains(&p) || rg.contains(&p)) {
+                        return CursorStyle::OpenHand;
+                    }
+                    if session
+                        .toolbar_bounds(&self.capture.output_name)
+                        .is_some_and(|tb| p.is_some_and(|p| tb.contains(&p)))
                     {
                         return CursorStyle::Arrow;
                     }
@@ -915,9 +907,10 @@ impl Render for Overlay {
                 }
                 if this.session.read(cx).selection().is_dragging()
                     || this.session.read(cx).selection().is_editing()
+                    || this.session.read(cx).toolbar_drag_active()
                 {
                     this.session.update(cx, |s, cx| {
-                        s.cancel_drag(); // stage one: abandon this drag / revert the edit
+                        s.cancel_drag(); // stage one: abandon this drag / revert the edit / put the toolbar back
                         cx.notify();
                     });
                 } else {
@@ -1058,9 +1051,22 @@ impl Render for Overlay {
                                 this.pointer_local.set(Some(event.position));
                                 // one event feed drives selection
                                 // drag, annotation drawing, hover
-                                // tracking and the cursor alike
+                                // tracking, toolbar dragging and the
+                                // cursor alike
                                 let cursor_changed = this.refresh_cursor(cx);
                                 this.session.update(cx, |s, cx| {
+                                    if s.toolbar_drag_active() {
+                                        // the toolbar follows the pointer;
+                                        // hover tracking stays off under it
+                                        if s.toolbar_drag_move(
+                                            &this.capture.output_name,
+                                            event.position,
+                                        ) || cursor_changed
+                                        {
+                                            cx.notify();
+                                        }
+                                        return;
+                                    }
                                     let changed = s.pointer_move(
                                         &this.capture.output_name,
                                         event.position,
@@ -1080,7 +1086,13 @@ impl Render for Overlay {
                             }
                             let _ = input_view.update(cx, |this, cx| {
                                 this.session.update(cx, |s, cx| {
-                                    let finish = event.click_count >= 2 && s.annotations().is_pressed();
+                                    if s.toolbar_drag_active() {
+                                        s.toolbar_drag_end();
+                                        cx.notify();
+                                        return;
+                                    }
+                                    let finish =
+                                        event.click_count >= 2 && s.annotations().is_pressed();
                                     s.pointer_up(
                                         &this.capture.output_name,
                                         event.position,
@@ -1104,17 +1116,19 @@ impl Render for Overlay {
                     .map(|b| selection_label(b, ws, round_px(selection.bounds().unwrap()).size)),
             )
             .children(self.text_editing.as_ref().map(|editor| editor.render()))
-            // ④ Toolbar: appears only after release (no flicker while dragging)
+            // ④ Toolbar: appears only after release (no flicker while dragging).
+            // Its rect comes from the session — anchored, or wherever the
+            // user dragged it (see session::toolbar_bounds).
             .children(
                 if selection.is_selected()
                     && active
                     && self.ocr_setup.is_none()
                     && (!self.session.read(cx).blocked() || self.text_editing.is_some())
-                    && let Some(bounds) = sel
+                    && let Some(rect) = shared.toolbar_bounds(&self.capture.output_name)
                 {
                     Some(selection_toolbar(
-                        round_px(bounds),
-                        ws,
+                        rect,
+                        self.capture.output_name.clone().into(),
                         self.session.read(cx).annotations(),
                         self.session.clone(),
                         self.text_editing.as_ref().map(|e|e.focus_handle(cx)).unwrap_or_else(||self.focus_handle.clone()),
@@ -1132,21 +1146,7 @@ impl Render for Overlay {
 }
 
 // ── Render helpers ──────────────────────────────────────────────────
-
-/// Snap a bounds to whole pixels for DISPLAY (dim strips, chrome,
-/// toolbar). Edges are rounded independently (round(origin)+round(size)
-/// can drift by 1px from round(origin+size)). Cropping keeps its own
-/// physical-pixel rounding — this is purely a rendering concern.
-fn round_px(b: Bounds<Pixels>) -> Bounds<Pixels> {
-    let l = f32::from(b.left()).round();
-    let t = f32::from(b.top()).round();
-    let r = f32::from(b.right()).round();
-    let btm = f32::from(b.bottom()).round();
-    Bounds {
-        origin: point(px(l), px(t)),
-        size: size(px(r - l), px(btm - t)),
-    }
-}
+// (display-pixel rounding now lives in `model::placement::round_px`)
 
 #[cfg(test)]
 mod multi_output_tests {
@@ -1389,6 +1389,17 @@ mod multi_output_tests {
         vcx.run_until_parked();
         vcx.update(|_, cx| assert_eq!(overlay.read(cx).cursor.get(), CursorStyle::OpenHand));
 
+        // the toolbar's left grip — on this narrow window it even sits
+        // OUTSIDE the box horizontally (toolbar pinned to x=8): the grip
+        // affordance wins regardless
+        vcx.simulate_mouse_move(
+            point(px(14.), px(363.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        vcx.update(|_, cx| assert_eq!(overlay.read(cx).cursor.get(), CursorStyle::OpenHand));
+
         // over the inset toolbar: the toolbar owns the cursor, even though
         // the point is still inside the selection
         vcx.simulate_mouse_move(
@@ -1411,6 +1422,98 @@ mod multi_output_tests {
                 overlay.read(cx).cursor.get(),
                 CursorStyle::ResizeUpLeftDownRight
             )
+        });
+    }
+
+    #[gpui_kit::test]
+    fn toolbar_drag_works_through_the_event_pipeline(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::base::init);
+        let mut capture = Capture::for_test((0, 0), 1.);
+        capture.output_name = "main".into();
+        capture.width = 800;
+        capture.height = 600;
+        capture.rgba = vec![255; 800 * 600 * 4];
+        let capture = Arc::new(capture);
+        let session = cx.new(|_| ScreenshotSession::new(vec![capture.clone()], Vec::new()));
+        let (overlay, vcx) =
+            cx.add_window_view(|window, cx| Overlay::new(capture, session.clone(), window, cx));
+        vcx.simulate_resize(size(px(800.), px(600.)));
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        vcx.run_until_parked();
+
+        // A selection reaching the bottom parks the toolbar INSIDE the box:
+        // anchor math puts its origin at (112, 514), 512 wide, one row tall.
+        vcx.simulate_mouse_down(
+            point(px(100.), px(200.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_move(
+            point(px(600.), px(560.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_up(
+            point(px(600.), px(560.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            let anchored = session.read(cx).toolbar_bounds("main").unwrap();
+            assert_eq!(anchored.origin, point(px(112.), px(514.)));
+        });
+
+        // hovering either grip: the open-hand affordance
+        vcx.simulate_mouse_move(
+            point(px(118.), px(533.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        vcx.update(|_, cx| assert_eq!(overlay.read(cx).cursor.get(), CursorStyle::OpenHand));
+        vcx.simulate_mouse_move(
+            point(px(618.), px(533.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        vcx.update(|_, cx| assert_eq!(overlay.read(cx).cursor.get(), CursorStyle::OpenHand));
+
+        // press the LEFT grip, drag, release: the toolbar follows to any
+        // spot on the layer; the selection beneath is untouched
+        vcx.simulate_mouse_down(
+            point(px(118.), px(533.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_move(
+            point(px(250.), px(100.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            assert_eq!(overlay.read(cx).cursor.get(), CursorStyle::ClosedHand);
+            let b = session.read(cx).toolbar_bounds("main").unwrap();
+            assert_eq!(b.origin, point(px(244.), px(81.))); // grab (6,19) held
+        });
+        vcx.simulate_mouse_up(
+            point(px(250.), px(100.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            assert!(!session.read(cx).toolbar_drag_active());
+            assert_eq!(
+                session.read(cx).toolbar_bounds("main").unwrap().origin,
+                point(px(244.), px(81.))
+            );
+            // the press on the grip never became a selection interaction
+            let b = session.read(cx).selection().bounds().unwrap();
+            assert_eq!(b.origin, point(px(100.), px(200.)));
+            assert_eq!(b.size, size(px(500.), px(360.)));
         });
     }
 
