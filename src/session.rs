@@ -22,12 +22,27 @@ impl Screen {
     }
 }
 
+struct RasterSelection {
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+    bounds: Bounds<Pixels>,
+}
+
+struct FilterPreview {
+    selection: Option<Bounds<Pixels>>,
+    shapes: Vec<crate::annotation::Shape>,
+    bounds: Bounds<Pixels>,
+    image: Arc<RenderImage>,
+}
+
 pub struct ScreenshotSession {
     screens: Vec<Screen>,
     selection: Selection,
     active_output: Option<String>,
     blocked: bool,
     annotations: crate::annotation::Annotations,
+    filter_preview: std::cell::RefCell<Option<FilterPreview>>,
 }
 
 impl ScreenshotSession {
@@ -47,6 +62,7 @@ impl ScreenshotSession {
             active_output: None,
             blocked: false,
             annotations: Default::default(),
+            filter_preview: Default::default(),
         }
     }
 
@@ -70,6 +86,7 @@ impl ScreenshotSession {
             return false;
         }
         screen.logical_size = logical_size;
+        self.filter_preview.get_mut().take();
         true
     }
 
@@ -211,14 +228,56 @@ impl ScreenshotSession {
 
     pub(crate) fn crop(&self, output: &str) -> Option<(u32, u32, Vec<u8>)> {
         self.crop_impl(output, true)
+            .map(|r| (r.width, r.height, r.rgba))
     }
     pub(crate) fn crop_original(&self, output: &str) -> Option<(u32, u32, Vec<u8>)> {
         self.crop_impl(output, false)
+            .map(|r| (r.width, r.height, r.rgba))
+    }
+
+    /// Reuse the exported composite on every output whenever pixel filters are present.
+    /// Captures are immutable; selection, shapes and display geometry own invalidation.
+    pub(crate) fn filtered_preview(
+        &self,
+        output: &str,
+    ) -> Option<(Bounds<Pixels>, Arc<RenderImage>)> {
+        use crate::annotation::ShapeKind;
+        let mut cache = self.filter_preview.borrow_mut();
+        if !self
+            .annotations
+            .visible()
+            .any(|s| matches!(s.kind, ShapeKind::Mosaic | ShapeKind::Blur))
+        {
+            *cache = None;
+            return None;
+        }
+        let shapes: Vec<_> = self.annotations.visible().cloned().collect();
+        let selection = self.selection.bounds();
+        if !cache
+            .as_ref()
+            .is_some_and(|c| c.selection == selection && c.shapes == shapes)
+        {
+            let raster = self.crop_impl(output, true)?;
+            *cache = Some(FilterPreview {
+                selection,
+                shapes,
+                bounds: raster.bounds,
+                image: crate::image_util::rgba_to_render_image(
+                    raster.rgba,
+                    raster.width,
+                    raster.height,
+                ),
+            });
+        }
+        let cached = cache.as_ref()?;
+        let mut bounds = cached.bounds;
+        bounds.origin -= self.screen(output).bounds().origin;
+        Some((bounds, cached.image.clone()))
     }
 
     /// Keep the original single-output crop when possible. Spanning selections
     /// use the highest participating pixel density; desktop gaps stay transparent.
-    fn crop_impl(&self, fallback_output: &str, marked: bool) -> Option<(u32, u32, Vec<u8>)> {
+    fn crop_impl(&self, fallback_output: &str, marked: bool) -> Option<RasterSelection> {
         let selected = self
             .selection
             .bounds()
@@ -239,17 +298,22 @@ impl ScreenshotSession {
             let scale = cap.width as f32 / f32::from(screen.logical_size.width);
             let (w, h, mut rgba) =
                 crate::export::crop(&cap.rgba, cap.width, cap.height, bounds, scale)?;
+            // crop() rounds the source offset to native pixels. Use the
+            // same rounded origin when placing logical annotation edges.
+            let origin = screen.bounds().origin
+                + point(
+                    px((f32::from(bounds.left()) * scale).round() / scale),
+                    px((f32::from(bounds.top()) * scale).round() / scale),
+                );
             if marked {
-                // crop() rounds the source offset to native pixels. Use the
-                // same rounded origin when placing logical annotation edges.
-                let origin = screen.bounds().origin
-                    + point(
-                        px((f32::from(bounds.left()) * scale).round() / scale),
-                        px((f32::from(bounds.top()) * scale).round() / scale),
-                    );
                 self.annotations.rasterize(&mut rgba, w, h, origin, scale);
             }
-            return Some((w, h, rgba));
+            return Some(RasterSelection {
+                width: w,
+                height: h,
+                rgba,
+                bounds: Bounds::new(origin, size(px(w as f32 / scale), px(h as f32 / scale))),
+            });
         }
         if participating.is_empty() {
             return None;
@@ -297,7 +361,15 @@ impl ScreenshotSession {
             self.annotations
                 .rasterize(&mut rgba, w, h, extent.origin, scale);
         }
-        Some((w, h, rgba))
+        Some(RasterSelection {
+            width: w,
+            height: h,
+            rgba,
+            bounds: Bounds::new(
+                extent.origin,
+                size(px(w as f32 / scale), px(h as f32 / scale)),
+            ),
+        })
     }
 }
 
@@ -509,6 +581,58 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn filters_share_export_pixels_across_outputs_and_invalidate_on_undo() {
+        for kind in [
+            crate::annotation::ShapeKind::Mosaic,
+            crate::annotation::ShapeKind::Blur,
+        ] {
+            let mut s = session();
+            s.begin("left", point(px(80.), px(20.)));
+            s.end("right", point(px(20.), px(60.)));
+            let original = s.crop_original("left").unwrap().2;
+            s.edit_annotations(|a| a.toggle(kind));
+            s.pointer_down("right", point(px(18.), px(58.)));
+            s.pointer_up("left", point(px(82.), px(22.)), false);
+            let (w, h, pixels) = s.crop("left").unwrap();
+            assert_ne!(pixels, original);
+            let (left_bounds, left) = s.filtered_preview("left").unwrap();
+            let (right_bounds, right) = s.filtered_preview("right").unwrap();
+            assert!(Arc::ptr_eq(&left, &right));
+            assert_eq!(
+                left_bounds.origin - right_bounds.origin,
+                point(px(100.), px(-20.))
+            );
+            let bgra: Vec<_> = pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|p| [p[2], p[1], p[0], p[3]])
+                .collect();
+            assert_eq!(left.as_bytes(0).unwrap(), bgra);
+            let encoded = crate::export::encode_png(w, h, &pixels).unwrap();
+            assert_eq!(
+                image::load_from_memory(&encoded)
+                    .unwrap()
+                    .into_rgba8()
+                    .into_raw(),
+                pixels
+            );
+            assert_eq!(s.crop_original("right").unwrap().2, original);
+            s.edit_annotations(|a| a.undo());
+            assert!(s.filtered_preview("left").is_none());
+            assert_eq!(s.crop("left").unwrap().2, original);
+            s.edit_annotations(|a| a.redo());
+            assert_eq!(s.crop("left").unwrap().2, pixels);
+            s.pointer_down("left", point(px(82.), px(22.)));
+            s.pointer_move("right", point(px(5.), px(55.)), false);
+            let (_, draft) = s.filtered_preview("left").unwrap();
+            assert!(!Arc::ptr_eq(&left, &draft));
+            s.cancel_annotation();
+            assert_eq!(s.crop("left").unwrap().2, pixels);
+        }
+    }
+
     #[test]
     fn highlighter_crosses_mixed_dpi_outputs_and_leaves_ocr_unmarked() {
         let mut s = session();

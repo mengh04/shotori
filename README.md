@@ -145,6 +145,17 @@ preview and antialiased export; OCR still uses the original image.
 Rectangle highlighting, multiply blending, adjustable opacity and wheel width
 adjustment remain follow-ups.
 
+### Mosaic and blur annotations
+
+Click the mosaic icon or press `M`, then drag a rectangle over the area to process.
+The second row switches between mosaic and blur and offers Low/Medium/High strength.
+Mosaic averages pixel blocks; blur uses an alpha-weighted box filter. Effects apply
+in drawing order, including to earlier annotations. Each rectangle is one undo/redo
+step; `Esc` cancels a draft. Preview and export share the composed pixels across
+screens, while OCR continues to use the original image.
+
+Brush mode, editing existing filter regions and smart erasing remain follow-ups.
+
 ### OCR
 
 The first `Ctrl+O` asks before downloading the models (~31 MB, one time);

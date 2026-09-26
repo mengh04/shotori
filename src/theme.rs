@@ -34,3 +34,7 @@ pub(crate) const TOOLBAR_TEXT: u32 = 0x30343BFF;
 pub(crate) const TOOLBAR_BORDER: u32 = 0xD9DCE2FF;
 pub(crate) const TOOLBAR_HOVER: u32 = 0xEAEDF2FF;
 pub(crate) const TOOLBAR_SELECTED: u32 = 0xFFE5D3FF;
+
+// Low-contrast gray cells keep the filled mosaic icon visually quiet.
+pub(crate) const MOSAIC_DARK: u32 = 0x858A93FF;
+pub(crate) const MOSAIC_LIGHT: u32 = 0xCDD0D6FF;

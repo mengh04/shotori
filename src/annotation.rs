@@ -1,4 +1,5 @@
 //! Geometry annotations in desktop logical coordinates, shared by all outputs.
+mod filter;
 mod highlighter;
 mod line;
 pub(crate) use highlighter::HighlighterCache;
@@ -12,6 +13,8 @@ pub(crate) enum ShapeKind {
     Number,
     Pencil,
     Highlighter,
+    Mosaic,
+    Blur,
     Rectangle,
     Ellipse,
     Line,
@@ -163,6 +166,7 @@ pub(crate) struct Annotations {
     color_ix: usize,
     width_ix: usize,
     number_size_ix: usize,
+    filter_strength_ix: usize,
     highlighter_width_ix: usize,
     highlighter_color_ix: usize,
     shapes: Vec<Shape>,
@@ -178,6 +182,7 @@ impl Default for Annotations {
             color_ix: 0,
             width_ix: 1,
             number_size_ix: 1,
+            filter_strength_ix: 1,
             highlighter_width_ix: 1,
             highlighter_color_ix: 2,
             shapes: Vec::new(),
@@ -200,7 +205,9 @@ impl Annotations {
         }]
     }
     pub(crate) fn width(&self) -> f32 {
-        if self.tool == Some(ShapeKind::Highlighter) {
+        if matches!(self.tool, Some(ShapeKind::Mosaic | ShapeKind::Blur)) {
+            [8., 16., 24.][self.filter_strength_ix]
+        } else if self.tool == Some(ShapeKind::Highlighter) {
             [12., 20., 32.][self.highlighter_width_ix]
         } else {
             [1., 3., 5.][self.width_ix]
@@ -245,7 +252,9 @@ impl Annotations {
     }
     pub(crate) fn set_width(&mut self, ix: usize) {
         if ix < 3 {
-            if self.tool == Some(ShapeKind::Highlighter) {
+            if matches!(self.tool, Some(ShapeKind::Mosaic | ShapeKind::Blur)) {
+                self.filter_strength_ix = ix;
+            } else if self.tool == Some(ShapeKind::Highlighter) {
                 self.highlighter_width_ix = ix;
             } else {
                 self.width_ix = ix;
@@ -472,6 +481,10 @@ impl Annotations {
         scale: f32,
     ) {
         for shape in self.visible() {
+            if matches!(shape.kind, ShapeKind::Mosaic | ShapeKind::Blur) {
+                filter::rasterize(shape, rgba, w, h, origin, scale);
+                continue;
+            }
             if shape.kind == ShapeKind::Number {
                 number::rasterize(shape, rgba, w, h, origin, scale);
                 continue;

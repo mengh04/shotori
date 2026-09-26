@@ -4,16 +4,17 @@ use gpui_kit::{assets::IconName, base::Button, *};
 use crate::{
     overlay::{
         CopySelection, OcrSelection, QuitOverlay, SaveSelection, ToggleArrow, ToggleEllipse,
-        ToggleHighlighter, ToggleLine, ToggleNumber, TogglePencil, TogglePolyline, ToggleRectangle,
+        ToggleHighlighter, ToggleLine, ToggleMosaic, ToggleNumber, TogglePencil, TogglePolyline,
+        ToggleRectangle,
     },
     session::ScreenshotSession,
     theme,
 };
 
 // The default GPUI asset bundle does not include every toolbar icon.
-gpui_kit::assets::icon_assets!(pub ToolbarAssets, [Highlighter, Pencil, Square, Circle, Slash, Waypoints, ArrowUpRight, ListOrdered, ScanText, Save, X, Copy]);
+gpui_kit::assets::icon_assets!(pub ToolbarAssets, [MirrorRectangular, Highlighter, Pencil, Square, Circle, Slash, Waypoints, ArrowUpRight, ListOrdered, ScanText, Save, X, Copy]);
 
-const TB_W: f32 = 428.;
+const TB_W: f32 = 460.;
 const ROW_H: f32 = 38.;
 pub(crate) const TB_H: f32 = ROW_H * 2. + 6.;
 const EDGE_B: f32 = 12.;
@@ -28,6 +29,10 @@ pub(crate) fn selection_toolbar(
     let height = if annotations.enabled() { TB_H } else { ROW_H };
     let (x, y) = toolbar_anchor(&b, ws, height);
     let selected_color = annotations.color().0;
+    let filter_tool = matches!(
+        annotations.tool(),
+        Some(crate::annotation::ShapeKind::Mosaic | crate::annotation::ShapeKind::Blur)
+    );
     let highlighter_tool = annotations.tool() == Some(crate::annotation::ShapeKind::Highlighter);
     let number_tool = annotations.tool() == Some(crate::annotation::ShapeKind::Number);
     let selected_width = if number_tool {
@@ -147,6 +152,16 @@ pub(crate) fn selection_toolbar(
                         annotations.tool() == Some(crate::annotation::ShapeKind::Highlighter),
                     ),
                 )
+                .child(
+                    control(
+                        "tb-mosaic".into(),
+                        "Mosaic / Blur · M".into(),
+                        focus.clone(),
+                        |window, cx| window.dispatch_action(Box::new(ToggleMosaic), cx),
+                    )
+                    .selected(filter_tool)
+                    .child(mosaic_icon()),
+                )
                 .child(div().flex_1())
                 .child(icon_button(
                     "tb-ocr",
@@ -188,6 +203,75 @@ pub(crate) fn selection_toolbar(
         )
         .children(annotations.enabled().then(|| {
             let mut options = bar();
+            if filter_tool {
+                options = options.w(px(178.));
+                for (id, label, kind) in [
+                    (
+                        "tb-pixelate",
+                        "Mosaic",
+                        crate::annotation::ShapeKind::Mosaic,
+                    ),
+                    ("tb-blur", "Blur", crate::annotation::ShapeKind::Blur),
+                ] {
+                    let session = session.clone();
+                    options = options.child(
+                        control(
+                            id.into(),
+                            label.into(),
+                            settings_focus.clone(),
+                            move |_, cx| {
+                                session.update(cx, |s, cx| {
+                                    s.edit_annotations(|a| {
+                                        if a.tool() != Some(kind) {
+                                            a.toggle(kind);
+                                        }
+                                    });
+                                    cx.notify();
+                                });
+                            },
+                        )
+                        .selected(annotations.tool() == Some(kind))
+                        .child(
+                            if kind == crate::annotation::ShapeKind::Mosaic {
+                                mosaic_icon().into_any_element()
+                            } else {
+                                svg()
+                                    .path(IconName::MirrorRectangular.path())
+                                    .size(px(18.))
+                                    .text_color(rgba(theme::TOOLBAR_TEXT))
+                                    .into_any_element()
+                            },
+                        ),
+                    );
+                }
+                options = options.child(separator());
+                for (ix, label) in ["Low", "Medium", "High"].into_iter().enumerate() {
+                    let session = session.clone();
+                    options = options.child(
+                        control(
+                            format!("tb-strength-{ix}"),
+                            format!("Effect strength: {label}"),
+                            settings_focus.clone(),
+                            move |_, cx| {
+                                session.update(cx, |s, cx| {
+                                    s.edit_annotations(|a| a.set_width(ix));
+                                    cx.notify();
+                                });
+                            },
+                        )
+                        .w(px(26.))
+                        .selected(annotations.width() == [8., 16., 24.][ix])
+                        .child(
+                            div()
+                                .size(px([4., 7., 10.][ix]))
+                                .rounded(px(1.))
+                                .bg(rgba(theme::TOOLBAR_TEXT)),
+                        ),
+                    );
+                }
+                return options;
+            }
+
             let sizes = if number_tool {
                 [24., 32., 40.]
             } else if highlighter_tool {
@@ -271,6 +355,25 @@ pub(crate) fn selection_toolbar(
                 );
             }
             options
+        }))
+}
+
+/// Soft gray checkerboard with rounded cells.
+fn mosaic_icon() -> Div {
+    div()
+        .size(px(18.))
+        .flex()
+        .flex_col()
+        .children((0..3).map(|row| {
+            div().flex().children((0..3).map(move |col| {
+                div().size(px(6.)).rounded(px(2.)).flex_shrink_0().bg(rgba(
+                    if (row + col) % 2 == 0 {
+                        theme::MOSAIC_DARK
+                    } else {
+                        theme::MOSAIC_LIGHT
+                    },
+                ))
+            }))
         }))
 }
 
@@ -390,6 +493,7 @@ mod tests {
     fn toolbar_icons_are_bundled() {
         use gpui_kit::{AssetSource, assets::IconName};
         for icon in [
+            IconName::MirrorRectangular,
             IconName::Highlighter,
             IconName::Pencil,
             IconName::Square,

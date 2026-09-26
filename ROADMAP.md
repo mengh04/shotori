@@ -693,7 +693,10 @@ time, with shared desktop coordinates, preview, history, and PNG export.
 7. Implemented: highlighter — translucent freehand strokes, independent color/width,
    uniform coverage within each stroke, shared history and cross-output preview/export.
    Rectangle mode, multiply blending, adjustable opacity and wheel width remain follow-ups.
-8. Mosaic and blur (smart erasing requires a separate feasibility review).
+8. Implemented: rectangular mosaic and blur — three strength levels, ordered pixel
+   processing, shared history, and one export-backed preview across mixed-DPI outputs.
+   Brush mode and region editing remain follow-ups; smart erasing requires a separate
+   feasibility review.
 9. Text.
 10. Eraser.
 11. Spotlight.
