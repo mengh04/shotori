@@ -21,7 +21,7 @@ use crate::actions::{
 };
 use crate::model::selection::Selection;
 use crate::platform::capture::Capture;
-use crate::ui::hud::{hint_bar, hover_outline, selection_backdrop, selection_label};
+use crate::ui::hud::{hover_outline, selection_backdrop, selection_label};
 use crate::ui::image_util;
 use crate::ui::toolbar::selection_toolbar;
 
@@ -470,7 +470,6 @@ impl Render for Overlay {
         let number_cache = self.number_cache.clone();
         let highlighter_cache = self.highlighter_cache.clone();
         let drawing_polyline = shared.annotations().is_drawing_polyline();
-        let active_tool = shared.annotations().tool();
         let active = shared.active_on(&self.capture.output_name);
         let input_view = cx.entity().downgrade();
         let ws = window.bounds().size; // window logical size (= output logical size)
@@ -833,20 +832,9 @@ impl Render for Overlay {
                     None
                 },
             )
-            // ⑤ Bottom hint bar
-            .child(hint_bar(match active_tool {
-                Some(crate::annotation::ShapeKind::Number) => Some("Click to add a number · Drag to position · Ctrl+Z undo · Esc leave tool"),
-                Some(crate::annotation::ShapeKind::Arrow) => Some("Drag to draw an arrow · Shift 45° · Esc leave tool"),
-                Some(crate::annotation::ShapeKind::Line) => Some("Drag to draw a line · Shift 45° · Esc leave tool"),
-                Some(crate::annotation::ShapeKind::Mosaic | crate::annotation::ShapeKind::Blur) => Some("Drag a rectangle to apply · Esc cancel"),
-                Some(crate::annotation::ShapeKind::Highlighter) => Some("Drag to highlight · Esc cancel"),
-                Some(crate::annotation::ShapeKind::Pencil) => Some("Drag to draw · Click for a dot · Esc cancel"),
-                Some(crate::annotation::ShapeKind::Polyline) => Some("Click to add nodes · Double-click / Right-click / Enter finish · Shift 45° · Esc cancel"),
-                _ => None,
-            }))
-            // ⑥ OCR busy badge (spinner on the selection)
+            // ⑤ OCR busy badge (spinner on the selection)
             .children(busy_el)
-            // ⑦ First-run OCR setup dialog (confirm / progress), topmost
+            // ⑥ First-run OCR setup dialog (confirm / progress), topmost
             .children(setup_el)
     }
 }
