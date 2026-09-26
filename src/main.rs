@@ -34,9 +34,29 @@ fn main() {
         return;
     }
 
+    // Command line (after the two internal child-process entry points
+    // above, which take free-form trailing arguments and must not be
+    // flag-parsed). --help/--version print and exit here.
+    let args = match shotori::args::Args::parse(std::env::args().skip(1)) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("shotori: {e}");
+            eprintln!("Try 'shotori --help' for more information.");
+            std::process::exit(2);
+        }
+    };
+    if args.help {
+        print!("{}", shotori::args::Args::help_text());
+        return;
+    }
+    if args.version {
+        println!("shotori {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
     // ⓪ Theme resolution (--theme / --print-theme / XDG config file);
     // must run before any window opens
-    shotori::ui::theme::load::init();
+    shotori::ui::theme::load::init(&args);
 
     // ① Freeze all screens (must complete before the overlays appear)
     let caps = match capture::capture_all_outputs() {

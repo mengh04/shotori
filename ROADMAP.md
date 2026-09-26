@@ -859,3 +859,15 @@ be swapped as a value. Design decisions worth remembering:
   rename); a second one is a duplicate-field error.
 - `--print-theme` writes via `writeln!` and ignores stdout errors —
   piping into `head` used to panic on the broken pipe.
+
+## CLI surface (2026-09-26)
+
+`src/args.rs` is a hand-rolled parser: `--help`/`-h`, `--version`/`-V`,
+`--theme`, `--print-theme`, `--no-config`. No clap — four flags do not
+justify a parser dependency in a fast-start tool. Unknown flags and
+positionals exit 2. The internal child-process entry points
+(`--notify`, `--clipboard-daemon`) are matched on `argv[1]` in main
+BEFORE flag parsing — they carry free-form trailing arguments and
+would be rejected as unknown flags otherwise. Theme flag parsing moved
+out of `theme/load.rs` into the shared `Args`; `--no-config` skips the
+XDG auto-pickup for A/B-ing a config file.

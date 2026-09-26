@@ -174,31 +174,14 @@ pub fn config_path() -> Option<PathBuf> {
     Some(base.join("shotori").join("theme.json"))
 }
 
-/// Parse `argv[1..]` for theme flags. Returns `(value_of_--theme, print_only)`.
-pub fn parse_args(args: &[String]) -> (Option<String>, bool) {
-    let mut value = None;
-    let mut print = false;
-    let mut iter = args.iter();
-    while let Some(a) = iter.next() {
-        match a.as_str() {
-            "--theme" => value = iter.next().cloned(),
-            "--print-theme" => print = true,
-            _ => {}
-        }
-    }
-    (value, print)
-}
-
-/// Resolve + install. `--print-theme` prints and exits 0 (or 1 on errors).
-pub fn init() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let (value, print) = parse_args(&args);
-
-    let (theme, source, errs) = resolve(&value);
+/// Resolve + install from the parsed command line ([`crate::args`]).
+/// `--print-theme` prints and exits 0 (or 1 on errors).
+pub fn init(args: &crate::args::Args) {
+    let (theme, source, errs) = resolve(&args.theme, args.no_config);
     for e in &errs {
         eprintln!("[shotori] theme: {e}");
     }
-    if print {
+    if args.print_theme {
         print_theme(&theme, &source);
         std::process::exit(if errs.is_empty() { 0 } else { 1 });
     }
@@ -206,7 +189,7 @@ pub fn init() {
 }
 
 /// The resolution pipeline shared by [`init`] and tests.
-fn resolve(value: &Option<String>) -> (Theme, Source, Vec<String>) {
+fn resolve(value: &Option<String>, no_config: bool) -> (Theme, Source, Vec<String>) {
     match value {
         // A name → built-in. A path separator → file. Best effort.
         Some(v) => {
@@ -221,6 +204,7 @@ fn resolve(value: &Option<String>) -> (Theme, Source, Vec<String>) {
                 }
             }
         }
+        None if no_config => (Theme::dark(), Source::Default, Vec::new()),
         None => match config_path().filter(|p| p.exists()) {
             Some(p) => {
                 let (theme, errs) = load_file(&p).unwrap_or_else(|e| (Theme::dark(), vec![e]));
@@ -345,19 +329,5 @@ mod tests {
         assert_eq!(t.accent, 0x123456FF);
         assert_eq!(t.dim_opacity, 0.2);
         assert_eq!(t.chip_bg, Theme::light().chip_bg); // base came through
-    }
-
-    #[test]
-    fn args_parsing() {
-        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(parse_args(&a(&[])), (None, false));
-        assert_eq!(
-            parse_args(&a(&["--theme", "light"])),
-            (Some("light".into()), false)
-        );
-        assert_eq!(
-            parse_args(&a(&["--print-theme", "--theme", "/tmp/t.json"])),
-            (Some("/tmp/t.json".into()), true)
-        );
     }
 }
