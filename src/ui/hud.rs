@@ -1,6 +1,6 @@
 //! # Overlay HUD: pure visual elements tied to the selection
 //!
-//! Dim strips / selection border + size label / bottom hint bar.
+//! Dim strips / selection border + size label.
 //! Stateless, all functional; assembled in [`crate::ui::overlay::Overlay::render`].
 
 use gpui_kit::*;
@@ -95,33 +95,6 @@ pub(crate) fn selection_label(
             f32::from(selected_size.height).round() as i32
         ))
         .into_any_element()
-}
-
-/// Bottom hint bar
-pub(crate) fn hint_bar(text: Option<&'static str>) -> impl IntoElement {
-    div()
-        .absolute()
-        .bottom(px(24.))
-        .left_0()
-        .w_full()
-        .flex()
-        .justify_center()
-        .child(
-            div()
-                .px_4()
-                .py_1()
-                .rounded_lg()
-                .bg(rgba(theme::c().chip_bg))
-                .text_size(px(13.))
-                .text_color(rgba(theme::c().hint_text))
-                .child(text.unwrap_or_else(hint_text)),
-        )
-}
-
-/// Hint text is trimmed per feature set: builds without `ocr` must not
-/// advertise a shortcut that does not exist
-fn hint_text() -> &'static str {
-    "Drag to select · Enter copy · Ctrl+S save · Ctrl+O OCR · Esc exit"
 }
 
 // ── OCR busy badge (spinner) ──────────────────────────────────────────
