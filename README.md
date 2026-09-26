@@ -104,6 +104,25 @@ scales with stroke width and shrinks for short arrows.
 Currently supports a filled triangular head and a solid shaft. Endpoint editing,
 alternative arrow styles and comment text are planned follow-ups.
 
+### Sequence number annotations
+
+Click the sequence icon or press `N`, then click inside the selection to place
+numbered circular badges (1, 2, 3…). Drag before releasing to adjust placement.
+The second row offers `S`, `M`, `L` sizes (24, 32, 40 logical pixels) and shared
+colors. Digits automatically use black or white for contrast.
+
+Numbering is shared across outputs. Undoing the latest number lets a new badge
+reuse it; redo restores the original number. Switching tools preserves numbering;
+a new selection restarts at 1. Supports multiple digits, cross-screen preview and
+antialiased export. Selections smaller than 16 logical pixels cannot hold a badge.
+Custom starting values, letters/Roman numerals, leader arrows and comments are
+not implemented yet.
+
+Digits are rendered by `ab_glyph` using the bundled DejaVu Sans Bold font, without
+custom digit-outline code. Preview and export share badge rasterization at their
+target scale; preview images are cached by position, style and DPI. See the
+[font license](assets/DejaVuSans-LICENSE.txt).
+
 ### OCR
 
 The first `Ctrl+O` asks before downloading the models (~31 MB, one time);

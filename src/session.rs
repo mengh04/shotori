@@ -508,4 +508,42 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn sequence_numbers_are_global_across_screens_and_export_across_the_seam() {
+        let mut s = session();
+        s.begin("left", point(px(80.), px(0.)));
+        s.end("right", point(px(20.), px(100.)));
+        s.edit_annotations(|a| {
+            a.toggle(crate::annotation::ShapeKind::Number);
+            a.set_color(4);
+        });
+        s.pointer_down("left", point(px(98.), px(20.)));
+        s.pointer_up("left", point(px(98.), px(20.)), false);
+        s.pointer_down("right", point(px(2.), px(75.)));
+        s.pointer_up("right", point(px(2.), px(75.)), false);
+        assert_eq!(
+            s.annotations()
+                .visible()
+                .map(|mark| mark.number.unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(
+            s.local_annotations("left")[0].bounds.origin,
+            point(px(82.), px(4.))
+        );
+        assert_eq!(
+            s.local_annotations("right")[0].bounds.origin,
+            point(px(-18.), px(24.))
+        );
+        let (w, h, pixels) = s.crop("right").unwrap();
+        let png = crate::export::encode_png(w, h, &pixels).unwrap();
+        let decoded = image::load_from_memory(&png).unwrap().into_rgba8();
+        let color = s.annotations().color().0.to_be_bytes();
+        assert_eq!(decoded.get_pixel(10, 40).0, color);
+        assert_eq!(decoded.get_pixel(56, 40).0, color);
+        assert_ne!(s.crop_original("left").unwrap().2, pixels);
+        s.edit_annotations(|a| a.undo());
+        assert_eq!(s.annotations().next_number(), 2);
+    }
 }

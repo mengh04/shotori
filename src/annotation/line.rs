@@ -227,6 +227,7 @@ mod tests {
     fn arrow_export_contains_a_head_without_overshooting_and_preserves_gaps() {
         let shape = super::super::Shape {
             kind: super::super::ShapeKind::Arrow,
+            number: None,
             bounds: gpui_kit::Bounds::default(),
             points: vec![point(px(20.), px(30.)), point(px(70.), px(30.))],
             width: 3.,

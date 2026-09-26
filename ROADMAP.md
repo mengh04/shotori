@@ -683,7 +683,10 @@ time, with shared desktop coordinates, preview, history, and PNG export.
 4. Implemented: arrows — drag, 45° constraints, width-scaled triangular heads,
    shared styles/history and mixed-DPI preview/export. Endpoint editing, alternate
    arrow styles and comments remain follow-ups.
-5. Sequence numbers.
+5. Implemented: sequence numbers — click/drag placement, three badge sizes,
+   shared colors/history, global numbering across screens, multi-digit labels
+   and shared `ab_glyph` rasterization with a bundled font for preview/export. Custom starting values, alternate
+   sequences, leader arrows and comments remain follow-ups.
 6. Pencil.
 7. Highlighter.
 8. Mosaic and blur (smart erasing requires a separate feasibility review).

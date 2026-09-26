@@ -4,16 +4,16 @@ use gpui_kit::{assets::IconName, base::Button, *};
 use crate::{
     overlay::{
         CopySelection, OcrSelection, QuitOverlay, SaveSelection, ToggleArrow, ToggleEllipse,
-        ToggleLine, TogglePolyline, ToggleRectangle,
+        ToggleLine, ToggleNumber, TogglePolyline, ToggleRectangle,
     },
     session::ScreenshotSession,
     theme,
 };
 
 // The default GPUI asset bundle does not include every toolbar icon.
-gpui_kit::assets::icon_assets!(pub ToolbarAssets, [Square, Circle, Slash, Waypoints, ArrowUpRight, ScanText, Save, X, Copy]);
+gpui_kit::assets::icon_assets!(pub ToolbarAssets, [Square, Circle, Slash, Waypoints, ArrowUpRight, ListOrdered, ScanText, Save, X, Copy]);
 
-const TB_W: f32 = 332.;
+const TB_W: f32 = 364.;
 const ROW_H: f32 = 38.;
 pub(crate) const TB_H: f32 = ROW_H * 2. + 6.;
 const EDGE_B: f32 = 12.;
@@ -28,7 +28,12 @@ pub(crate) fn selection_toolbar(
     let height = if annotations.enabled() { TB_H } else { ROW_H };
     let (x, y) = toolbar_anchor(&b, ws, height);
     let selected_color = annotations.color().0;
-    let selected_width = annotations.width();
+    let number_tool = annotations.tool() == Some(crate::annotation::ShapeKind::Number);
+    let selected_width = if number_tool {
+        annotations.number_size()
+    } else {
+        annotations.width()
+    };
     let settings_focus = focus.clone();
 
     div()
@@ -103,6 +108,18 @@ pub(crate) fn selection_toolbar(
                     )
                     .selected(annotations.tool() == Some(crate::annotation::ShapeKind::Arrow)),
                 )
+                .child(
+                    icon_button(
+                        "tb-number",
+                        "Sequence number · N",
+                        IconName::ListOrdered,
+                        focus.clone(),
+                        |window, cx| {
+                            window.dispatch_action(Box::new(ToggleNumber), cx);
+                        },
+                    )
+                    .selected(number_tool),
+                )
                 .child(div().flex_1())
                 .child(icon_button(
                     "tb-ocr",
@@ -144,28 +161,53 @@ pub(crate) fn selection_toolbar(
         )
         .children(annotations.enabled().then(|| {
             let mut options = bar();
-            for (ix, width) in [1., 3., 5.].into_iter().enumerate() {
+            let sizes = if number_tool {
+                [24., 32., 40.]
+            } else {
+                [1., 3., 5.]
+            };
+            for (ix, width) in sizes.into_iter().enumerate() {
                 let session = session.clone();
                 options = options.child(
                     control(
-                        format!("tb-width-{ix}"),
-                        format!("Line width: {width} px"),
+                        if number_tool {
+                            format!("tb-number-size-{ix}")
+                        } else {
+                            format!("tb-width-{ix}")
+                        },
+                        if number_tool {
+                            format!("Marker size: {width} px")
+                        } else {
+                            format!("Line width: {width} px")
+                        },
                         settings_focus.clone(),
                         move |_, cx| {
                             session.update(cx, |s, cx| {
-                                s.edit_annotations(|a| a.set_width(ix));
+                                s.edit_annotations(|a| {
+                                    if number_tool {
+                                        a.set_number_size(ix)
+                                    } else {
+                                        a.set_width(ix)
+                                    }
+                                });
                                 cx.notify();
                             })
                         },
                     )
                     .w(px(26.))
                     .selected(selected_width == width)
-                    .child(
+                    .child(if number_tool {
+                        div()
+                            .text_size(px(12.))
+                            .child(["S", "M", "L"][ix])
+                            .into_any_element()
+                    } else {
                         div()
                             .size(px(width + 2.))
                             .rounded_full()
-                            .bg(rgba(theme::TOOLBAR_TEXT)),
-                    ),
+                            .bg(rgba(theme::TOOLBAR_TEXT))
+                            .into_any_element()
+                    }),
                 );
             }
             options = options.child(separator()).child(div().flex_1());
@@ -320,6 +362,7 @@ mod tests {
             IconName::Slash,
             IconName::Waypoints,
             IconName::ArrowUpRight,
+            IconName::ListOrdered,
             IconName::ScanText,
             IconName::Save,
             IconName::X,

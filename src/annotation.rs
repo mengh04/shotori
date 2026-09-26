@@ -1,10 +1,13 @@
 //! Geometry annotations in desktop logical coordinates, shared by all outputs.
 mod line;
+mod number;
+pub(crate) use number::NumberCache;
 
 use gpui_kit::{Bounds, Path, PathBuilder, Pixels, Point, point, px, size};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ShapeKind {
+    Number,
     Rectangle,
     Ellipse,
     Line,
@@ -15,6 +18,7 @@ pub(crate) enum ShapeKind {
 #[derive(Clone, Debug)]
 pub(crate) struct Shape {
     pub(crate) kind: ShapeKind,
+    pub(crate) number: Option<u32>,
     pub(crate) bounds: Bounds<Pixels>,
     pub(crate) color: u32,
     pub(crate) width: f32,
@@ -154,6 +158,7 @@ pub(crate) struct Annotations {
     tool: Option<ShapeKind>,
     color_ix: usize,
     width_ix: usize,
+    number_size_ix: usize,
     shapes: Vec<Shape>,
     undone: Vec<Shape>,
     draft: Option<Draft>,
@@ -166,6 +171,7 @@ impl Default for Annotations {
             tool: None,
             color_ix: 0,
             width_ix: 1,
+            number_size_ix: 1,
             shapes: Vec::new(),
             undone: Vec::new(),
             draft: None,
@@ -183,6 +189,22 @@ impl Annotations {
     }
     pub(crate) fn width(&self) -> f32 {
         [1., 3., 5.][self.width_ix]
+    }
+    pub(crate) fn number_size(&self) -> f32 {
+        [24., 32., 40.][self.number_size_ix]
+    }
+    pub(crate) fn set_number_size(&mut self, ix: usize) {
+        if ix < 3 {
+            self.number_size_ix = ix;
+        }
+    }
+    pub(crate) fn next_number(&self) -> u32 {
+        self.shapes
+            .iter()
+            .filter_map(|s| s.number)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
     }
     pub(crate) fn tool(&self) -> Option<ShapeKind> {
         self.tool
@@ -218,6 +240,11 @@ impl Annotations {
         if !self.enabled() || !selection.contains(&p) {
             return;
         }
+        if self.tool == Some(ShapeKind::Number)
+            && (selection.size.width < px(16.) || selection.size.height < px(16.))
+        {
+            return;
+        }
         self.pressed = true;
         if self.tool == Some(ShapeKind::Polyline) && self.draft.is_some() {
             return;
@@ -226,7 +253,12 @@ impl Annotations {
             start: p,
             shape: Shape {
                 kind: self.tool.expect("active annotation tool"),
-                bounds: Bounds::new(p, size(px(0.), px(0.))),
+                number: (self.tool == Some(ShapeKind::Number)).then(|| self.next_number()),
+                bounds: if self.tool == Some(ShapeKind::Number) {
+                    number_bounds(p, selection, self.number_size())
+                } else {
+                    Bounds::new(p, size(px(0.), px(0.)))
+                },
                 color: self.color().0,
                 width: self.width(),
                 points: if matches!(
@@ -250,6 +282,12 @@ impl Annotations {
         let Some(draft) = self.draft.as_mut() else {
             return false;
         };
+        if draft.shape.kind == ShapeKind::Number {
+            let bounds = number_bounds(p, selection, f32::from(draft.shape.bounds.size.width));
+            let changed = bounds != draft.shape.bounds;
+            draft.shape.bounds = bounds;
+            return changed;
+        }
         if matches!(
             draft.shape.kind,
             ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Polyline
@@ -394,6 +432,10 @@ impl Annotations {
         scale: f32,
     ) {
         for shape in self.visible() {
+            if shape.kind == ShapeKind::Number {
+                number::rasterize(shape, rgba, w, h, origin, scale);
+                continue;
+            }
             if matches!(
                 shape.kind,
                 ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Polyline
@@ -429,6 +471,18 @@ impl Annotations {
             }
         }
     }
+}
+
+fn number_bounds(p: Point<Pixels>, selection: Bounds<Pixels>, diameter: f32) -> Bounds<Pixels> {
+    let diameter = px(diameter)
+        .min(selection.size.width)
+        .min(selection.size.height);
+    let radius = diameter / 2.;
+    let center = point(
+        p.x.clamp(selection.left() + radius, selection.right() - radius),
+        p.y.clamp(selection.top() + radius, selection.bottom() - radius),
+    );
+    Bounds::new(center - point(radius, radius), size(diameter, diameter))
 }
 
 fn distance(a: Point<Pixels>, b: Point<Pixels>) -> f32 {
@@ -631,6 +685,7 @@ mod tests {
     fn ellipse_raster_has_smooth_edges_and_preserves_hole_corners_and_gaps() {
         for scale in [1., 1.25, 1.5, 1.73, 2.] {
             let ellipse = super::Shape {
+                number: None,
                 kind: super::ShapeKind::Ellipse,
                 bounds: Bounds::new(point(px(-10.), px(15.)), size(px(60.), px(40.))),
                 color: 0xff0000ff,
@@ -668,6 +723,7 @@ mod tests {
     fn tiny_and_clipped_ellipses_render_without_invalid_geometry() {
         for (width, height) in [(0., 0.), (2., 2.), (2., 60.), (60., 2.), (60., 40.)] {
             let ellipse = super::Shape {
+                number: None,
                 kind: super::ShapeKind::Ellipse,
                 bounds: Bounds::new(point(px(-10.), px(-10.)), size(px(width), px(height))),
                 color: 0xff0000ff,
@@ -755,6 +811,7 @@ mod tests {
     fn line_raster_preserves_gaps_and_has_round_caps_at_fractional_scales() {
         for scale in [1., 1.25, 1.73, 2.] {
             let shape = super::Shape {
+                number: None,
                 kind: super::ShapeKind::Polyline,
                 bounds: selection(),
                 points: vec![
@@ -786,5 +843,50 @@ mod tests {
             );
             assert_eq!(shape.line_paths(point(px(0.), px(0.))).len(), 2);
         }
+    }
+    #[test]
+    fn sequence_history_reuses_undone_numbers_and_reset_starts_at_one() {
+        let mut a = Annotations::default();
+        a.toggle(super::ShapeKind::Number);
+        for expected in 1..=12 {
+            a.begin(point(px(30.), px(30.)), selection());
+            a.end();
+            assert_eq!(a.visible().last().unwrap().number, Some(expected));
+        }
+        a.undo();
+        assert_eq!(a.next_number(), 12);
+        a.redo();
+        assert_eq!(a.next_number(), 13);
+        a.undo();
+        a.begin(point(px(30.), px(30.)), selection());
+        a.end();
+        a.redo();
+        assert_eq!(a.visible().count(), 12);
+        a.begin(point(px(30.), px(30.)), selection());
+        a.cancel();
+        assert_eq!(a.next_number(), 13);
+        a.toggle(super::ShapeKind::Rectangle);
+        rectangle(&mut a);
+        assert_eq!(a.next_number(), 13);
+        a.reset();
+        assert_eq!(a.next_number(), 1);
+    }
+    #[test]
+    fn number_drag_and_size_stay_inside_selection_and_tiny_regions_do_not_count() {
+        let mut a = Annotations::default();
+        a.toggle(super::ShapeKind::Number);
+        a.set_number_size(2);
+        a.begin(point(px(-19.), px(1.)), selection());
+        a.drag_to(point(px(300.), px(300.)), selection(), false);
+        a.end();
+        let mark = a.visible().next().unwrap();
+        assert_eq!(mark.bounds.size, size(px(40.), px(40.)));
+        assert_eq!(mark.bounds.right(), selection().right());
+        assert_eq!(mark.bounds.bottom(), selection().bottom());
+        assert_eq!(a.width(), 3.);
+        let tiny = Bounds::new(point(px(0.), px(0.)), size(px(10.), px(10.)));
+        a.begin(point(px(5.), px(5.)), tiny);
+        a.end();
+        assert_eq!(a.next_number(), 2);
     }
 }

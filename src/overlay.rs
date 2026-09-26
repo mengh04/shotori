@@ -29,6 +29,7 @@ gpui_kit::actions!([
     ToggleEllipse,
     ToggleLine,
     ToggleArrow,
+    ToggleNumber,
     TogglePolyline,
     FinishPolyline,
     UndoAnnotation,
@@ -42,6 +43,7 @@ pub fn init_annotation_keybindings(cx: &mut App) {
         KeyBinding::new("e", ToggleEllipse, Some("ShotoriOverlay")),
         KeyBinding::new("l", ToggleLine, Some("ShotoriOverlay")),
         KeyBinding::new("a", ToggleArrow, Some("ShotoriOverlay")),
+        KeyBinding::new("n", ToggleNumber, Some("ShotoriOverlay")),
         KeyBinding::new("p", TogglePolyline, Some("ShotoriOverlay")),
         KeyBinding::new("enter", FinishPolyline, Some("PolylineDrawing")),
         KeyBinding::new("ctrl-z", UndoAnnotation, Some("ShotoriOverlay")),
@@ -54,6 +56,7 @@ pub struct Overlay {
     focus_handle: FocusHandle,
     /// The frozen screen image (displayed by the img element)
     frozen: Arc<RenderImage>,
+    number_cache: std::rc::Rc<std::cell::RefCell<crate::annotation::NumberCache>>,
     /// Raw pixels (for cropping)
     capture: Arc<Capture>,
     session: Entity<crate::session::ScreenshotSession>,
@@ -111,6 +114,7 @@ impl Overlay {
         Self {
             focus_handle,
             frozen,
+            number_cache: Default::default(),
             capture,
             session,
             _subscriptions: subscriptions,
@@ -463,6 +467,7 @@ impl Render for Overlay {
             .backdrop_bounds(&self.capture.output_name)
             .map(round_px);
         let shapes = shared.local_annotations(&self.capture.output_name);
+        let number_cache = self.number_cache.clone();
         let drawing_polyline = shared.annotations().is_drawing_polyline();
         let active_tool = shared.annotations().tool();
         let active = shared.active_on(&self.capture.output_name);
@@ -509,6 +514,13 @@ impl Render for Overlay {
                 window.focus(&this.focus_handle, cx);
                 this.session.update(cx, |s, cx| {
                     s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Arrow));
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &ToggleNumber, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Number));
                     cx.notify();
                 });
             }))
@@ -640,14 +652,24 @@ impl Render for Overlay {
             .child(selection_backdrop(backdrop))
             .child(
                 canvas(
-                    |_, _, _| (),
-                    move |viewport, (), window, _| {
+                    move |_, window, _| {
+                        let images = number_cache.borrow_mut().prepare(&shapes, window.scale_factor());
+                        shapes.into_iter().zip(images).collect::<Vec<_>>()
+                    },
+                    move |viewport, shapes, window, _| {
                         if let Some(mut clip) = sel {
                             clip.origin += viewport.origin;
                             window.with_content_mask(
                                 Some(ContentMask { bounds: clip }),
                                 |window| {
-                                    for shape in shapes {
+                                    for (shape, number_image) in shapes {
+                                        if let Some(mut number_image) = number_image {
+                                            number_image.bounds.origin += viewport.origin;
+                                            if let Err(error) = window.paint_image(number_image.bounds, number_image.bounds, Corners::default(), number_image.image, 0, false) {
+                                                eprintln!("[shotori] number preview failed: {error}");
+                                            }
+                                            continue;
+                                        }
                                         if matches!(shape.kind, crate::annotation::ShapeKind::Line | crate::annotation::ShapeKind::Arrow | crate::annotation::ShapeKind::Polyline) {
                                             for path in shape.line_paths(viewport.origin) {
                                                 window.paint_path(path, rgba(shape.color));
@@ -748,6 +770,7 @@ impl Render for Overlay {
             )
             // ⑤ Bottom hint bar
             .child(hint_bar(match active_tool {
+                Some(crate::annotation::ShapeKind::Number) => Some("Click to add a number · Drag to position · Ctrl+Z undo · Esc leave tool"),
                 Some(crate::annotation::ShapeKind::Arrow) => Some("Drag to draw an arrow · Shift 45° · Esc leave tool"),
                 Some(crate::annotation::ShapeKind::Line) => Some("Drag to draw a line · Shift 45° · Esc leave tool"),
                 Some(crate::annotation::ShapeKind::Polyline) => Some("Click to add nodes · Double-click / Right-click / Enter finish · Shift 45° · Esc cancel"),
@@ -975,6 +998,11 @@ mod multi_output_tests {
         stroke_and_polyline_workflows(cx, crate::annotation::ShapeKind::Arrow);
     }
 
+    #[gpui_kit::test]
+    fn number_toolbar_keeps_focus_size_and_shared_history(cx: &mut TestAppContext) {
+        stroke_and_polyline_workflows(cx, crate::annotation::ShapeKind::Number);
+    }
+
     fn stroke_and_polyline_workflows(cx: &mut TestAppContext, kind: crate::annotation::ShapeKind) {
         cx.update(|cx| {
             gpui_kit::base::init(cx);
@@ -1008,13 +1036,26 @@ mod multi_output_tests {
         );
         cx.update(|window, cx| window.draw(cx).clear(cx));
         let line_button = cx
-            .debug_bounds(if kind == crate::annotation::ShapeKind::Arrow {
-                "tb-arrow"
-            } else {
-                "tb-line"
+            .debug_bounds(match kind {
+                crate::annotation::ShapeKind::Arrow => "tb-arrow",
+                crate::annotation::ShapeKind::Number => "tb-number",
+                _ => "tb-line",
             })
             .unwrap();
         cx.simulate_click(line_button.center(), Default::default());
+        if kind == crate::annotation::ShapeKind::Number {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let size = cx.debug_bounds("tb-number-size-2").unwrap();
+            cx.simulate_click(size.center(), Default::default());
+            cx.simulate_keystrokes("n");
+            cx.update(|_, cx| assert!(!session.read(cx).annotations().enabled()));
+            cx.simulate_keystrokes("n");
+            cx.update(|_, cx| {
+                assert_eq!(session.read(cx).annotations().tool(), Some(kind));
+                assert_eq!(session.read(cx).annotations().number_size(), 40.);
+            });
+        }
+
         if kind == crate::annotation::ShapeKind::Arrow {
             cx.update(|window, cx| window.draw(cx).clear(cx));
             cx.simulate_keystrokes("a");
