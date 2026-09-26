@@ -21,6 +21,8 @@
 //! │  ├─ ocr_setup             first-run OCR model dialog
 //! │  ├─ e2e                   SHOTORI_DEBUG_* backdoors for headless tests
 //! │  └─ theme / image_util    constants; RGBA → RenderImage
+//! ├─ annotation/             in-canvas annotations: arrow / number /
+//! │                          pencil / highlighter / mosaic+blur
 //! └─ clipboard / notify / ocr / save_dialog
 //!      the four post-selection exits: clipboard daemon, notifications,
 //!      OCR engine, portal save dialog
@@ -41,6 +43,10 @@ pub mod actions;
 pub mod model;
 pub mod platform;
 pub mod ui;
+
+// in-canvas annotation engine (private module tree: strokes, filters,
+// numbering — driven by the overlay's keybindings)
+mod annotation;
 
 pub mod clipboard;
 pub mod notify;

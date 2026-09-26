@@ -22,24 +22,65 @@ use super::SnapRect;
 pub fn query() -> Option<Vec<SnapRect>> {
     let sig = std::env::var("HYPRLAND_INSTANCE_SIGNATURE").ok()?;
     let runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
-    let mut stream = [
-        format!("{runtime}/hypr/{sig}/.socket.sock"),
-        format!("/tmp/hypr/{sig}/.socket.sock"),
-    ]
-    .iter()
-    .find_map(|p| UnixStream::connect(p).ok())?;
 
-    let clients: Value = serde_json::from_str(&request(&mut stream, "j/clients").ok()?).ok()?;
-    let monitors: Value = serde_json::from_str(&request(&mut stream, "j/monitors").ok()?).ok()?;
+    // One connection per request: the restructured IPC closes the socket
+    // after each reply (measured live) — pipelining a second request on
+    // the same stream fails
+    let ask = |cmd: &str| -> Option<String> {
+        [
+            format!("{runtime}/hypr/{sig}/.socket.sock"),
+            format!("/tmp/hypr/{sig}/.socket.sock"),
+        ]
+        .iter()
+        .find_map(|p| {
+            let mut s = UnixStream::connect(p).ok()?;
+            request(&mut s, cmd).ok()
+        })
+    };
+
+    let clients: Value = serde_json::from_str(&ask("j/clients")?).ok()?;
+    let monitors: Value = serde_json::from_str(&ask("j/monitors")?).ok()?;
     Some(collect(&clients, &monitors))
 }
 
-/// Hyprland's request socket: command + '\n', reply until EOF.
+/// Hyprland's request socket, tolerant across the 2026 IPC restructure:
+/// newer builds match commands EXACTLY and a trailing '\n' turns every
+/// exact command into "unknown request" (only prefix-matched ones like
+/// `monitors` survive — measured live), so the command goes out bare
+/// first. Older line-based servers wait for a newline — if the bare
+/// attempt stays silent for 400ms, send one. Do NOT half-close the write
+/// side: the new event loop treats the EOF as a disconnect and drops the
+/// request (also measured). Replies arrive until EOF or timeout.
 fn request(stream: &mut UnixStream, cmd: &str) -> std::io::Result<String> {
-    stream.write_all(format!("{cmd}\n").as_bytes())?;
-    let mut reply = String::new();
-    stream.read_to_string(&mut reply)?;
-    Ok(reply)
+    let read_all = |s: &mut UnixStream| -> std::io::Result<String> {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 16384];
+        loop {
+            match s.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    break;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(String::from_utf8_lossy(&buf).into_owned())
+    };
+
+    stream.write_all(cmd.as_bytes())?;
+    stream.set_read_timeout(Some(std::time::Duration::from_millis(400)))?;
+    let reply = read_all(stream)?;
+    if !reply.is_empty() {
+        return Ok(reply);
+    }
+    // legacy line-based server: it is still waiting for the newline
+    stream.write_all(b"\n")?;
+    stream.set_read_timeout(Some(std::time::Duration::from_millis(600)))?;
+    read_all(stream)
 }
 
 /// clients + monitors → visible window rects. Pure, unit-tested.

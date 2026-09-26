@@ -23,9 +23,13 @@ pub(crate) const LABEL_H: f32 = 24.;
 /// flush against the border line looks glued-on (user-reported).
 const INSET: f32 = 12.;
 
-/// Toolbar: [Copy][Save][OCR][Cancel]
-const TB_W: f32 = 320.;
-pub(crate) const TB_H: f32 = 40.;
+/// Toolbar: [Copy][Save][OCR][Cancel] on row one; annotation tools,
+/// colors and widths on row two (only while a tool is active).
+pub(crate) const TB_W: f32 = 460.;
+/// Single-row height (tools inactive)
+pub(crate) const ROW_H: f32 = 38.;
+/// Two-row height (the tall case used for placement decisions)
+pub(crate) const TB_H: f32 = ROW_H * 2. + 6.;
 
 /// Breathing room kept between the lowest element and the screen edge —
 /// "fits at exactly zero margin" still looks glued on (measured).
@@ -49,25 +53,26 @@ pub(crate) fn label_anchor(b: &Bounds<Pixels>, ws: Size<Pixels>) -> (f32, f32) {
 
 /// Toolbar placement: BELOW the selection, or — when the selection
 /// reaches the bottom of the screen — INSIDE the box at its bottom-left
-/// corner. Horizontally clamped.
-pub(crate) fn toolbar_anchor(b: &Bounds<Pixels>, ws: Size<Pixels>) -> (f32, f32) {
-    let inside = f32::from(b.bottom()) + TB_H + 8. + EDGE_B > f32::from(ws.height);
+/// corner. Horizontally clamped; `height` is the toolbar's current
+/// height (single row, or two rows while annotating).
+pub(crate) fn toolbar_anchor(b: &Bounds<Pixels>, ws: Size<Pixels>, height: f32) -> (f32, f32) {
+    let inside = f32::from(b.bottom()) + height + 8. + EDGE_B > f32::from(ws.height);
     let x = (f32::from(b.left()) + if inside { INSET } else { 0. })
         .clamp(8., (f32::from(ws.width) - TB_W - 8.).max(8.));
     let y = if inside {
         // inside, bottom-left corner (inset from the border)
-        f32::from(b.bottom()) - TB_H - 8.
+        f32::from(b.bottom()) - height - 8.
     } else {
         f32::from(b.bottom()) + 8.
     };
-    (x, y)
+    (x, y.clamp(8., (f32::from(ws.height) - height - 8.).max(8.)))
 }
 
 #[cfg(test)]
 mod tests {
     // Explicit imports (same reason as selection.rs: avoid gpui's test
     // macro shadowing the built-in #[test])
-    use super::{LABEL_H, TB_H, label_anchor, toolbar_anchor};
+    use super::{LABEL_H, ROW_H, TB_H, label_anchor, toolbar_anchor};
     use gpui_kit::{Bounds, Pixels, point, px, size};
 
     fn bounds(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
@@ -109,29 +114,31 @@ mod tests {
 
     #[test]
     fn toolbar_sits_below_by_default() {
-        let (x, y) = toolbar_anchor(&bounds(50., 100., 300., 200.), screen());
+        let (x, y) = toolbar_anchor(&bounds(50., 100., 300., 200.), screen(), ROW_H);
         assert_eq!((x, y), (50., 308.));
     }
 
     #[test]
     fn toolbar_goes_inside_bottom_left_when_reaching_the_bottom() {
-        let (x, y) = toolbar_anchor(&bounds(50., 300., 300., 780.), screen());
-        assert_eq!((x, y), (50. + 12., 1080. - 40. - 8.));
+        // two-row toolbar (annotating): the tall case
+        let (x, y) = toolbar_anchor(&bounds(50., 300., 300., 780.), screen(), TB_H);
+        assert_eq!((x, y), (50. + 12., 1080. - TB_H - 8.));
     }
 
     #[test]
     fn toolbar_clamps_horizontally() {
         // a selection hugging the right edge: the toolbar pins into the screen
         let b = bounds(1800., 500., 100., 200.);
-        let (x, _) = toolbar_anchor(&b, screen());
-        assert_eq!(x, 1920. - 320. - 8.);
+        let (x, _) = toolbar_anchor(&b, screen(), TB_H);
+        assert_eq!(x, 1920. - 460. - 8.);
     }
 
     #[test]
     fn zones_stay_disjoint_across_a_grid_of_selections() {
         // The scheme's core invariant: the label zone (top) and the toolbar
         // zone (bottom) never overlap and never leave the screen — swept
-        // over a representative grid of selection geometries.
+        // over a representative grid of selection geometries, with the
+        // toolbar at its tallest (two rows while annotating).
         for top in [0., 4., 34., 50., 78., 200., 800.] {
             for bottom in [top + 40., 1000., 1040., 1072., 1080.] {
                 if bottom <= top || bottom > 1080. {
@@ -139,7 +146,7 @@ mod tests {
                 }
                 let b = bounds(50., top, 300., bottom - top);
                 let (_, ly) = label_anchor(&b, screen());
-                let (_, ty) = toolbar_anchor(&b, screen());
+                let (_, ty) = toolbar_anchor(&b, screen(), TB_H);
                 assert!(ly >= 0., "label off-screen for {b:?}");
                 assert!(
                     ty >= 0. && ty + TB_H <= 1080.,

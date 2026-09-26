@@ -732,3 +732,76 @@ Dependency direction now documented in lib.rs: ui → model, model →
 platform, never back up. OCR's download orchestration (~120 lines) stays
 in overlay for now — it is entangled with the Overlay entity state and
 moving it is risk without payoff. overlay.rs: 783 → 709 lines.
+
+## Annotation tools — incremental implementation
+
+Reference: [PixPin annotation basics](https://pixpin.cn/docs/mark/base-use)
+and [geometry tools](https://pixpin.cn/docs/mark/geo). Implement one tool at a
+time, with shared desktop coordinates, preview, history, and PNG export.
+
+1. Implemented: rectangle outlines — drag, Shift-square, preset colors/widths, undo/redo,
+   multi-output preview and export. OCR continues to use the original image.
+2. Implemented: ellipse outlines and Shift-circle, sharing styles/history with
+   rectangles and supporting mixed-DPI preview/export with antialiased edges.
+3. Implemented: lines and polylines — drag or click-to-add vertices, 45° constraints,
+   double-click/right-click/Enter completion, rounded strokes, shared history,
+   cross-output preview and antialiased export.
+4. Implemented: arrows — drag, 45° constraints, width-scaled triangular heads,
+   shared styles/history and mixed-DPI preview/export. Endpoint editing, alternate
+   arrow styles and comments remain follow-ups.
+5. Implemented: sequence numbers — click/drag placement, three badge sizes,
+   shared colors/history, global numbering across screens, multi-digit labels
+   and shared `ab_glyph` rasterization with a bundled font for preview/export. Custom starting values, alternate
+   sequences, leader arrows and comments remain follow-ups.
+6. Implemented: pencil — freehand strokes and click dots, shared colors/widths,
+   whole-stroke history, cross-output preview and antialiased export. Straight-segment
+   mode, wheel width adjustment and configurable smoothing remain follow-ups.
+7. Implemented: highlighter — translucent freehand strokes, independent color/width,
+   uniform coverage within each stroke, shared history and cross-output preview/export.
+   Rectangle mode, multiply blending, adjustable opacity and wheel width remain follow-ups.
+8. Implemented: rectangular mosaic and blur — three strength levels, ordered pixel
+   processing, shared history, and one export-backed preview across mixed-DPI outputs.
+   Brush mode and region editing remain follow-ups; smart erasing requires a separate
+   feasibility review.
+9. Text.
+10. Eraser.
+11. Spotlight.
+12. Watermark.
+13. Magnifier.
+
+Follow-up geometry enhancements: select existing annotations, move/resize,
+delete, fill, line styles, rounded corners, rotation, sectors and arcs.
+Rectangle strokes use the same four inward bands for GPU preview and raster
+export. Ellipses use an outer contour and an inward inner contour for both GPU
+paths and antialiased raster export. History and drafts belong to the shared
+screenshot session. Starting
+a new screenshot selection clears its old annotations and redo history.
+
+Line follow-ups: vertex editing, dashed/dotted strokes and configurable joins/caps.
+
+## Hyprland IPC: three live-measured protocol traps (2026-09-26)
+
+The windowsnap Hyprland backend got its first live session (the daily
+driver moved from niri to Hyprland for a while) and the fixture-tested
+code hit three restructured-IPC traps in a row:
+
+1. **Trailing newline = "unknown request"** for every exactly-matched
+   command. The post-restructure dispatcher matches the raw string;
+   only prefix-matched commands (`j/monitors`) happened to survive the
+   '\n' — which made the bug look half-working. Requests now go out
+   bare, with a 400ms-silent fallback to newline for older line-based
+   servers.
+2. **Half-closing the write side drops the request.** The new event
+   loop treats the EOF as a disconnect and never processes the buffered
+   command (python probes without shutdown worked; Rust with
+   `shutdown(Write)` silently lost every request). Connection stays
+   open; the reply's EOF terminates the read.
+3. **One request per connection.** The socket closes after each reply —
+   pipelining `j/monitors` behind `j/clients` on the same stream fails.
+   Each request opens its own connection.
+
+With those fixed the backend lights up fully: `at`/`size` confirmed to
+be global logical coordinates (cross-checked against the monitor layout:
+a DP-2 window at (-700,-80) against its (-720,-100) origin = local
+(20,20), scale 1.5, transform 90°) — the same space the session state
+machine speaks, tiled and floating alike.

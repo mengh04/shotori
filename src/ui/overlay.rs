@@ -14,7 +14,11 @@ use std::sync::Arc;
 use gpui_kit::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui_kit::*;
 
-use crate::actions::{CopySelection, OcrSelection, QuitOverlay, SaveSelection};
+use crate::actions::{
+    CopySelection, FinishPolyline, OcrSelection, QuitOverlay, RedoAnnotation, SaveSelection,
+    ToggleArrow, ToggleEllipse, ToggleHighlighter, ToggleLine, ToggleMosaic, ToggleNumber,
+    TogglePencil, TogglePolyline, ToggleRectangle, UndoAnnotation,
+};
 use crate::model::selection::Selection;
 use crate::platform::capture::Capture;
 use crate::ui::hud::{hint_bar, hover_outline, selection_backdrop, selection_label};
@@ -25,6 +29,8 @@ pub struct Overlay {
     focus_handle: FocusHandle,
     /// The frozen screen image (displayed by the img element)
     frozen: Arc<RenderImage>,
+    highlighter_cache: std::rc::Rc<std::cell::RefCell<crate::annotation::HighlighterCache>>,
+    number_cache: std::rc::Rc<std::cell::RefCell<crate::annotation::NumberCache>>,
     /// Raw pixels (for cropping)
     capture: Arc<Capture>,
     session: Entity<crate::model::session::ScreenshotSession>,
@@ -64,7 +70,14 @@ impl Overlay {
             cx.notify();
         });
         let subscriptions = vec![
-            cx.observe_in(&session, window, |_, _, _, cx| cx.notify()),
+            cx.observe_in(&session, window, |this, _, window, cx| {
+                // A change from another output can remove this toolbar while
+                // one of its controls still owns the local keyboard focus.
+                if this.ocr_setup.is_none() {
+                    window.focus(&this.focus_handle, cx);
+                }
+                cx.notify();
+            }),
             cx.observe_window_bounds(window, |this, window, cx| {
                 this.session.update(cx, |session, cx| {
                     if session.set_size(&this.capture.output_name, window.bounds().size) {
@@ -76,6 +89,8 @@ impl Overlay {
         Self {
             focus_handle,
             frozen,
+            number_cache: Default::default(),
+            highlighter_cache: Default::default(),
             capture,
             session,
             _subscriptions: subscriptions,
@@ -113,6 +128,10 @@ impl Overlay {
     /// Enter / Ctrl+C / toolbar [Copy]: crop → PNG → clipboard (resident
     /// daemon) → exit. The primary exit of daily use.
     fn copy_selection(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.session.update(cx, |s, cx| {
+            s.edit_annotations(|a| a.finish_polyline());
+            cx.notify();
+        });
         let (w, h, rgba) = match self.crop(cx) {
             Some(x) => x,
             None => {
@@ -152,6 +171,10 @@ impl Overlay {
     /// SaveFile), the write and the notification run on the main thread
     /// afterwards — see [`crate::save_dialog`]
     fn save_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.session.update(cx, |s, cx| {
+            s.edit_annotations(|a| a.finish_polyline());
+            cx.notify();
+        });
         let Some((w, h, rgba)) = self.crop(cx) else {
             println!("[shotori] empty selection, ignoring");
             return;
@@ -184,7 +207,11 @@ impl Overlay {
         if self.session.read(cx).blocked() {
             return; // dialog open or an OCR already running
         }
-        let Some((w, h, rgba)) = self.crop(cx) else {
+        let Some((w, h, rgba)) = self
+            .session
+            .read(cx)
+            .crop_original(&self.capture.output_name)
+        else {
             println!("[shotori] empty selection, ignoring");
             return;
         };
@@ -416,6 +443,16 @@ impl Render for Overlay {
             .backdrop_bounds(&self.capture.output_name)
             .map(round_px);
         let hover = shared.hover_bounds(&self.capture.output_name).map(round_px);
+        let filtered = shared.filtered_preview(&self.capture.output_name);
+        let shapes = if filtered.is_some() {
+            Vec::new()
+        } else {
+            shared.local_annotations(&self.capture.output_name)
+        };
+        let number_cache = self.number_cache.clone();
+        let highlighter_cache = self.highlighter_cache.clone();
+        let drawing_polyline = shared.annotations().is_drawing_polyline();
+        let active_tool = shared.annotations().tool();
         let active = shared.active_on(&self.capture.output_name);
         let input_view = cx.entity().downgrade();
         let ws = window.bounds().size; // window logical size (= output logical size)
@@ -427,12 +464,105 @@ impl Render for Overlay {
             .id("shotori-overlay")
             .key_context(if self.ocr_setup.is_some() {
                 "ShotoriOcrSetup"
+            } else if drawing_polyline {
+                "ShotoriOverlay PolylineDrawing"
             } else {
                 "ShotoriOverlay"
             })
             .size_full()
             .relative()
             .track_focus(&self.focus_handle)
+            .on_action(cx.listener(|this, _: &ToggleRectangle, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Rectangle));
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &ToggleEllipse, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Ellipse));
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &ToggleLine, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Line));
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &ToggleArrow, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Arrow));
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &ToggleNumber, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Number));
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &TogglePencil, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Pencil));
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &ToggleHighlighter, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Highlighter));
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &ToggleMosaic, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| {
+                        let kind = if a.tool() == Some(crate::annotation::ShapeKind::Blur) {
+                            crate::annotation::ShapeKind::Blur
+                        } else {
+                            crate::annotation::ShapeKind::Mosaic
+                        };
+                        a.toggle(kind);
+                    });
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &TogglePolyline, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Polyline));
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &FinishPolyline, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.finish_polyline());
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &UndoAnnotation, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.undo());
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &RedoAnnotation, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.redo());
+                    cx.notify();
+                });
+            }))
             .on_action(cx.listener(|this, _: &CopySelection, window, cx| {
                 if this.session.read(cx).blocked() {
                     return; // setup dialog is modal
@@ -483,6 +613,16 @@ impl Render for Overlay {
                     cx.stop_propagation();
                     return;
                 }
+                if this.session.update(cx, |s, cx| {
+                    let cancelled = s.cancel_annotation();
+                    if cancelled {
+                        cx.notify();
+                    }
+                    cancelled
+                }) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.session.read(cx).selection().is_dragging() {
                     this.session.update(cx, |s, cx| {
                         s.cancel_drag();
@@ -497,21 +637,93 @@ impl Render for Overlay {
             // ── Selection interaction (events → state machine) ─────────
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                     if this.session.read(cx).blocked() {
                         return; // modal dialog: no new selections
                     }
+                    window.focus(&this.focus_handle, cx);
                     this.session.update(cx, |s, cx| {
-                        s.begin(&this.capture.output_name, ev.position);
+                        s.pointer_down(&this.capture.output_name, ev.position);
                         cx.notify();
                     });
                     cx.notify();
                 }),
             )
+            .on_mouse_down(MouseButton::Right, cx.listener(|this, _, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.finish_polyline());
+                    cx.notify();
+                });
+            }))
             // ── Layer stack (bottom to top) ─────────────────────────────
             // ① The frozen screen image (opaque, filling the window)
             .child(img(self.frozen.clone()).size_full())
-            // ② Dim layer and selection border share painted edges.
+            .child(
+                canvas(
+                    move |bounds, window, _| {
+                        let highlights = highlighter_cache.borrow_mut().prepare(&shapes, window.scale_factor(), Bounds::new(point(px(0.), px(0.)), bounds.size));
+                        let images = number_cache.borrow_mut().prepare(&shapes, window.scale_factor());
+                        shapes.into_iter().zip(images).zip(highlights).collect::<Vec<_>>()
+                    },
+                    move |viewport, shapes, window, _| {
+                        if let Some(mut clip) = sel {
+                            clip.origin += viewport.origin;
+                            window.with_content_mask(
+                                Some(ContentMask { bounds: clip }),
+                                |window| {
+                                    if let Some((mut bounds, image)) = filtered {
+                                        bounds.origin += viewport.origin;
+                                        if let Err(error) = window.paint_image(bounds, bounds, Corners::default(), image, 0, false) {
+                                            eprintln!("[shotori] filter preview failed: {error}");
+                                        }
+                                    }
+                                    for ((shape, number_image), highlight) in shapes {
+                                        if shape.kind == crate::annotation::ShapeKind::Highlighter {
+                                            if let Some(mut highlight) = highlight {
+                                                highlight.bounds.origin += viewport.origin;
+                                                if let Err(error) = window.paint_image(highlight.bounds, highlight.bounds, Corners::default(), highlight.image, 0, false) {
+                                                    eprintln!("[shotori] highlighter preview failed: {error}");
+                                                }
+                                            }
+                                            continue;
+                                        }
+                                        if let Some(mut number_image) = number_image {
+                                            number_image.bounds.origin += viewport.origin;
+                                            if let Err(error) = window.paint_image(number_image.bounds, number_image.bounds, Corners::default(), number_image.image, 0, false) {
+                                                eprintln!("[shotori] number preview failed: {error}");
+                                            }
+                                            continue;
+                                        }
+                                        if matches!(shape.kind, crate::annotation::ShapeKind::Line | crate::annotation::ShapeKind::Arrow | crate::annotation::ShapeKind::Polyline | crate::annotation::ShapeKind::Pencil) {
+                                            for path in shape.line_paths(viewport.origin) {
+                                                window.paint_path(path, rgba(shape.color));
+                                            }
+                                            continue;
+                                        }
+                                        if shape.kind == crate::annotation::ShapeKind::Ellipse {
+                                            if let Some(path) = shape.ellipse_path(viewport.origin)
+                                            {
+                                                window.paint_path(path, rgba(shape.color));
+                                            }
+                                            continue;
+                                        }
+                                        for mut stroke in shape.strokes() {
+                                            stroke.origin += viewport.origin;
+                                            window.paint_quad(fill(stroke, rgba(shape.color)));
+                                        }
+                                    }
+                                },
+                            );
+                        }
+                    },
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
+            // Paint the border above the export-backed preview as well as vector marks.
             .child(selection_backdrop(backdrop))
             // ②½ Window-snap hover outline (above the dim, below all
             // selection chrome: it is a hint, not a selection)
@@ -529,14 +741,17 @@ impl Render for Overlay {
                             }
                             let _ = view.update(cx, |this, cx| {
                                 this.session.update(cx, |s, cx| {
-                                    // drag (with press held) or hover
-                                    // tracking (idle pointer) — one event
-                                    // feed drives both
-                                    let dragged =
-                                        s.drag_to(&this.capture.output_name, event.position);
+                                    // one event feed drives selection
+                                    // drag, annotation drawing and hover
+                                    // tracking alike
+                                    let changed = s.pointer_move(
+                                        &this.capture.output_name,
+                                        event.position,
+                                        event.modifiers.shift,
+                                    );
                                     let hovered =
                                         s.hover_at(&this.capture.output_name, event.position);
-                                    if dragged || hovered {
+                                    if changed || hovered {
                                         cx.notify();
                                     }
                                 });
@@ -548,7 +763,15 @@ impl Render for Overlay {
                             }
                             let _ = input_view.update(cx, |this, cx| {
                                 this.session.update(cx, |s, cx| {
-                                    s.end(&this.capture.output_name, event.position);
+                                    let finish = event.click_count >= 2 && s.annotations().is_pressed();
+                                    s.pointer_up(
+                                        &this.capture.output_name,
+                                        event.position,
+                                        event.modifiers.shift,
+                                    );
+                                    if finish {
+                                        s.edit_annotations(|a| a.finish_polyline());
+                                    }
                                     cx.notify();
                                 });
                             });
@@ -570,13 +793,28 @@ impl Render for Overlay {
                     && self.ocr_setup.is_none()
                     && let Some(bounds) = sel
                 {
-                    Some(selection_toolbar(round_px(bounds), ws))
+                    Some(selection_toolbar(
+                        round_px(bounds),
+                        ws,
+                        self.session.read(cx).annotations(),
+                        self.session.clone(),
+                        self.focus_handle.clone(),
+                    ))
                 } else {
                     None
                 },
             )
             // ⑤ Bottom hint bar
-            .child(hint_bar())
+            .child(hint_bar(match active_tool {
+                Some(crate::annotation::ShapeKind::Number) => Some("Click to add a number · Drag to position · Ctrl+Z undo · Esc leave tool"),
+                Some(crate::annotation::ShapeKind::Arrow) => Some("Drag to draw an arrow · Shift 45° · Esc leave tool"),
+                Some(crate::annotation::ShapeKind::Line) => Some("Drag to draw a line · Shift 45° · Esc leave tool"),
+                Some(crate::annotation::ShapeKind::Mosaic | crate::annotation::ShapeKind::Blur) => Some("Drag a rectangle to apply · Esc cancel"),
+                Some(crate::annotation::ShapeKind::Highlighter) => Some("Drag to highlight · Esc cancel"),
+                Some(crate::annotation::ShapeKind::Pencil) => Some("Drag to draw · Click for a dot · Esc cancel"),
+                Some(crate::annotation::ShapeKind::Polyline) => Some("Click to add nodes · Double-click / Right-click / Enter finish · Shift 45° · Esc cancel"),
+                _ => None,
+            }))
             // ⑥ OCR busy badge (spinner on the selection)
             .children(busy_el)
             // ⑦ First-run OCR setup dialog (confirm / progress), topmost
@@ -706,5 +944,403 @@ mod multi_output_tests {
             );
             assert_eq!(shared.crop("right").unwrap().0, 100);
         });
+    }
+    #[gpui_kit::test]
+    fn rectangle_toolbar_keyboard_and_export_share_the_same_state(cx: &mut TestAppContext) {
+        geometry_toolbar_keyboard_and_export(cx, crate::annotation::ShapeKind::Rectangle);
+    }
+
+    #[gpui_kit::test]
+    fn ellipse_toolbar_keyboard_and_export_share_the_same_state(cx: &mut TestAppContext) {
+        geometry_toolbar_keyboard_and_export(cx, crate::annotation::ShapeKind::Ellipse);
+    }
+
+    #[gpui_kit::test]
+    fn line_and_polyline_pointer_keyboard_and_toolbar_workflows(cx: &mut TestAppContext) {
+        stroke_and_polyline_workflows(cx, crate::annotation::ShapeKind::Line);
+    }
+
+    #[gpui_kit::test]
+    fn arrow_and_polyline_share_keyboard_focus_history_and_export(cx: &mut TestAppContext) {
+        stroke_and_polyline_workflows(cx, crate::annotation::ShapeKind::Arrow);
+    }
+
+    #[gpui_kit::test]
+    fn number_toolbar_keeps_focus_size_and_shared_history(cx: &mut TestAppContext) {
+        stroke_and_polyline_workflows(cx, crate::annotation::ShapeKind::Number);
+    }
+
+    #[gpui_kit::test]
+    fn pencil_toolbar_and_curve_share_history(cx: &mut TestAppContext) {
+        stroke_and_polyline_workflows(cx, crate::annotation::ShapeKind::Pencil);
+    }
+
+    #[gpui_kit::test]
+    fn highlighter_toolbar_and_curve_share_history(cx: &mut TestAppContext) {
+        stroke_and_polyline_workflows(cx, crate::annotation::ShapeKind::Highlighter);
+    }
+
+    #[gpui_kit::test]
+    fn mosaic_and_blur_toolbar_share_focus_history(cx: &mut TestAppContext) {
+        stroke_and_polyline_workflows(cx, crate::annotation::ShapeKind::Mosaic);
+    }
+
+    fn stroke_and_polyline_workflows(cx: &mut TestAppContext, kind: crate::annotation::ShapeKind) {
+        cx.update(|cx| {
+            gpui_kit::base::init(cx);
+            crate::actions::init_annotation_keybindings(cx);
+            cx.bind_keys([gpui_kit::KeyBinding::new(
+                "escape",
+                super::QuitOverlay,
+                Some("ShotoriOverlay"),
+            )]);
+        });
+        let mut capture = Capture::for_test((0, 0), 1.);
+        capture.output_name = "screen".into();
+        capture.width = 500;
+        capture.height = 500;
+        capture.rgba = vec![255; 500 * 500 * 4];
+        let capture = Arc::new(capture);
+        let session = cx.new(|_| ScreenshotSession::new(vec![capture.clone()], Vec::new()));
+        let (_, cx) =
+            cx.add_window_view(|window, cx| Overlay::new(capture, session.clone(), window, cx));
+        cx.simulate_resize(size(px(500.), px(500.)));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_mouse_down(
+            point(px(20.), px(20.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.simulate_mouse_up(
+            point(px(350.), px(300.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let line_button = cx
+            .debug_bounds(match kind {
+                crate::annotation::ShapeKind::Arrow => "tb-arrow",
+                crate::annotation::ShapeKind::Number => "tb-number",
+                crate::annotation::ShapeKind::Pencil => "tb-pencil",
+                crate::annotation::ShapeKind::Highlighter => "tb-highlighter",
+                crate::annotation::ShapeKind::Mosaic => "tb-mosaic",
+                _ => "tb-line",
+            })
+            .unwrap();
+        cx.simulate_click(line_button.center(), Default::default());
+        if kind == crate::annotation::ShapeKind::Number {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let size = cx.debug_bounds("tb-number-size-2").unwrap();
+            cx.simulate_click(size.center(), Default::default());
+            cx.simulate_keystrokes("n");
+            cx.update(|_, cx| assert!(!session.read(cx).annotations().enabled()));
+            cx.simulate_keystrokes("n");
+            cx.update(|_, cx| {
+                assert_eq!(session.read(cx).annotations().tool(), Some(kind));
+                assert_eq!(session.read(cx).annotations().number_size(), 40.);
+            });
+        }
+
+        if kind == crate::annotation::ShapeKind::Arrow {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.simulate_keystrokes("a");
+            cx.update(|_, cx| assert!(!session.read(cx).annotations().enabled()));
+            cx.simulate_keystrokes("a");
+            cx.update(|_, cx| assert_eq!(session.read(cx).annotations().tool(), Some(kind)));
+        }
+        cx.simulate_mouse_down(
+            point(px(50.), px(50.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        if matches!(
+            kind,
+            crate::annotation::ShapeKind::Pencil | crate::annotation::ShapeKind::Highlighter
+        ) {
+            cx.simulate_mouse_move(
+                point(px(90.), px(90.)),
+                MouseButton::Left,
+                Default::default(),
+            );
+        }
+        cx.simulate_mouse_up(
+            point(
+                px(180.),
+                px(if kind == crate::annotation::ShapeKind::Mosaic {
+                    100.
+                } else {
+                    50.
+                }),
+            ),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.update(|_, cx| {
+            assert_eq!(
+                session
+                    .read(cx)
+                    .annotations()
+                    .visible()
+                    .next()
+                    .unwrap()
+                    .kind,
+                kind
+            )
+        });
+        if matches!(
+            kind,
+            crate::annotation::ShapeKind::Pencil | crate::annotation::ShapeKind::Highlighter
+        ) {
+            cx.update(|_, cx| {
+                let marks = session.read(cx).annotations();
+                assert_eq!(
+                    marks.visible().next().unwrap().points,
+                    vec![
+                        point(px(50.), px(50.)),
+                        point(px(90.), px(90.)),
+                        point(px(180.), px(50.))
+                    ]
+                );
+            });
+            let key = if kind == crate::annotation::ShapeKind::Highlighter {
+                "h"
+            } else {
+                "b"
+            };
+            cx.simulate_keystrokes(key);
+            cx.update(|_, cx| assert!(!session.read(cx).annotations().enabled()));
+            cx.simulate_keystrokes(key);
+        }
+        if kind == crate::annotation::ShapeKind::Mosaic {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let blur = cx.debug_bounds("tb-blur").unwrap();
+            cx.simulate_click(blur.center(), Default::default());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let strength = cx.debug_bounds("tb-strength-2").unwrap();
+            cx.simulate_click(strength.center(), Default::default());
+            cx.update(|_, cx| {
+                assert_eq!(
+                    session.read(cx).annotations().tool(),
+                    Some(crate::annotation::ShapeKind::Blur)
+                );
+                assert_eq!(session.read(cx).annotations().width(), 24.);
+            });
+            cx.simulate_keystrokes("ctrl-z");
+            cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 0));
+            cx.simulate_keystrokes("ctrl-y");
+            cx.simulate_keystrokes("m");
+            cx.update(|_, cx| assert!(!session.read(cx).annotations().enabled()));
+        }
+        cx.simulate_keystrokes("p");
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        for (x, y) in [(50., 80.), (100., 150.), (180., 80.)] {
+            cx.simulate_click(point(px(x), px(y)), Default::default());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        let color = cx.debug_bounds("tb-color-3").unwrap();
+        cx.simulate_click(color.center(), Default::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_keystrokes("enter");
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let marks = session.read(cx).annotations();
+            assert!(!marks.is_drawing_polyline());
+            assert_eq!(marks.visible().count(), 2);
+            assert_eq!(marks.visible().last().unwrap().points.len(), 3);
+        });
+        cx.simulate_keystrokes("ctrl-z");
+        cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 1));
+        cx.simulate_keystrokes("ctrl-y");
+        cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 2));
+        // A right click commits only confirmed vertices, dropping the preview.
+        cx.simulate_click(point(px(60.), px(190.)), Default::default());
+        cx.simulate_click(point(px(180.), px(190.)), Default::default());
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                gpui_kit::PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                    position: point(px(250.), px(230.)),
+                    ..Default::default()
+                }),
+                cx,
+            );
+        });
+        cx.simulate_mouse_down(
+            point(px(250.), px(230.)),
+            MouseButton::Right,
+            Default::default(),
+        );
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            assert_eq!(
+                session
+                    .read(cx)
+                    .annotations()
+                    .visible()
+                    .last()
+                    .unwrap()
+                    .points
+                    .len(),
+                2
+            );
+        });
+        // Double-click finishes once without adding a duplicate endpoint.
+        cx.simulate_click(point(px(60.), px(240.)), Default::default());
+        cx.simulate_click(point(px(160.), px(240.)), Default::default());
+        cx.simulate_mouse_down(
+            point(px(160.), px(240.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                gpui_kit::PlatformInput::MouseUp(gpui_kit::MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: point(px(160.), px(240.)),
+                    click_count: 2,
+                    ..Default::default()
+                }),
+                cx,
+            );
+            window.draw(cx).clear(cx);
+            let marks = session.read(cx).annotations();
+            assert!(!marks.is_drawing_polyline());
+            assert_eq!(marks.visible().count(), 4);
+            assert_eq!(marks.visible().last().unwrap().points.len(), 2);
+        });
+        cx.simulate_click(point(px(60.), px(260.)), Default::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_keystrokes("escape");
+        cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 4));
+    }
+
+    fn geometry_toolbar_keyboard_and_export(
+        cx: &mut TestAppContext,
+        kind: crate::annotation::ShapeKind,
+    ) {
+        let is_rectangle = kind == crate::annotation::ShapeKind::Rectangle;
+        let key = if is_rectangle { "r" } else { "e" };
+        cx.update(|cx| {
+            gpui_kit::base::init(cx);
+            crate::actions::init_annotation_keybindings(cx);
+            cx.bind_keys([gpui_kit::KeyBinding::new(
+                "escape",
+                super::QuitOverlay,
+                Some("ShotoriOverlay"),
+            )]);
+        });
+        let mut capture = Capture::for_test((0, 0), 1.);
+        capture.output_name = "screen".into();
+        capture.width = 400;
+        capture.height = 400;
+        capture.rgba = vec![255; 400 * 400 * 4];
+        let capture = Arc::new(capture);
+        let session = cx.new(|_| ScreenshotSession::new(vec![capture.clone()], Vec::new()));
+        let (_, cx) =
+            cx.add_window_view(|window, cx| Overlay::new(capture, session.clone(), window, cx));
+        cx.simulate_resize(size(px(400.), px(400.)));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_mouse_down(
+            point(px(20.), px(20.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.simulate_mouse_move(
+            point(px(250.), px(180.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.simulate_mouse_up(
+            point(px(250.), px(180.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let button = cx
+            .debug_bounds(if is_rectangle {
+                "tb-rectangle"
+            } else {
+                "tb-ellipse"
+            })
+            .expect("geometry toolbar button");
+        cx.simulate_click(button.center(), Default::default());
+        cx.update(|_, cx| assert!(session.read(cx).annotations().enabled()));
+        let shift = gpui_kit::Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        cx.simulate_mouse_down(
+            point(px(50.), px(50.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.simulate_mouse_move(point(px(90.), px(110.)), MouseButton::Left, shift);
+        cx.simulate_mouse_up(point(px(90.), px(110.)), MouseButton::Left, shift);
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let shared = session.read(cx);
+            let rectangle = shared.annotations().visible().next().unwrap();
+            assert_eq!(rectangle.kind, kind);
+            assert_eq!(rectangle.bounds.size, size(px(60.), px(60.)));
+            assert_eq!(
+                shared.selection().bounds().unwrap().size,
+                size(px(230.), px(160.))
+            );
+            assert_ne!(
+                shared.crop("screen").unwrap().2,
+                shared.crop_original("screen").unwrap().2
+            );
+            let painted = window.painted_quads();
+            let scale = window.scale_factor();
+            for stroke in rectangle.strokes().into_iter().filter(|_| is_rectangle) {
+                assert!(
+                    painted.iter().any(|quad| {
+                        quad.bounds.origin.x.0 == f32::from(stroke.origin.x) * scale
+                            && quad.bounds.origin.y.0 == f32::from(stroke.origin.y) * scale
+                            && quad.bounds.size.width.0 == f32::from(stroke.size.width) * scale
+                            && quad.bounds.size.height.0 == f32::from(stroke.size.height) * scale
+                    }),
+                    "rectangle stroke {stroke:?} missing from preview: {:?}",
+                    painted.iter().map(|q| q.bounds).collect::<Vec<_>>()
+                );
+            }
+        });
+        assert!(cx.debug_bounds("tb-undo").is_none());
+        assert!(cx.debug_bounds("tb-redo").is_none());
+        // Settings clicks must not strand keyboard focus on a transient button.
+        for selector in ["tb-color-3", "tb-width-2"] {
+            let button = cx.debug_bounds(selector).unwrap();
+            cx.simulate_click(button.center(), Default::default());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.simulate_keystrokes("ctrl-z");
+            cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 0));
+            cx.simulate_keystrokes("ctrl-y");
+            cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 1));
+        }
+        cx.update(|_, cx| {
+            assert_eq!(session.read(cx).annotations().color().1, "Green");
+            assert_eq!(session.read(cx).annotations().width(), 5.);
+        });
+        cx.simulate_keystrokes("ctrl-z");
+        cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 0));
+        cx.simulate_keystrokes("ctrl-y");
+        cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 1));
+        cx.simulate_keystrokes("escape");
+        cx.update(|_, cx| {
+            assert!(!session.read(cx).annotations().enabled());
+            assert_eq!(session.read(cx).annotations().visible().count(), 1);
+        });
+        cx.simulate_keystrokes(key);
+        cx.update(|_, cx| assert!(session.read(cx).annotations().enabled()));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        // Even keyboard focus on a settings button must survive that row's
+        // removal when the active tool is toggled off.
+        cx.simulate_keystrokes("tab tab tab tab tab tab");
+        cx.simulate_keystrokes(key);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_keystrokes("ctrl-z");
+        cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 0));
+        cx.simulate_keystrokes("ctrl-shift-z");
+        cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 1));
     }
 }
