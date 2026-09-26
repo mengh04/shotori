@@ -136,6 +136,8 @@ impl Overlay {
         origin: Point<Pixels>,
     ) -> WindowOptions {
         #[cfg(target_os = "linux")]
+        let _ = origin; // read only by the windows backend below
+        #[cfg(target_os = "linux")]
         let kind = WindowKind::LayerShell(LayerShellOptions {
             namespace: "shotori-overlay".into(),
             layer: Layer::Overlay,
