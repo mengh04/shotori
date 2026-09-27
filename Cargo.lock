@@ -6714,6 +6714,7 @@ version = "0.10.1"
 dependencies = [
  "ab_glyph",
  "anyhow",
+ "async-channel",
  "chrono",
  "clap",
  "cosmic-text",

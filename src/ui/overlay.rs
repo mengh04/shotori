@@ -477,12 +477,34 @@ impl Overlay {
             rgba: crop.rgba,
             rect: crop.bounds,
         };
-        if let Err(e) = crate::ui::pin::open(spec, cx) {
-            eprintln!("[shotori] pin failed: {e:#}");
-            return; // keep the overlay — the user can still copy/save
-        }
-        println!("[shotori] pinned {w}x{h} from {}", self.capture.output_name);
-        crate::save_dialog::close_overlays(window, cx);
+        self.session.update(cx, |session, cx| {
+            session.set_blocked(true);
+            cx.notify();
+        });
+        let prepared = cx.background_spawn(async move { crate::ui::pin::prepare(spec) });
+        cx.spawn_in(window, async move |this, cx| {
+            let prepared = prepared.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.session.update(cx, |session, cx| {
+                    session.set_blocked(false);
+                    cx.notify();
+                });
+                match prepared.and_then(|prepared| crate::ui::pin::open(prepared, cx)) {
+                    Ok(()) => {
+                        println!("[shotori] pinned {w}x{h}");
+                        crate::save_dialog::close_overlays(window, cx);
+                    }
+                    Err(error) => {
+                        eprintln!("[shotori] pin failed: {error:#}");
+                        crate::notify::send(
+                            "Couldn’t pin image",
+                            "Try pinning the selection again.",
+                        );
+                    }
+                }
+            });
+        })
+        .detach();
     }
 
     /// Ctrl+O / toolbar [OCR]. With cached models this runs immediately; on

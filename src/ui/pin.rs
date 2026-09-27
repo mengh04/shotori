@@ -1,23 +1,5 @@
-//! # Pinned screenshot (贴图): the selection as floating layer surfaces
-//!
-//! A pin is ONE shared state plus one fullscreen transparent layer
-//! surface PER OUTPUT that shows its slice of the image — mark-shot's
-//! approach, minus its plugin runtime, plus our multi-window twist:
-//! because every surface renders its own intersection with the pin,
-//! dragging across outputs is seamless (no destroy/rebind flicker, no
-//! drag hand-off — the same shared-entity pattern the overlays use
-//! with the session).
-//!
-//! Layer surfaces own their geometry (the compositor does not place
-//! them), so the pin sits at the selection's exact spot from the FIRST
-//! frame, floats above every toplevel and is never tiled. Pointer
-//! input is confined to the image through per-surface input regions —
-//! everything else clicks through to the desktop beneath.
-//!
-//! Interactions (scope: move + zoom): drag the image to move
-//! (client-side, clamped so a grabbable slice stays on the desktop),
-//! scroll to zoom, right-click to open the Close menu. Keyboard is OnDemand: click the pin
-//! first; the desktop never loses its keyboard otherwise.
+//! Pinned images share one ordered scene across all output surfaces.
+//! Clicking a pin raises it without recreating any native windows.
 
 use std::sync::{Arc, OnceLock};
 
@@ -114,210 +96,305 @@ fn clamp_origin(
         .unwrap_or(origin)
 }
 
-/// The pin's shared state — the "session" of its per-output surfaces.
-/// The rect is in GLOBAL logical coordinates; each surface renders its
-/// own intersection (see `PinSurface::render`).
-pub(crate) struct PinState {
+/// All pins share one ordered scene and one surface per output. The last
+/// entry is selected and painted last on EVERY output.
+struct Pin {
+    id: u64,
     image: Arc<RenderImage>,
-    /// Image size at zoom 1, in GLOBAL logical px (matching the
-    /// region's original on-screen size).
     base: Size<Pixels>,
-    /// The pin's rect in global logical px — THE geometry: rendering,
-    /// input regions and the drag clamp all read this one field, so
-    /// they cannot drift apart.
     rect: Bounds<Pixels>,
-    /// Grab offset while dragging (pointer → rect origin, global).
-    drag: Option<Point<Pixels>>,
-    /// Every surface of this pin; the Close command closes them all.
+}
+
+struct PinBoard {
+    pins: Vec<Pin>,
+    next_id: u64,
+    drag: Option<(u64, Point<Pixels>)>,
+    menu: Option<(u64, Point<Pixels>)>,
     windows: Vec<AnyWindowHandle>,
     outputs: Vec<Bounds<Pixels>>,
 }
 
-impl PinState {
-    fn zoom_by(&mut self, lines: f32, cx: &mut Context<Self>) {
-        if lines == 0. {
-            return;
+impl PinBoard {
+    fn new(outputs: Vec<Bounds<Pixels>>) -> Self {
+        Self {
+            pins: Vec::new(),
+            next_id: 0,
+            drag: None,
+            menu: None,
+            windows: Vec::new(),
+            outputs,
         }
-        let zoom = f32::from(self.rect.size.width) / f32::from(self.base.width);
-        let size = zoomed_size(self.base, next_zoom(zoom, lines));
-        self.rect = Bounds::new(clamp_origin(self.rect.origin, size, &self.outputs), size);
+    }
+
+    fn add(&mut self, spec: PinSpec, cx: &mut Context<Self>) {
+        self.next_id += 1;
+        let mut rect = spec.rect;
+        rect.origin = clamp_origin(rect.origin, rect.size, &self.outputs);
+        self.pins.push(Pin {
+            id: self.next_id,
+            image: image_util::rgba_to_render_image(spec.rgba, spec.w, spec.h),
+            base: spec.rect.size,
+            rect,
+        });
+        self.menu = None;
+        self.drag = None;
         cx.notify();
+    }
+
+    fn raise(&mut self, id: u64) {
+        if let Some(ix) = self.pins.iter().position(|pin| pin.id == id) {
+            let pin = self.pins.remove(ix);
+            self.pins.push(pin);
+        }
+    }
+
+    fn move_drag(&mut self, position: Point<Pixels>) {
+        if let Some((id, grab)) = self.drag
+            && let Some(pin) = self.pins.iter_mut().find(|pin| pin.id == id)
+        {
+            pin.rect.origin = clamp_origin(position - grab, pin.rect.size, &self.outputs);
+        }
+    }
+
+    fn zoom(&mut self, id: u64, lines: f32) {
+        if let Some(pin) = self.pins.iter_mut().find(|pin| pin.id == id) {
+            let zoom = f32::from(pin.rect.size.width) / f32::from(pin.base.width);
+            let size = zoomed_size(pin.base, next_zoom(zoom, lines));
+            pin.rect = Bounds::new(clamp_origin(pin.rect.origin, size, &self.outputs), size);
+        }
     }
 }
 
-/// One fullscreen transparent surface on one output, showing its
-/// slice of the shared pin.
-pub(crate) struct PinSurface {
-    state: Entity<PinState>,
+struct PinSurface {
+    board: Entity<PinBoard>,
     focus_handle: FocusHandle,
-    /// This output's global bounds (the surface covers it fully).
     output: PinOutput,
-    menu_position: Option<Point<Pixels>>,
+    _subscription: Subscription,
 }
 
 impl PinSurface {
     fn new(
-        state: Entity<PinState>,
+        board: Entity<PinBoard>,
         output: PinOutput,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
+        let subscription = cx.observe(&board, |_, _, cx| cx.notify());
         Self {
-            state,
+            board,
             focus_handle,
             output,
-            menu_position: None,
+            _subscription: subscription,
+        }
+    }
+
+    fn close_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let empty = self.board.update(cx, |board, cx| {
+            let Some((id, _)) = board.menu.take() else {
+                return false;
+            };
+            board.pins.retain(|pin| pin.id != id);
+            if board.drag.is_some_and(|(drag_id, _)| drag_id == id) {
+                board.drag = None;
+            }
+            cx.notify();
+            board.pins.is_empty()
+        });
+        if empty {
+            let handles = self.board.read(cx).windows.clone();
+            let current = window.window_handle();
+            window.remove_window();
+            for handle in handles {
+                if handle != current {
+                    let _ = handle.update(cx, |_, window, _| window.remove_window());
+                }
+            }
         }
     }
 }
 
 impl Render for PinSurface {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The window-level drag listeners (re-registered every paint —
-        // the overlay's pointer_event_sink pattern) plus the input
-        // region: only this surface's slice of the pin takes input,
-        // everything else (including every other output) clicks
-        // through. Both take effect at this frame's commit.
-        let state = self.state.clone();
-        let output = self.output.clone();
-        let focus = self.focus_handle.clone();
-        let view = cx.entity().downgrade();
-
-        let menu_open = self.menu_position.is_some();
+        let board = self.board.clone();
+        let output = self.output.bounds;
+        let menu = board
+            .read(cx)
+            .menu
+            .filter(|(_, position)| output.contains(position));
+        let any_menu = board.read(cx).menu.is_some();
         let sink = canvas(
-            move |_, _, _| (),
+            |_, _, _| (),
             move |_, (), window, cx| {
-                let slice = state.read(cx).rect.intersect(&output.bounds);
-                let local = if slice.size.width > px(0.) && slice.size.height > px(0.) {
-                    Bounds::new(slice.origin - output.bounds.origin, slice.size)
+                let regions: Vec<_> = if any_menu {
+                    vec![Bounds::new(point(px(0.), px(0.)), output.size)]
                 } else {
-                    Bounds::new(point(px(0.), px(0.)), size(px(0.), px(0.)))
+                    board
+                        .read(cx)
+                        .pins
+                        .iter()
+                        .filter_map(|pin| {
+                            let slice = pin.rect.intersect(&output);
+                            (slice.size.width > px(0.) && slice.size.height > px(0.))
+                                .then_some(Bounds::new(slice.origin - output.origin, slice.size))
+                        })
+                        .collect()
                 };
-                // While the menu is open, receive outside clicks to dismiss it.
-                let input = if menu_open {
-                    Bounds::new(point(px(0.), px(0.)), output.bounds.size)
-                } else {
-                    local
-                };
-                window.set_input_region(Some(&[input]));
-                let move_view = view.clone();
-                let move_state = state.clone();
+                window.set_input_region(Some(&regions));
+                let moving = board.clone();
                 window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                    if phase != DispatchPhase::Bubble {
-                        return;
-                    }
-                    let _ = move_view.update(cx, |_, cx| {
-                        let global = event.position + output.bounds.origin;
-                        move_state.update(cx, |s, cx| {
-                            let Some(grab) = s.drag else {
-                                return;
-                            };
-                            s.rect.origin = clamp_origin(global - grab, s.rect.size, &s.outputs);
+                    if phase == DispatchPhase::Bubble && moving.read(cx).drag.is_some() {
+                        moving.update(cx, |board, cx| {
+                            board.move_drag(event.position + output.origin);
                             cx.notify();
                         });
-                    });
-                });
-                let up_view = view.clone();
-                let up_state = state.clone();
-                window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-                    if phase != DispatchPhase::Bubble || event.button != MouseButton::Left {
-                        return;
                     }
-                    let _ = up_view.update(cx, |_, cx| {
-                        up_state.update(cx, |s, cx| {
-                            if let Some(grab) = s.drag.take() {
-                                let global = event.position + output.bounds.origin;
-                                s.rect.origin =
-                                    clamp_origin(global - grab, s.rect.size, &s.outputs);
-                                cx.notify();
-                            }
+                });
+                window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Bubble
+                        && event.button == MouseButton::Left
+                        && board.read(cx).drag.is_some()
+                    {
+                        board.update(cx, |board, cx| {
+                            board.move_drag(event.position + output.origin);
+                            board.drag = None;
+                            cx.notify();
                         });
-                    });
+                    }
                 });
             },
         )
         .absolute()
         .size_full();
 
-        // This surface's visible slice of the pin, in local coords
-        let rect = self.state.read(cx).rect;
-        let slice = rect.intersect(&self.output.bounds);
-        let local = rect.origin - self.output.bounds.origin;
-        let pin = div()
-            .id("pin-image")
-            .debug_selector(|| "pin-image".into())
-            .absolute()
-            .left(local.x)
-            .top(local.y)
-            .w(rect.size.width)
-            .h(rect.size.height)
-            .overflow_hidden()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, ev: &MouseDownEvent, window, cx| {
-                    window.focus(&this.focus_handle, cx); // OnDemand keyboard
-                    let global = ev.position + this.output.bounds.origin;
-                    this.state.update(cx, |s, cx| {
-                        s.drag = Some(global - s.rect.origin);
-                        cx.notify();
-                    });
-                }),
-            )
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(|this, ev: &MouseDownEvent, window, cx| {
-                    window.focus(&this.focus_handle, cx);
-                    this.menu_position = Some(ev.position);
-                    this.state.update(cx, |s, cx| {
-                        s.drag = None;
-                        cx.notify();
-                    });
-                    cx.notify();
-                    cx.stop_propagation();
-                }),
-            )
-            .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
-                let lines = match ev.delta {
-                    ScrollDelta::Lines(l) => l.y,
-                    ScrollDelta::Pixels(p) => f32::from(p.y) / 40.,
-                };
-                this.state.update(cx, |s, cx| s.zoom_by(lines, cx));
-            }))
-            // Keep the original global image geometry on every output. The
-            // fullscreen root clips it; resizing to the intersection would
-            // display a separate miniature of the entire image on each screen.
-            .child(
-                img(self.state.read(cx).image.clone())
-                    .size_full()
-                    .object_fit(ObjectFit::Fill),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .border_1()
-                    .border_color(rgba(crate::ui::theme::c().toolbar_border)),
-            );
+        let pins: Vec<_> = self
+            .board
+            .read(cx)
+            .pins
+            .iter()
+            .filter_map(|pin| {
+                let slice = pin.rect.intersect(&output);
+                if slice.size.width <= px(0.) || slice.size.height <= px(0.) {
+                    return None;
+                }
+                let id = pin.id;
+                let local = pin.rect.origin - output.origin;
+                Some(
+                    div()
+                        .id(("pin-image", id))
+                        .debug_selector(move || format!("pin-image-{id}"))
+                        .absolute()
+                        .left(local.x)
+                        .top(local.y)
+                        .w(pin.rect.size.width)
+                        .h(pin.rect.size.height)
+                        .overflow_hidden()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                window.focus(&this.focus_handle, cx);
+                                this.board.update(cx, |board, cx| {
+                                    board.raise(id);
+                                    let pin = board.pins.last().unwrap();
+                                    board.drag = Some((
+                                        id,
+                                        event.position + output.origin - pin.rect.origin,
+                                    ));
+                                    board.menu = None;
+                                    cx.notify();
+                                });
+                                cx.stop_propagation();
+                            }),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                window.focus(&this.focus_handle, cx);
+                                this.board.update(cx, |board, cx| {
+                                    board.raise(id);
+                                    board.drag = None;
+                                    board.menu = Some((id, event.position + output.origin));
+                                    cx.notify();
+                                });
+                                cx.stop_propagation();
+                            }),
+                        )
+                        .on_scroll_wheel(cx.listener(
+                            move |this, event: &ScrollWheelEvent, _, cx| {
+                                let lines = match event.delta {
+                                    ScrollDelta::Lines(lines) => lines.y,
+                                    ScrollDelta::Pixels(pixels) => f32::from(pixels.y) / 40.,
+                                };
+                                this.board.update(cx, |board, cx| {
+                                    board.zoom(id, lines);
+                                    cx.notify();
+                                });
+                                cx.stop_propagation();
+                            },
+                        ))
+                        .child(
+                            img(pin.image.clone())
+                                .size_full()
+                                .object_fit(ObjectFit::Fill),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .size_full()
+                                .border_1()
+                                .border_color(rgba(crate::ui::theme::c().toolbar_border)),
+                        ),
+                )
+            })
+            .collect();
 
-        let menu = self.menu_position.map(|position| {
+        let menu_el = menu.map(|(_, position)| {
             let menu_size = size(
-                px(160.).min(self.output.bounds.size.width),
-                px(40.).min(self.output.bounds.size.height),
+                px(160.).min(output.size.width),
+                px(40.).min(output.size.height),
             );
+            let local = position - output.origin;
             let origin = point(
-                position
-                    .x
-                    .max(px(0.))
-                    .min(self.output.bounds.size.width - menu_size.width),
-                position
+                local.x.max(px(0.)).min(output.size.width - menu_size.width),
+                local
                     .y
                     .max(px(0.))
-                    .min(self.output.bounds.size.height - menu_size.height),
+                    .min(output.size.height - menu_size.height),
             );
+            div()
+                .id("pin-menu")
+                .debug_selector(|| "pin-menu".into())
+                .absolute()
+                .left(origin.x)
+                .top(origin.y)
+                .w(menu_size.width)
+                .h(menu_size.height)
+                .p_1()
+                .rounded_md()
+                .border_1()
+                .border_color(rgba(crate::ui::theme::c().toolbar_border))
+                .bg(rgba(crate::ui::theme::c().toolbar_bg))
+                .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .child(
+                    gpui_kit::base::Button::new("pin-close")
+                        .debug_selector(|| "pin-close".into())
+                        .accessibility_label("Close pin")
+                        .size_full()
+                        .px_2()
+                        .rounded_sm()
+                        .text_sm()
+                        .text_color(rgba(crate::ui::theme::c().toolbar_text))
+                        .hover(|s| s.bg(rgba(crate::ui::theme::c().toolbar_hover)))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(|_, window, cx| window.dispatch_action(Box::new(ClosePin), cx))
+                        .child("Close"),
+                )
+        });
+        // All outputs consume the dismissing click, including outputs without the menu.
+        let backdrop = any_menu.then(|| {
             div()
                 .id("pin-menu-backdrop")
                 .absolute()
@@ -325,131 +402,88 @@ impl Render for PinSurface {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
-                        this.menu_position = None;
-                        cx.notify();
+                        this.board.update(cx, |board, cx| {
+                            board.menu = None;
+                            cx.notify();
+                        });
                         cx.stop_propagation();
                     }),
                 )
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(|this, _, _, cx| {
-                        this.menu_position = None;
-                        cx.notify();
+                        this.board.update(cx, |board, cx| {
+                            board.menu = None;
+                            cx.notify();
+                        });
                         cx.stop_propagation();
                     }),
-                )
-                .child(
-                    div()
-                        .id("pin-menu")
-                        .debug_selector(|| "pin-menu".into())
-                        .absolute()
-                        .left(origin.x)
-                        .top(origin.y)
-                        .w(menu_size.width)
-                        .h(menu_size.height)
-                        .p_1()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(rgba(crate::ui::theme::c().toolbar_border))
-                        .bg(rgba(crate::ui::theme::c().toolbar_bg))
-                        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                        .child(
-                            gpui_kit::base::Button::new("pin-close")
-                                .debug_selector(|| "pin-close".into())
-                                .accessibility_label("Close pin")
-                                .size_full()
-                                .px_2()
-                                .rounded_sm()
-                                .text_sm()
-                                .text_color(rgba(crate::ui::theme::c().toolbar_text))
-                                .hover(|s| s.bg(rgba(crate::ui::theme::c().toolbar_hover)))
-                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                .on_click(|_, window, cx| {
-                                    window.dispatch_action(Box::new(ClosePin), cx)
-                                })
-                                .child("Close"),
-                        ),
                 )
         });
 
         div()
             .id("shotori-pin")
             .overflow_hidden()
-            .key_context(if menu_open {
+            .size_full()
+            .track_focus(&self.focus_handle)
+            .key_context(if menu.is_some() {
                 "ShotoriPinMenu"
             } else {
                 "ShotoriPin"
             })
-            .track_focus(&focus)
-            .size_full()
             .on_action(cx.listener(|this, _: &DismissPinMenu, _, cx| {
-                this.menu_position = None;
-                cx.notify();
+                this.board.update(cx, |board, cx| {
+                    board.menu = None;
+                    cx.notify();
+                });
             }))
-            .on_action(cx.listener(|this, _: &OpenPinMenu, _, cx| {
-                let rect = this.state.read(cx).rect.intersect(&this.output.bounds);
-                this.menu_position = Some(rect.origin - this.output.bounds.origin);
-                cx.notify();
-            }))
-            .on_action(cx.listener(|this, _: &ClosePin, window, cx| {
-                // Close the whole pin: every surface, everywhere
-                let windows = this.state.read(cx).windows.clone();
-                let current = window.window_handle();
-                window.remove_window();
-                for handle in windows {
-                    if handle == current {
-                        continue;
+            .on_action(cx.listener(move |this, _: &OpenPinMenu, _, cx| {
+                this.board.update(cx, |board, cx| {
+                    if let Some(pin) = board.pins.last() {
+                        let visible = pin.rect.intersect(&output);
+                        if visible.size.width > px(0.) && visible.size.height > px(0.) {
+                            board.menu = Some((pin.id, visible.origin));
+                            cx.notify();
+                        }
                     }
-                    let _ = handle.update(cx, |_, window, _| window.remove_window());
-                }
+                });
             }))
+            .on_action(
+                cx.listener(|this, _: &ClosePin, window, cx| this.close_selected(window, cx)),
+            )
             .child(sink)
-            .children((slice.size.width > px(0.) && slice.size.height > px(0.)).then_some(pin))
-            .children(menu)
+            .children(pins)
+            .children(backdrop)
+            .children(menu_el)
     }
 }
 
-/// Everything needed to birth one pin.
 pub(crate) struct PinSpec {
-    /// The crop: device pixels (`w`×`h`).
     pub w: u32,
     pub h: u32,
     pub rgba: Vec<u8>,
-    /// The selection's rect in GLOBAL logical coordinates (the
-    /// session's space) — the pin's birth geometry.
     pub rect: Bounds<Pixels>,
 }
 
-/// Open a pin: one shared state, one transparent layer surface per
-/// registered output. Fails only if no output ever registered.
-pub(crate) fn open(spec: PinSpec, cx: &mut App) -> anyhow::Result<()> {
+/// Build the scene once. Later requests add to this same scene rather than
+/// opening more layer surfaces whose stacking would be compositor-dependent.
+fn open_board(spec: PinSpec, cx: &mut App) -> anyhow::Result<Entity<PinBoard>> {
     let outputs = outputs();
     anyhow::ensure!(!outputs.is_empty(), "no outputs registered");
-    let PinSpec { w, h, rgba, rect } = spec;
-    let base = rect.size;
-    let image = image_util::rgba_to_render_image(rgba, w, h);
-    let state = cx.new(|_| PinState {
-        image,
-        base,
-        rect,
-        drag: None,
-        windows: Vec::new(),
-        outputs: outputs.iter().map(|output| output.bounds).collect(),
-    });
-
-    let mut windows = Vec::new();
+    let board = cx.new(|_| PinBoard::new(outputs.iter().map(|output| output.bounds).collect()));
+    board.update(cx, |board, cx| board.add(spec, cx));
+    let mut windows: Vec<AnyWindowHandle> = Vec::new();
     for output in outputs {
-        let o = output.clone();
-        let st = state.clone();
+        let st = board.clone();
         let handle = cx.open_window(
             WindowOptions {
                 titlebar: None,
                 window_background: WindowBackgroundAppearance::Transparent,
-                focus: false, // OnDemand: click the pin to give it the keyboard
+                focus: false,
                 display_id: output.display_id,
                 window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                     point(px(0.), px(0.)),
-                    o.bounds.size,
+                    output.bounds.size,
                 ))),
                 kind: WindowKind::LayerShell(LayerShellOptions {
                     namespace: "shotori-pin".into(),
@@ -461,17 +495,69 @@ pub(crate) fn open(spec: PinSpec, cx: &mut App) -> anyhow::Result<()> {
                 }),
                 ..Default::default()
             },
-            move |window, cx| cx.new(|cx| PinSurface::new(st, o, window, cx)),
-        )?;
-        windows.push(handle.into());
+            move |window, cx| cx.new(|cx| PinSurface::new(st, output, window, cx)),
+        );
+        match handle {
+            Ok(handle) => windows.push(handle.into()),
+            Err(error) => {
+                for handle in windows {
+                    let _ = handle.update(cx, |_, window, _| window.remove_window());
+                }
+                return Err(error);
+            }
+        }
     }
-    state.update(cx, |s, cx| {
-        s.windows = windows;
-        cx.notify();
-    });
-    Ok(())
+    board.update(cx, |board, _| board.windows = windows);
+    Ok(board)
 }
 
+#[cfg(target_os = "linux")]
+mod transport;
+
+/// IPC preparation runs away from the UI thread. The first process retains
+/// ownership; other screenshot sessions transfer their pixels and exit.
+#[cfg(target_os = "linux")]
+pub(crate) use transport::{Prepared, prepare};
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) struct Prepared(PinSpec);
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn prepare(spec: PinSpec) -> anyhow::Result<Prepared> {
+    Ok(Prepared(spec))
+}
+
+pub(crate) fn open(prepared: Prepared, cx: &mut App) -> anyhow::Result<()> {
+    #[cfg(target_os = "linux")]
+    match prepared {
+        Prepared::Forwarded => Ok(()),
+        Prepared::Owner(spec, server) => {
+            let requests = server.start()?;
+            let board = open_board(spec, cx)?;
+            cx.spawn(async move |cx| {
+                while let Ok(request) = requests.recv().await {
+                    let result = cx.update(|cx| {
+                        // Closing the last pin wins over a request still in transit.
+                        anyhow::ensure!(
+                            !board.read(cx).pins.is_empty(),
+                            "pin session is closing; try again"
+                        );
+                        board.update(cx, |board, cx| board.add(request.spec, cx));
+                        Ok(())
+                    });
+                    let _ = request
+                        .reply
+                        .send(result.map_err(|error: anyhow::Error| error.to_string()));
+                }
+            })
+            .detach();
+            Ok(())
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        open_board(prepared.0, cx).map(|_| ())
+    }
+}
 #[cfg(test)]
 mod tests {
     // NO `use super::*` here: chained globs (this → pin → gpui_kit::*)
@@ -567,139 +653,103 @@ mod tests {
 
 #[cfg(test)]
 mod interaction_tests {
-    use super::{PinOutput, PinState, PinSurface};
-    use gpui_kit::{AppContext, Bounds, TestAppContext, point, px, size};
+    use super::{PinBoard, PinOutput, PinSpec, PinSurface};
+    use gpui_kit::{AppContext, Bounds, Entity, MouseButton, TestAppContext, point, px, size};
 
-    #[gpui_kit::test]
-    fn shrinking_at_left_and_top_edges_keeps_pin_visible(cx: &mut TestAppContext) {
-        let output = Bounds::new(point(px(0.), px(0.)), size(px(400.), px(400.)));
-        let base = size(px(200.), px(100.));
-        let state = cx.new(|_| PinState {
-            image: crate::ui::image_util::rgba_to_render_image(vec![255; 200 * 100 * 4], 200, 100),
-            base,
-            rect: Bounds::new(
-                super::clamp_origin(point(px(-500.), px(-500.)), base, &[output]),
-                base,
-            ),
-            drag: None,
-            windows: Vec::new(),
-            outputs: vec![output],
-        });
-        state.update(cx, |s, cx| {
-            for _ in 0..20 {
-                s.zoom_by(-2., cx);
-                let visible = s.rect.intersect(&output);
-                assert!(visible.size.width >= s.rect.size.width.min(px(super::MIN_VISIBLE)));
-                assert!(visible.size.height >= s.rect.size.height.min(px(super::MIN_VISIBLE)));
-            }
-        });
-    }
-
-    #[gpui_kit::test]
-    fn cross_output_layout_keeps_the_entire_image_at_a_shared_scale(cx: &mut TestAppContext) {
-        let rect = Bounds::new(point(px(150.), px(20.)), size(px(100.), px(60.)));
-        let state = cx.new(|_| PinState {
-            image: crate::ui::image_util::rgba_to_render_image(vec![255; 200 * 120 * 4], 200, 120),
-            base: rect.size,
-            rect,
-            drag: None,
-            windows: Vec::new(),
-            outputs: Vec::new(),
-        });
-        for output_x in [0., 200., 400.] {
-            let mut window_cx = cx.clone();
-            let (_, vcx) = window_cx.add_window_view(|window, cx| {
-                PinSurface::new(
-                    state.clone(),
-                    PinOutput {
-                        bounds: Bounds::new(point(px(output_x), px(0.)), size(px(200.), px(200.))),
-                        display_id: None,
-                    },
-                    window,
-                    cx,
-                )
-            });
-            vcx.simulate_resize(size(px(200.), px(200.)));
-            vcx.update(|window, cx| window.draw(cx).clear(cx));
-            if output_x == 400. {
-                assert!(vcx.debug_bounds("pin-image").is_none());
-            } else {
-                let bounds = vcx.debug_bounds("pin-image").unwrap();
-                assert_eq!(bounds.origin, point(px(150. - output_x), px(20.)));
-                assert_eq!(bounds.size, rect.size);
-            }
+    fn spec(x: f32, y: f32) -> PinSpec {
+        PinSpec {
+            w: 100,
+            h: 60,
+            rgba: vec![255; 100 * 60 * 4],
+            rect: Bounds::new(point(px(x), px(y)), size(px(100.), px(60.))),
         }
     }
+    fn board(cx: &mut TestAppContext) -> Entity<PinBoard> {
+        cx.update(|cx| {
+            gpui_kit::base::init(cx);
+            crate::actions::bind_keys(cx);
+        });
+        cx.new(|_| {
+            PinBoard::new(vec![
+                Bounds::new(point(px(0.), px(0.)), size(px(200.), px(200.))),
+                Bounds::new(point(px(200.), px(0.)), size(px(200.), px(200.))),
+            ])
+        })
+    }
 
     #[gpui_kit::test]
-    fn drag_uses_the_release_position_even_without_a_final_move(cx: &mut TestAppContext) {
-        let output = Bounds::new(point(px(0.), px(0.)), size(px(400.), px(400.)));
-        let state = cx.new(|_| PinState {
-            image: crate::ui::image_util::rgba_to_render_image(vec![255; 100 * 60 * 4], 100, 60),
-            base: size(px(100.), px(60.)),
-            rect: Bounds::new(point(px(20.), px(20.)), size(px(100.), px(60.))),
-            drag: None,
-            windows: Vec::new(),
-            outputs: vec![output],
+    fn selecting_an_exposed_pin_raises_it_and_overlap_targets_the_new_top(cx: &mut TestAppContext) {
+        let board = board(cx);
+        board.update(cx, |board, cx| {
+            board.add(spec(20., 20.), cx);
+            board.add(spec(60., 40.), cx);
         });
         let (_, vcx) = cx.add_window_view(|window, cx| {
             PinSurface::new(
-                state.clone(),
+                board.clone(),
                 PinOutput {
-                    bounds: output,
+                    bounds: Bounds::new(point(px(0.), px(0.)), size(px(200.), px(200.))),
                     display_id: None,
                 },
                 window,
                 cx,
             )
         });
-        vcx.simulate_resize(output.size);
+        vcx.simulate_resize(size(px(200.), px(200.)));
         vcx.update(|window, cx| window.draw(cx).clear(cx));
+        vcx.simulate_click(point(px(30.), px(30.)), Default::default());
+        vcx.update(|window, cx| {
+            assert_eq!(
+                board.read(cx).pins.iter().map(|p| p.id).collect::<Vec<_>>(),
+                vec![2, 1]
+            );
+            window.draw(cx).clear(cx);
+        });
+        // Both images contain this point: only the raised image may grab it.
         vcx.simulate_mouse_down(
-            point(px(30.), px(25.)),
-            gpui_kit::MouseButton::Left,
-            Default::default(),
-        );
-        vcx.simulate_mouse_move(
-            point(px(40.), px(40.)),
-            gpui_kit::MouseButton::Left,
+            point(px(80.), px(50.)),
+            MouseButton::Left,
             Default::default(),
         );
         vcx.simulate_mouse_up(
-            point(px(50.), px(45.)),
-            gpui_kit::MouseButton::Left,
+            point(px(90.), px(60.)),
+            MouseButton::Left,
             Default::default(),
         );
-        vcx.update(|_, cx| {
-            let state = state.read(cx);
-            assert_eq!(state.rect.origin, point(px(40.), px(40.)));
+        vcx.update(|window, cx| {
+            let state = board.read(cx);
+            assert_eq!(state.pins[0].rect.origin, point(px(60.), px(40.)));
+            assert_eq!(state.pins[1].rect.origin, point(px(30.), px(30.)));
             assert!(state.drag.is_none());
+            window.draw(cx).clear(cx);
         });
+        vcx.simulate_mouse_down(
+            point(px(90.), px(60.)),
+            MouseButton::Right,
+            Default::default(),
+        );
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        vcx.simulate_keystrokes("enter");
+        vcx.update(|_, cx| {
+            assert_eq!(board.read(cx).pins.len(), 1);
+            assert_eq!(board.read(cx).pins[0].id, 2);
+        });
+        assert_eq!(vcx.windows().len(), 1);
     }
 
     #[gpui_kit::test]
-    fn menu_closes_all_surfaces_but_escape_only_dismisses_menu(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            gpui_kit::base::init(cx);
-            crate::actions::bind_keys(cx);
-        });
-        let state = cx.new(|_| PinState {
-            image: crate::ui::image_util::rgba_to_render_image(vec![255; 100 * 60 * 4], 100, 60),
-            base: size(px(100.), px(60.)),
-            rect: Bounds::new(point(px(20.), px(20.)), size(px(100.), px(60.))),
-            drag: None,
-            windows: Vec::new(),
-            outputs: vec![
-                Bounds::new(point(px(0.), px(0.)), size(px(400.), px(400.))),
-                Bounds::new(point(px(400.), px(0.)), size(px(400.), px(400.))),
-            ],
+    fn cross_output_layout_and_order_share_the_same_geometry(cx: &mut TestAppContext) {
+        let board = board(cx);
+        board.update(cx, |board, cx| {
+            board.add(spec(150., 20.), cx);
+            board.add(spec(160., 30.), cx);
         });
         let mut other = cx.clone();
         let (_, first) = cx.add_window_view(|window, cx| {
             PinSurface::new(
-                state.clone(),
+                board.clone(),
                 PinOutput {
-                    bounds: Bounds::new(point(px(0.), px(0.)), size(px(400.), px(400.))),
+                    bounds: Bounds::new(point(px(0.), px(0.)), size(px(200.), px(200.))),
                     display_id: None,
                 },
                 window,
@@ -708,9 +758,69 @@ mod interaction_tests {
         });
         let (_, second) = other.add_window_view(|window, cx| {
             PinSurface::new(
-                state.clone(),
+                board.clone(),
                 PinOutput {
-                    bounds: Bounds::new(point(px(400.), px(0.)), size(px(400.), px(400.))),
+                    bounds: Bounds::new(point(px(200.), px(0.)), size(px(200.), px(200.))),
+                    display_id: None,
+                },
+                window,
+                cx,
+            )
+        });
+        for vcx in [&mut *first, &mut *second] {
+            vcx.simulate_resize(size(px(200.), px(200.)));
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        assert_eq!(
+            first.debug_bounds("pin-image-1").unwrap().origin,
+            point(px(150.), px(20.))
+        );
+        assert_eq!(
+            second.debug_bounds("pin-image-1").unwrap().origin,
+            point(px(-50.), px(20.))
+        );
+        assert_eq!(
+            second.debug_bounds("pin-image-1").unwrap().size,
+            size(px(100.), px(60.))
+        );
+        first.simulate_click(point(px(155.), px(25.)), Default::default());
+        second.update(|window, cx| window.draw(cx).clear(cx));
+        second.simulate_mouse_down(
+            point(px(20.), px(50.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        second.update(|_, cx| assert_eq!(board.read(cx).drag.unwrap().0, 1));
+        second.simulate_mouse_up(
+            point(px(180.), px(150.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        first.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(first.debug_bounds("pin-image-1").is_none());
+    }
+
+    #[gpui_kit::test]
+    fn menu_escape_outside_click_and_close_on_all_outputs(cx: &mut TestAppContext) {
+        let board = board(cx);
+        board.update(cx, |board, cx| board.add(spec(150., 150.), cx));
+        let mut other = cx.clone();
+        let (_, first) = cx.add_window_view(|window, cx| {
+            PinSurface::new(
+                board.clone(),
+                PinOutput {
+                    bounds: Bounds::new(point(px(0.), px(0.)), size(px(200.), px(200.))),
+                    display_id: None,
+                },
+                window,
+                cx,
+            )
+        });
+        let (_, second) = other.add_window_view(|window, cx| {
+            PinSurface::new(
+                board.clone(),
+                PinOutput {
+                    bounds: Bounds::new(point(px(200.), px(0.)), size(px(200.), px(200.))),
                     display_id: None,
                 },
                 window,
@@ -718,51 +828,57 @@ mod interaction_tests {
             )
         });
         let mut handles = Vec::new();
-        for context in [&mut *first, &mut *second] {
-            handles.push(context.update(|window, cx| {
-                let handle = window.window_handle();
-                state.update(cx, |s, _| s.windows.push(handle));
+        for vcx in [&mut *first, &mut *second] {
+            vcx.simulate_resize(size(px(200.), px(200.)));
+            handles.push(vcx.update(|window, cx| {
                 window.draw(cx).clear(cx);
-                handle
+                window.window_handle()
             }));
         }
-        first.simulate_resize(size(px(400.), px(400.)));
+        board.update(first, |board, _| board.windows = handles.clone());
         first.simulate_keystrokes("escape");
         assert!(first.windows().contains(&handles[0]));
         first.simulate_mouse_down(
-            point(px(110.), px(70.)),
-            gpui_kit::MouseButton::Right,
+            point(px(190.), px(190.)),
+            MouseButton::Right,
             Default::default(),
         );
         first.update(|window, cx| window.draw(cx).clear(cx));
-        assert!(first.debug_bounds("pin-menu").is_some());
+        let menu = first.debug_bounds("pin-menu").unwrap();
+        assert_eq!(menu.bottom_right(), point(px(200.), px(200.)));
         first.simulate_keystrokes("escape");
         first.update(|window, cx| window.draw(cx).clear(cx));
         assert!(first.debug_bounds("pin-menu").is_none());
-        assert!(first.windows().contains(&handles[0]));
+        first.simulate_keystrokes("shift-f10");
+        second.update(|window, cx| window.draw(cx).clear(cx));
+        second.simulate_click(point(px(180.), px(10.)), Default::default());
+        first.update(|window, cx| {
+            assert!(board.read(cx).menu.is_none());
+            assert!(board.read(cx).drag.is_none());
+            window.draw(cx).clear(cx);
+        });
         first.simulate_keystrokes("shift-f10");
         first.update(|window, cx| window.draw(cx).clear(cx));
-        assert!(first.debug_bounds("pin-menu").is_some());
-        first.simulate_mouse_down(
-            point(px(390.), px(390.)),
-            gpui_kit::MouseButton::Left,
-            Default::default(),
-        );
-        first.update(|window, cx| window.draw(cx).clear(cx));
-        assert!(first.debug_bounds("pin-menu").is_none());
-        first.update(|_, cx| assert!(state.read(cx).drag.is_none()));
-        first.simulate_mouse_down(
-            point(px(110.), px(70.)),
-            gpui_kit::MouseButton::Right,
-            Default::default(),
-        );
-        first.update(|window, cx| window.draw(cx).clear(cx));
-        // The command extends outside the image, and must still receive clicks.
         let button = first.debug_bounds("pin-close").unwrap();
         first.simulate_click(button.center(), Default::default());
         first.run_until_parked();
         for handle in handles {
             assert!(!first.windows().contains(&handle));
         }
+    }
+
+    #[gpui_kit::test]
+    fn shrinking_at_the_top_left_remains_grabbable(cx: &mut TestAppContext) {
+        let board = board(cx);
+        board.update(cx, |board, cx| {
+            board.add(spec(-100., -100.), cx);
+            for _ in 0..20 {
+                board.zoom(1, -2.);
+                let rect = board.pins[0].rect;
+                let visible = rect.intersect(&board.outputs[0]);
+                assert!(visible.size.width >= rect.size.width.min(px(super::MIN_VISIBLE)));
+                assert!(visible.size.height >= rect.size.height.min(px(super::MIN_VISIBLE)));
+            }
+        });
     }
 }
