@@ -22,6 +22,10 @@ const GET_TREE: u32 = 4;
 pub fn query() -> Option<Vec<SnapRect>> {
     let path = std::env::var("SWAYSOCK").ok()?;
     let mut stream = UnixStream::connect(path).ok()?;
+    // The query wrapper has a 1 s budget on the main thread, but a hung
+    // i3-IPC socket would also leak this helper thread forever — cap the
+    // read so the thread can always exit (hyprland.rs does the same).
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(800)));
     let payload = ipc_call(&mut stream, GET_TREE).ok()?;
     let tree: Value = serde_json::from_slice(&payload).ok()?;
     let mut rects = Vec::new();
