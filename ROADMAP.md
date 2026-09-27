@@ -1026,9 +1026,8 @@ time, with shared desktop coordinates, preview, history, and PNG export.
 10. Implemented: brush and rectangle eraser — three brush diameters, restoration of
     original capture pixels (including filtered areas), ordered shared history and
     cross-output preview/export. Wheel sizing, region editing and clear-all remain follow-ups.
-11. Spotlight.
-12. Watermark.
-13. Magnifier.
+Spotlight, watermark and magnifier are deferred at the user’s request (2026-09-27);
+they are not part of the current implementation queue.
 
 Follow-up geometry enhancements: select existing annotations, move/resize,
 delete, fill, line styles, rounded corners, rotation, sectors and arcs.
@@ -1184,3 +1183,12 @@ the UI (overlay, annotations, toolbar, OCR) runs unmodified on both.
 - **Window snap**: EnumWindows + DWMWA_CLOAKED filtering; every visible
   toplevel is enumerable (no tiled-window blind spot), rect converted
   physical → hybrid by the containing monitor's scale.
+
+## Notification feedback (2026-09-27)
+
+Copy/save/OCR notifications use result-oriented titles and concise bodies instead
+of log-style arrows, dimensions and repeated app names. Empty OCR results are
+reported separately from recognition failures. Linux save notifications expose
+an Open image action for the actual saved file, handled by the detached notification
+child after the screenshot process exits. Body markup is escaped so recognized
+text and filenames remain literal. Windows toast action support remains a follow-up.

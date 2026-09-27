@@ -375,6 +375,10 @@ impl Overlay {
         if let Err(e) = crate::clipboard::copy_image(png) {
             // Stay in the overlay on failure: the user can still Ctrl+S
             eprintln!("[shotori] copy failed: {e:#}");
+            crate::notify::send(
+                "Couldn’t copy screenshot",
+                "Try again, or save the image to a file.",
+            );
             return;
         }
         println!(
@@ -382,8 +386,8 @@ impl Overlay {
             self.capture.output_name
         );
         crate::notify::send_with_preview(
-            "Shotori",
-            &format!("Copied {w}×{h} → clipboard"),
+            "Screenshot copied",
+            "The image is ready to paste.",
             w,
             h,
             &rgba,
@@ -609,17 +613,20 @@ async fn ocr_to_clipboard(
         .background_executor()
         .spawn(async move { crate::ocr::run_ocr(&rgba, w, h) })
         .await;
-    let text = result.and_then(|t| {
-        if t.is_empty() {
-            Err(anyhow::anyhow!("OCR found no text"))
-        } else {
-            Ok(t)
+    let _ = window_handle.update(cx, |_, _, cx| match &result {
+        Ok(t) if t.trim().is_empty() => {
+            crate::notify::send(
+                "No text found",
+                "Try selecting a clearer area containing text.",
+            );
         }
-    });
-    let _ = window_handle.update(cx, |_, _, cx| match &text {
         Ok(t) => {
             if let Err(e) = crate::clipboard::copy_text(t.clone()) {
                 eprintln!("[shotori] OCR copy failed: {e:#}");
+                crate::notify::send(
+                    "Couldn’t copy text",
+                    "The clipboard is unavailable. Try again.",
+                );
                 return;
             }
             let lines = t.lines().count();
@@ -632,18 +639,17 @@ async fn ocr_to_clipboard(
             println!(
                 "[shotori] OCR done {w}x{h} → {lines} line(s) → clipboard (preview: {preview})"
             );
-            crate::notify::send(
-                "Shotori OCR",
-                &format!("{lines} lines → clipboard\n{preview}"),
-            );
+            crate::notify::send("Text copied", &preview);
             cx.quit();
         }
         Err(e) => {
             eprintln!("[shotori] OCR failed: {e:#}");
             // The overlay stays open with no in-UI error display yet —
             // without this notification a keybinding user sees nothing
-            let msg: String = e.to_string().chars().take(200).collect();
-            crate::notify::send("Shotori OCR failed", &msg);
+            crate::notify::send(
+                "Couldn’t recognize text",
+                "Try again or select a clearer area.",
+            );
         }
     });
     // Clear the busy flag on both paths (failure stays on-screen; a stuck

@@ -22,7 +22,7 @@ out of it — all without leaving the keyboard.
 - Copy to clipboard (`Enter` / `Ctrl+C`)
 - Save to disk (`Ctrl+S`) via the system "save as" dialog
 - OCR (`Ctrl+O`) — on-device, works on mixed Chinese/English text
-- Desktop notifications with a thumbnail of the result
+- Desktop notifications with a thumbnail of the result; saved-image notifications on Linux include an **Open image** action (requires `xdg-open` and a notification server with action support)
 
 ## Requirements
 
