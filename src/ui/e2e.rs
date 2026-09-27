@@ -6,7 +6,7 @@
 //!   all running the same code, enabling all of them makes them fight
 //!   each other; this scopes the other two knobs to one overlay
 //! - `SHOTORI_DEBUG_SELECTION=x,y,w,h` — inject a ready-made selection
-//! - `SHOTORI_DEBUG_ACTION=copy|save|quit|ocr|ocrsetup` — fire the
+//! - `SHOTORI_DEBUG_ACTION=copy|save|pin|quit|ocr|ocrsetup` — fire the
 //!   action(s) automatically after 1.5s; the only entry point for
 //!   headless e2e (the virtual pointer is dead on niri, see ROADMAP).
 //!   quit/ocr go through the real dispatch_action pipeline;
@@ -48,10 +48,9 @@ pub(crate) fn debug_selection(targeted: bool) -> Selection {
 
 /// Fire the configured action(s) after 1.5s.
 pub(crate) fn spawn_debug_action(window: &mut Window, cx: &mut Context<Overlay>) {
-    let Some(action) = std::env::var("SHOTORI_DEBUG_ACTION")
-        .ok()
-        .filter(|a| a == "copy" || a == "quit" || a == "save" || a == "ocr" || a == "ocrsetup")
-    else {
+    let Some(action) = std::env::var("SHOTORI_DEBUG_ACTION").ok().filter(|a| {
+        a == "copy" || a == "quit" || a == "save" || a == "pin" || a == "ocr" || a == "ocrsetup"
+    }) else {
         return;
     };
     let win = window.window_handle();
@@ -76,6 +75,7 @@ pub(crate) fn spawn_debug_action(window: &mut Window, cx: &mut Context<Overlay>)
             let action: Box<dyn gpui_kit::Action> = match action.as_str() {
                 "copy" => Box::new(CopySelection),
                 "save" => Box::new(SaveSelection),
+                "pin" => Box::new(crate::actions::PinSelection),
                 "ocr" => Box::new(OcrSelection),
                 _ => Box::new(QuitOverlay),
             };

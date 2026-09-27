@@ -16,10 +16,10 @@ use gpui_kit::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOpti
 use gpui_kit::*;
 
 use crate::actions::{
-    CancelText, CopySelection, FinishPolyline, OcrSelection, QuitOverlay, RedoAnnotation,
-    SaveSelection, SelectScreen, ToggleArrow, ToggleEllipse, ToggleEraser, ToggleHighlighter,
-    ToggleLine, ToggleMosaic, ToggleNumber, TogglePencil, TogglePolyline, ToggleRectangle,
-    ToggleText, UndoAnnotation,
+    CancelText, CopySelection, FinishPolyline, OcrSelection, PinSelection, QuitOverlay,
+    RedoAnnotation, SaveSelection, SelectScreen, ToggleArrow, ToggleEllipse, ToggleEraser,
+    ToggleHighlighter, ToggleLine, ToggleMosaic, ToggleNumber, TogglePencil, TogglePolyline,
+    ToggleRectangle, ToggleText, UndoAnnotation,
 };
 use crate::model::placement::round_px;
 use crate::model::selection::{PressTarget, Selection};
@@ -451,6 +451,40 @@ impl Overlay {
         .detach();
     }
 
+    /// Ctrl+P / toolbar [Pin]: crop → floating pinned layer surfaces →
+    /// overlays down. The pin is one shared state plus a transparent
+    /// Top-layer surface per output (see `ui::pin`) — first frame at
+    /// the selection's exact spot, draggable across outputs, no
+    /// compositor IPC. The app stays alive on pins and exits when the
+    /// last one closes — no `cx.quit()` here, unlike copy/save.
+    fn pin_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.session.update(cx, |s, cx| {
+            s.edit_annotations(|a| a.finish_polyline());
+            cx.notify();
+        });
+        let Some((w, h, rgba)) = self.crop(cx) else {
+            println!("[shotori] empty selection, ignoring");
+            return;
+        };
+        // the selection's GLOBAL rect is the pin's birth geometry
+        let Some(bounds) = self.session.read(cx).selection().bounds() else {
+            return;
+        };
+        let spec = crate::ui::pin::PinSpec {
+            w,
+            h,
+            rgba,
+            source_scale: self.capture.scale,
+            rect: bounds,
+        };
+        if let Err(e) = crate::ui::pin::open(spec, cx) {
+            eprintln!("[shotori] pin failed: {e:#}");
+            return; // keep the overlay — the user can still copy/save
+        }
+        println!("[shotori] pinned {w}x{h} from {}", self.capture.output_name);
+        crate::save_dialog::close_overlays(window, cx);
+    }
+
     /// Ctrl+O / toolbar [OCR]. With cached models this runs immediately; on
     /// the very first use it opens the setup dialog (confirm → progress →
     /// cancel) instead — [`crate::ui::ocr_setup`].
@@ -858,6 +892,13 @@ impl Render for Overlay {
                     return; // setup dialog is modal
                 }
                 this.save_selection(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &PinSelection, window, cx| {
+                this.finish_text(true, window, cx);
+                if this.session.read(cx).blocked() {
+                    return; // setup dialog is modal
+                }
+                this.pin_selection(window, cx);
             }))
             .on_action(cx.listener(|this, _: &OcrSelection, window, cx| {
                 this.finish_text(true, window, cx);

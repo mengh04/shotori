@@ -164,6 +164,15 @@ fn main() {
                         // bounds; see window_options
                         let (lw, lh) = cap.logical_size_f32();
                         let logical = size(px(lw), px(lh));
+                        // The GLOBAL logical rect (the session's space):
+                        // pins span outputs through it (see ui::pin)
+                        shotori::ui::pin::register_output(
+                            Bounds::new(
+                                point(px(cap.logical_pos.0 as f32), px(cap.logical_pos.1 as f32)),
+                                logical,
+                            ),
+                            did,
+                        );
                         // Windows window bounds are absolute gpui-logical
                         // coordinates = physical origin ÷ scale (Linux
                         // ignores the origin — layer-shell anchors cover
@@ -176,7 +185,9 @@ fn main() {
                             .open_window(
                                 Overlay::window_options(did, logical, origin),
                                 |window, cx| {
-                                    cx.new(|cx| Overlay::new(cap, session.clone(), window, cx))
+                                    cx.new(|cx| {
+                                        Overlay::new(cap, session.clone(), window, cx)
+                                    })
                                 },
                             )
                             .expect("failed to open layer-shell window");
