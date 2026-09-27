@@ -958,6 +958,35 @@ a dragged toolbar position.
   → label + toolbar on eDP-1, HDMI clean (pre-fix: blank everywhere)
 - 163 green
 
+### Addendum 2: the cursor must not depend on a per-window pointer (same day)
+
+Follow-up report: after a cross-screen release the selection "couldn't
+be grabbed" until the mouse wiggled — and the first wiggle visibly
+flickered (stale cursor for an instant, then the open hand). The
+cursor pipeline was already half-right: every overlay re-derives its
+cursor cell on ANY session change (a session observer calls
+`refresh_cursor`), not just on its own pointer moves. But the INPUT
+was `pointer_local` — each window's own last-seen pointer position.
+Under implicit grab the window that physically holds the pointer
+receives no events at all, so its position was `None` (or ancient):
+the rehost repaint derived the cursor from nothing and fell back to
+Crosshair over a perfectly grabbable interior. The first motion fed
+it a position — the flicker to OpenHand.
+
+Fix: the pointer's GLOBAL desktop position is session state
+(`pointer_global`), recorded at the entry of every pointer event
+(down/move/up, toolbar drag begin/move — whoever receives the event
+reports for the desktop). `cursor_style` reads it via `pointer_in`
+(mapped into this window, unclamped) instead of a per-window cache,
+and `press_target` takes the global directly. Removing `pointer_local`
+also fixed a latent ordering wart: the move listener used to refresh
+the cursor BEFORE applying the event to the session — one event of
+lag on every move; state now applies first, cursor derives after.
+Rule: pointer position is desktop-global truth shared by all windows;
+per-window copies go stale exactly when a state flip lands chrome
+under a window the pointer never moved over.
+
+
 ## Annotation tools — incremental implementation
 
 Reference: [PixPin annotation basics](https://pixpin.cn/docs/mark/base-use)

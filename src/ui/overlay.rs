@@ -51,10 +51,6 @@ pub struct Overlay {
     /// (crosshair / open hand / resize), refreshed by the pointer-move
     /// path and pushed during paint by the handles canvas.
     cursor: std::rc::Rc<std::cell::Cell<CursorStyle>>,
-    /// Last pointer position in THIS window's coordinates (None before
-    /// the first move) — lets the cursor recompute when the state changes
-    /// without the pointer moving (Ctrl+A, snap, undo…).
-    pointer_local: std::rc::Rc<std::cell::Cell<Option<Point<Pixels>>>>,
 }
 
 impl Overlay {
@@ -104,7 +100,6 @@ impl Overlay {
             text_editing: None,
             text_subscription: None,
             cursor: std::rc::Rc::new(std::cell::Cell::new(CursorStyle::Crosshair)),
-            pointer_local: std::rc::Rc::new(std::cell::Cell::new(None)),
         };
         overlay.attach_observers(window, cx);
         overlay
@@ -166,8 +161,13 @@ impl Overlay {
                 // the toolbar can sit INSIDE the box and must steal the
                 // cursor from the move affordance beneath it). Geometry
                 // comes from the session — the same rects the render side
-                // draws — so the two cannot drift apart.
-                let p = self.pointer_local.get();
+                // draws — so the two cannot drift apart. The position
+                // comes from the session too: the GLOBAL pointer mapped
+                // into this window, so the affordance is right even on a
+                // window the pointer never moved over (cross-screen
+                // release under Wayland's implicit grab — the press
+                // window received every event, this one none).
+                let p = session.pointer_in(&self.capture.output_name);
                 if let Some((lg, rg)) = session.toolbar_grips(&self.capture.output_name) {
                     if p.is_some_and(|p| lg.contains(&p) || rg.contains(&p)) {
                         return CursorStyle::OpenHand;
@@ -182,9 +182,8 @@ impl Overlay {
                 if session.annotations().enabled() {
                     return CursorStyle::Crosshair;
                 }
-                if let (Some(bounds), Some(local)) = (selection.bounds(), self.pointer_local.get())
+                if let (Some(bounds), Some(global)) = (selection.bounds(), session.pointer_global())
                 {
-                    let global = session.to_global(&self.capture.output_name, local);
                     return match crate::model::selection::press_target(bounds, global) {
                         PressTarget::Handle(h) => handle_cursor(h),
                         PressTarget::Interior => CursorStyle::OpenHand,
@@ -935,7 +934,6 @@ impl Render for Overlay {
                         return;
                     }
                     window.focus(&this.focus_handle, cx);
-                    this.pointer_local.set(Some(ev.position));
                     this.session.update(cx, |s, cx| {
                         s.pointer_down(&this.capture.output_name, ev.position);
                         cx.notify();
@@ -1048,12 +1046,15 @@ impl Render for Overlay {
                                 return;
                             }
                             let _ = view.update(cx, |this, cx| {
-                                this.pointer_local.set(Some(event.position));
-                                // one event feed drives selection
-                                // drag, annotation drawing, hover
-                                // tracking, toolbar dragging and the
-                                // cursor alike
-                                let cursor_changed = this.refresh_cursor(cx);
+                                // One event feed drives selection drag,
+                                // annotation drawing, hover tracking and
+                                // toolbar dragging — THEN the cursor is
+                                // derived, with state AND the session's
+                                // tracked pointer position both current.
+                                // (Refreshing first would lag an event:
+                                // the affordance would be computed from
+                                // the previous position — the cursor
+                                // equivalent of a dropped frame.)
                                 this.session.update(cx, |s, cx| {
                                     if s.toolbar_drag_active() {
                                         // the toolbar follows the pointer;
@@ -1061,8 +1062,7 @@ impl Render for Overlay {
                                         if s.toolbar_drag_move(
                                             &this.capture.output_name,
                                             event.position,
-                                        ) || cursor_changed
-                                        {
+                                        ) {
                                             cx.notify();
                                         }
                                         return;
@@ -1074,10 +1074,13 @@ impl Render for Overlay {
                                     );
                                     let hovered =
                                         s.hover_at(&this.capture.output_name, event.position);
-                                    if changed || hovered || cursor_changed {
+                                    if changed || hovered {
                                         cx.notify();
                                     }
                                 });
+                                if this.refresh_cursor(cx) {
+                                    cx.notify();
+                                }
                             });
                         });
                         window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
@@ -1276,7 +1279,7 @@ mod multi_output_tests {
         let session =
             cx.new(|_| ScreenshotSession::new(vec![left.clone(), right.clone()], Vec::new()));
         let mut second_context = cx.clone();
-        let (_, left_cx) =
+        let (left_view, left_cx) =
             cx.add_window_view(|window, cx| Overlay::new(left, session.clone(), window, cx));
         let (_, right_cx) = second_context
             .add_window_view(|window, cx| Overlay::new(right, session.clone(), window, cx));
@@ -1336,6 +1339,14 @@ mod multi_output_tests {
             assert!(shared.toolbar_bounds("left").is_some());
             assert!(shared.local_bounds("left").is_some());
             assert!(shared.toolbar_bounds("right").is_none());
+        });
+        // The cursor must be right WITHOUT a wiggle: left's window never
+        // received a single pointer event (implicit grab), yet the pointer
+        // physically sits inside the selection on it. The affordance is
+        // derived from the session-tracked GLOBAL pointer — "can't grab
+        // until I slide the mouse" was a stale per-window position.
+        left_cx.update(|_, cx| {
+            assert_eq!(left_view.read(cx).cursor.get(), CursorStyle::OpenHand);
         });
     }
 
