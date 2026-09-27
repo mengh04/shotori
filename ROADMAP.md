@@ -1246,3 +1246,21 @@ high_contrast remain fixed choices. theme.toml replaces theme.json. Configuratio
 exposes base, accent, dim_opacity and a complete annotation palette; toolbar and
 chip surfaces stay in coherent built-in palettes. Selected tint is derived from
 the accent, with contrast-aware foregrounds. Legacy JSON is not auto-loaded.
+
+
+## Clipboard opening and annotation preview caching (2026-09-27)
+
+- Linux clipboard-copy notifications now expose the same single Open image action
+  as save notifications. The action opens a uniquely named, full-resolution cached
+  PNG, never the thumbnail. Cache failures do not fail the clipboard copy. Both
+  clipboard images and thumbnails are lazily removed after 24 hours.
+- Filter/text/eraser previews retain the frozen crop and completed annotation
+  layer. Pointer updates replay only the current draft; appends replay only new
+  committed shapes. Undo/replacement rebuild the layer, and selection/display
+  geometry changes invalidate it. Erasers always restore the frozen capture.
+- Regression coverage compares incremental preview pixels with full export across
+  mixed-DPI outputs, gaps, filters, erasers, cancellation, undo and redo. A manual
+  ignored benchmark measures drawing after six full-selection blurs.
+- The cache uses additional selection-sized pixel buffers. Active large-area
+  filters and uploading a changed preview still cost work; this does not eliminate
+  every possible source of frame latency. Windows toast actions remain unsupported.

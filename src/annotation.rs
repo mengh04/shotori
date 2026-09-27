@@ -551,6 +551,14 @@ impl Annotations {
             .chain(self.draft.as_ref().map(|draft| &draft.shape))
     }
 
+    pub(crate) fn committed(&self) -> &[Shape] {
+        &self.shapes
+    }
+
+    pub(crate) fn draft_shape(&self) -> Option<&Shape> {
+        self.draft.as_ref().map(|draft| &draft.shape)
+    }
+
     pub(crate) fn rasterize(
         &self,
         rgba: &mut [u8],
@@ -564,17 +572,30 @@ impl Annotations {
             .visible()
             .any(|s| matches!(s.kind, ShapeKind::Eraser | ShapeKind::EraserRect))
             .then(|| rgba.to_vec());
-        for shape in self.visible() {
+        Self::rasterize_shapes(
+            self.visible(),
+            rgba,
+            original.as_deref().unwrap_or(&[]),
+            w,
+            h,
+            origin,
+            scale,
+        );
+    }
+
+    /// Replay only the changed layer; erasers always restore the frozen capture.
+    pub(crate) fn rasterize_shapes<'a>(
+        shapes: impl Iterator<Item = &'a Shape>,
+        rgba: &mut [u8],
+        original: &[u8],
+        w: u32,
+        h: u32,
+        origin: Point<Pixels>,
+        scale: f32,
+    ) {
+        for shape in shapes {
             if matches!(shape.kind, ShapeKind::Eraser | ShapeKind::EraserRect) {
-                eraser::rasterize(
-                    shape,
-                    rgba,
-                    original.as_deref().expect("eraser background"),
-                    w,
-                    h,
-                    origin,
-                    scale,
-                );
+                eraser::rasterize(shape, rgba, original, w, h, origin, scale);
                 continue;
             }
             if shape.kind == ShapeKind::Text {

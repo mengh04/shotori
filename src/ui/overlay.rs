@@ -397,7 +397,7 @@ impl Overlay {
                 return;
             }
         };
-        if let Err(e) = crate::clipboard::copy_image(png) {
+        if let Err(e) = crate::clipboard::copy_image(png.clone()) {
             // Stay in the overlay on failure: the user can still Ctrl+S
             eprintln!("[shotori] copy failed: {e:#}");
             crate::notify::send(
@@ -410,13 +410,7 @@ impl Overlay {
             "[shotori] copied {w}x{h} (from {}) to clipboard",
             self.capture.output_name
         );
-        crate::notify::send_with_preview(
-            "Screenshot copied",
-            "The image is ready to paste.",
-            w,
-            h,
-            &rgba,
-        );
+        crate::notify::copied(&png, w, h, &rgba);
         cx.quit();
     }
 
