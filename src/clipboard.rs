@@ -456,7 +456,7 @@ mod imp {
             let format_name: Vec<u16> = "PNG\0".encode_utf16().collect();
             let png_format = RegisterClipboardFormatW(PCWSTR(format_name.as_ptr()));
             if png_format != 0 {
-                let _ = set_format(png_format, &png_bytes); // best effort
+                let _ = set_format(png_format, png); // best effort
             }
             set_format(windows::Win32::System::Ole::CF_DIB.0 as u32, &dib)
         })
