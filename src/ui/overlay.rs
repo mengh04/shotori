@@ -35,6 +35,7 @@ pub struct Overlay {
     /// The frozen screen image (displayed by the img element)
     frozen: Arc<RenderImage>,
     highlighter_cache: std::rc::Rc<std::cell::RefCell<crate::annotation::HighlighterCache>>,
+    canvas_images: std::rc::Rc<std::cell::RefCell<image_util::CanvasImages>>,
     number_cache: std::rc::Rc<std::cell::RefCell<crate::annotation::NumberCache>>,
     /// Raw pixels (for cropping)
     capture: Arc<Capture>,
@@ -90,6 +91,7 @@ impl Overlay {
         let mut overlay = Self {
             focus_handle,
             frozen,
+            canvas_images: Default::default(),
             number_cache: Default::default(),
             highlighter_cache: Default::default(),
             capture,
@@ -706,6 +708,8 @@ impl Render for Overlay {
         } else {
             shared.local_annotations(&self.capture.output_name)
         };
+        let canvas_images = self.canvas_images.clone();
+        let filtered_image = filtered.as_ref().map(|(_, image)| image.clone());
         let number_cache = self.number_cache.clone();
         let highlighter_cache = self.highlighter_cache.clone();
         let drawing_polyline = shared.annotations().is_drawing_polyline();
@@ -937,6 +941,17 @@ impl Render for Overlay {
                     move |bounds, window, _| {
                         let highlights = highlighter_cache.borrow_mut().prepare(&shapes, window.scale_factor(), Bounds::new(point(px(0.), px(0.)), bounds.size));
                         let images = number_cache.borrow_mut().prepare(&shapes, window.scale_factor());
+                        let next = filtered_image.into_iter()
+                            .chain(images.iter().flatten().map(|image| image.image.clone()))
+                            .chain(highlights.iter().flatten().map(|image| image.image.clone()))
+                            .collect();
+                        for image in canvas_images.borrow_mut().replace(next) {
+                            // Each output has its own atlas. Do not evict another
+                            // window's currently displayed shared session image.
+                            if let Err(error) = window.drop_image(image) {
+                                eprintln!("[shotori] preview cleanup failed: {error}");
+                            }
+                        }
                         shapes.into_iter().zip(images).zip(highlights).collect::<Vec<_>>()
                     },
                     move |viewport, shapes, window, _| {
@@ -1171,6 +1186,128 @@ mod multi_output_tests {
     use crate::{model::session::ScreenshotSession, platform::capture::Capture};
     use gpui_kit::{AppContext, CursorStyle, MouseButton, TestAppContext, point, px, size};
     use std::sync::Arc;
+
+    #[gpui_kit::test]
+    fn all_image_annotation_tools_release_replaced_previews(cx: &mut TestAppContext) {
+        use crate::annotation::ShapeKind;
+        cx.update(gpui_kit::base::init);
+        let mut capture = Capture::for_test((0, 0), 1.);
+        capture.output_name = "screen".into();
+        capture.width = 200;
+        capture.height = 200;
+        capture.rgba = vec![255; 200 * 200 * 4];
+        let capture = Arc::new(capture);
+        let session = cx.new(|_| ScreenshotSession::new(vec![capture.clone()], Vec::new()));
+        let (view, cx) =
+            cx.add_window_view(|window, cx| Overlay::new(capture, session.clone(), window, cx));
+        cx.simulate_resize(size(px(200.), px(200.)));
+        let mut previous: Vec<Arc<gpui_kit::RenderImage>> = Vec::new();
+        for kind in [
+            ShapeKind::Highlighter,
+            ShapeKind::Mosaic,
+            ShapeKind::Blur,
+            ShapeKind::Eraser,
+            ShapeKind::EraserRect,
+            ShapeKind::Number,
+            ShapeKind::Text,
+            ShapeKind::Polyline,
+        ] {
+            cx.update(|_, cx| {
+                session.update(cx, |s, cx| {
+                    s.begin("screen", point(px(0.), px(0.)));
+                    s.end("screen", point(px(190.), px(190.)));
+                    s.edit_annotations(|a| a.toggle(kind));
+                    s.pointer_down("screen", point(px(10.), px(10.)));
+                    cx.notify();
+                })
+            });
+            for i in 0..30 {
+                cx.update(|window, cx| {
+                    session.update(cx, |s, cx| {
+                        if kind == ShapeKind::Text {
+                            s.preview_text(
+                                gpui_kit::Bounds::new(
+                                    point(px(10.), px(10.)),
+                                    size(px(150.), px(80.)),
+                                ),
+                                format!("Text {i}"),
+                            );
+                        } else {
+                            s.pointer_move("screen", point(px(30. + i as f32), px(70.)), false);
+                        }
+                        cx.notify();
+                    });
+                    window.draw(cx).clear(cx);
+                    let current = view.read(cx).canvas_images.borrow().current().to_vec();
+                    assert!(!current.is_empty(), "{kind:?}");
+                    for image in &current {
+                        assert!(window.has_image_atlas_entry(image), "{kind:?}");
+                    }
+                    for old in &previous {
+                        if !current.iter().any(|image| image.id == old.id) {
+                            assert!(!window.has_image_atlas_entry(old), "{kind:?}");
+                        }
+                    }
+                    previous = current;
+                });
+            }
+        }
+    }
+
+    #[gpui_kit::test]
+    fn continuous_pencil_repaints_release_retired_atlas_images(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::base::init);
+        let mut capture = Capture::for_test((0, 0), 1.);
+        capture.output_name = "screen".into();
+        capture.width = 200;
+        capture.height = 200;
+        capture.rgba = vec![255; 200 * 200 * 4];
+        let capture = Arc::new(capture);
+        let session = cx.new(|_| ScreenshotSession::new(vec![capture.clone()], Vec::new()));
+        let (_, cx) =
+            cx.add_window_view(|window, cx| Overlay::new(capture, session.clone(), window, cx));
+        cx.simulate_resize(size(px(200.), px(200.)));
+        cx.update(|_, cx| {
+            session.update(cx, |s, cx| {
+                s.select_all();
+                s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Pencil));
+                s.pointer_down("screen", point(px(10.), px(10.)));
+                cx.notify();
+            })
+        });
+        let mut previous: Option<Arc<gpui_kit::RenderImage>> = None;
+        for i in 0..250 {
+            cx.update(|window, cx| {
+                session.update(cx, |s, cx| {
+                    s.pointer_move(
+                        "screen",
+                        point(px(20. + (i % 150) as f32), px(30. + (i % 80) as f32)),
+                        false,
+                    );
+                    if i % 25 == 24 {
+                        s.pointer_up("screen", point(px(170.), px(100.)), false);
+                        s.pointer_down("screen", point(px(10.), px(10.)));
+                    }
+                    cx.notify();
+                });
+                window.draw(cx).clear(cx);
+                let (_, image) = session.read(cx).filtered_preview("screen").unwrap();
+                assert!(window.has_image_atlas_entry(&image));
+                if let Some(old) = previous.take() {
+                    assert!(!window.has_image_atlas_entry(&old));
+                }
+                previous = Some(image);
+            });
+        }
+        cx.update(|window, cx| {
+            session.update(cx, |s, cx| {
+                s.begin("screen", point(px(1.), px(1.)));
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+            assert!(!window.has_image_atlas_entry(&previous.unwrap()));
+        });
+    }
 
     #[gpui_kit::test]
     fn pointer_events_share_selection_and_handle_release_outside_window(cx: &mut TestAppContext) {

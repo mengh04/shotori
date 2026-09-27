@@ -671,7 +671,7 @@ impl ScreenshotSession {
             .map(|r| (r.width, r.height, r.rgba))
     }
 
-    /// Reuse the exported composite on every output whenever pixel filters or text are present.
+    /// Reuse the exported composite for freehand strokes, pixel filters and text.
     /// Captures are immutable; selection, shapes and display geometry own invalidation.
     pub(crate) fn filtered_preview(
         &self,
@@ -679,16 +679,24 @@ impl ScreenshotSession {
     ) -> Option<(Bounds<Pixels>, Arc<RenderImage>)> {
         use crate::annotation::ShapeKind;
         let mut cache = self.filter_preview.borrow_mut();
-        if !self.annotations.visible().any(|s| {
-            matches!(
-                s.kind,
-                ShapeKind::Mosaic
-                    | ShapeKind::Blur
-                    | ShapeKind::Text
-                    | ShapeKind::Eraser
-                    | ShapeKind::EraserRect
-            )
-        }) {
+        // Keep small geometric scenes cheap, but flatten dense histories rather
+        // than submitting an unbounded number of vector paths or image tiles.
+        let dense = self.annotations.committed().len() >= 64;
+        if !dense
+            && !self.annotations.visible().any(|s| {
+                matches!(
+                    s.kind,
+                    ShapeKind::Pencil
+                        | ShapeKind::Highlighter
+                        | ShapeKind::Polyline
+                        | ShapeKind::Mosaic
+                        | ShapeKind::Blur
+                        | ShapeKind::Text
+                        | ShapeKind::Eraser
+                        | ShapeKind::EraserRect
+                )
+            })
+        {
             *cache = None;
             return None;
         }
@@ -1540,6 +1548,38 @@ mod tests {
     }
 
     #[test]
+    fn dense_geometric_histories_use_composite_and_survive_undo() {
+        use crate::annotation::ShapeKind;
+        for kind in [
+            ShapeKind::Rectangle,
+            ShapeKind::Ellipse,
+            ShapeKind::Line,
+            ShapeKind::Arrow,
+            ShapeKind::Number,
+        ] {
+            let mut s = session();
+            s.select_all();
+            s.edit_annotations(|a| a.toggle(kind));
+            for i in 0..65 {
+                s.pointer_down("left", point(px(10. + (i % 40) as f32), px(30.)));
+                s.pointer_up("right", point(px(25.), px(60.)), false);
+                if i == 62 {
+                    assert!(s.filtered_preview("left").is_none());
+                }
+                if i >= 63 {
+                    assert_preview_matches_export(&s);
+                }
+            }
+            s.edit_annotations(|a| a.undo());
+            assert_preview_matches_export(&s);
+            s.edit_annotations(|a| a.undo());
+            assert!(s.filtered_preview("left").is_none());
+            s.edit_annotations(|a| a.redo());
+            assert_preview_matches_export(&s);
+        }
+    }
+
+    #[test]
     fn incremental_preview_preserves_filter_order_erasure_and_history() {
         use crate::annotation::ShapeKind;
         let mut s = session();
@@ -1582,6 +1622,56 @@ mod tests {
         // Changing display geometry invalidates even an unchanged history.
         s.set_size("left", size(px(80.), px(80.)));
         assert_preview_matches_export(&s);
+    }
+
+    #[test]
+    #[ignore = "manual long-stroke performance measurement"]
+    fn benchmark_long_pencil_preview() {
+        use crate::annotation::ShapeKind;
+        let mut cap = Capture::for_test((0, 0), 1.);
+        cap.output_name = "left".into();
+        cap.width = 1280;
+        cap.height = 720;
+        cap.rgba = [255; 4].repeat(1280 * 720);
+        let mut s = ScreenshotSession::new(vec![Arc::new(cap)], Vec::new());
+        s.select_all();
+        s.edit_annotations(|a| a.toggle(ShapeKind::Pencil));
+        s.pointer_down("left", point(px(10.), px(10.)));
+        for i in 1..=20000 {
+            s.pointer_move(
+                "left",
+                point(
+                    px(10. + (i % 1200) as f32),
+                    px(10. + ((i / 1200) * 35) as f32),
+                ),
+                false,
+            );
+        }
+        let started = std::time::Instant::now();
+        let (_, first) = s.filtered_preview("left").unwrap();
+        let elapsed = started.elapsed();
+        let expected = s.crop("left").unwrap().2;
+        let expected: Vec<_> = expected
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| [p[2], p[1], p[0], p[3]])
+            .collect();
+        assert_eq!(first.as_bytes(0).unwrap(), expected);
+        s.pointer_up("left", point(px(1000.), px(650.)), false);
+        s.filtered_preview("left").unwrap();
+        let start = std::time::Instant::now();
+        for i in 0..30 {
+            s.pointer_down("left", point(px(10.), px(10.)));
+            s.pointer_move("left", point(px(50. + i as f32), px(50.)), false);
+            s.filtered_preview("left").unwrap();
+            s.pointer_up("left", point(px(50. + i as f32), px(50.)), false);
+            s.filtered_preview("left").unwrap();
+        }
+        eprintln!(
+            "20,000-point pencil preview: {elapsed:?}; 30 later strokes: {:?}",
+            start.elapsed()
+        );
     }
 
     #[test]
