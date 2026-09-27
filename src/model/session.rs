@@ -360,12 +360,8 @@ impl ScreenshotSession {
         let sel = self
             .local_bounds(name)
             .map(crate::model::placement::round_px)?;
-        let height = if self.annotations.enabled() {
-            crate::model::placement::TB_H
-        } else {
-            crate::model::placement::ROW_H
-        };
-        let mut b = crate::model::placement::toolbar_bounds(&sel, ws, height);
+        let (width, height) = crate::model::placement::toolbar_size(self.annotations.enabled());
+        let mut b = crate::model::placement::toolbar_bounds(&sel, ws, width, height);
         if let Some(pos) = self.toolbar_pos {
             b.origin = point(
                 px(f32::from(pos.x).clamp(
@@ -436,12 +432,8 @@ impl ScreenshotSession {
             return false;
         };
         self.pointer_global = Some(self.to_global(name, local));
-        let height = if self.annotations.enabled() {
-            crate::model::placement::TB_H
-        } else {
-            crate::model::placement::ROW_H
-        };
-        let w = crate::model::placement::TB_W.min((f32::from(ws.width) - 16.).max(1.));
+        let (base_w, height) = crate::model::placement::toolbar_size(self.annotations.enabled());
+        let w = base_w.min((f32::from(ws.width) - 16.).max(1.));
         let next = point(
             px((f32::from(local.x) - f32::from(grab.x))
                 .clamp(8., (f32::from(ws.width) - w - 8.).max(8.))),
@@ -1668,7 +1660,7 @@ mod tests {
         // anchored below the box by default; grips line both edges of ROW ONE
         let anchored = s.toolbar_bounds("right").unwrap();
         assert_eq!(anchored.origin, point(px(50.), px(158.)));
-        assert_eq!(anchored.size.width, px(crate::model::placement::TB_W));
+        assert_eq!(anchored.size.width, px(crate::model::placement::TB_W_ROW1));
         let (lg, rg) = s.toolbar_grips("right").unwrap();
         let pad = px(crate::model::placement::BAR_PAD);
         // the strips are the grip ELEMENTS' rects: inset by the bar
@@ -1696,7 +1688,7 @@ mod tests {
         assert_eq!(
             s.toolbar_bounds("right").unwrap().origin,
             point(
-                px(1200. - crate::model::placement::TB_W - 8.),
+                px(1200. - crate::model::placement::TB_W_ROW1 - 8.),
                 px(800. - crate::model::placement::ROW_H - 8.),
             )
         );

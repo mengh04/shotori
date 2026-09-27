@@ -681,20 +681,30 @@ impl Render for ToolbarTooltip {
 
 #[cfg(test)]
 mod tests {
-    use crate::model::placement::{TB_W, round_px, toolbar_anchor, toolbar_bounds};
+    use crate::model::placement::{TB_W_ROW1, round_px, toolbar_anchor, toolbar_bounds};
     use gpui_kit::{Bounds, point, px, size};
     #[test]
     fn toolbar_clamps_horizontally() {
         let b = Bounds::new(point(px(1800.), px(100.)), size(px(100.), px(100.)));
         assert_eq!(
-            toolbar_anchor(&b, size(px(1920.), px(1080.)), super::ROW_H).0,
-            1920. - TB_W - 8.
+            toolbar_anchor(&b, size(px(1920.), px(1080.)), TB_W_ROW1, super::ROW_H).0,
+            1920. - TB_W_ROW1 - 8.
         );
         // the composed rect: anchor + the width clamp the render side applies
-        let rect = toolbar_bounds(&round_px(b), size(px(1920.), px(1080.)), super::ROW_H);
-        assert_eq!(rect.size.width, px(TB_W));
+        let rect = toolbar_bounds(
+            &round_px(b),
+            size(px(1920.), px(1080.)),
+            TB_W_ROW1,
+            super::ROW_H,
+        );
+        assert_eq!(rect.size.width, px(TB_W_ROW1));
         // narrow window: the toolbar shrinks to the window minus breathing room
-        let rect = toolbar_bounds(&round_px(b), size(px(400.), px(400.)), super::ROW_H);
+        let rect = toolbar_bounds(
+            &round_px(b),
+            size(px(400.), px(400.)),
+            TB_W_ROW1,
+            super::ROW_H,
+        );
         assert_eq!(rect.size.width, px(384.));
     }
     #[test]
