@@ -50,6 +50,15 @@ pub struct ScreenshotSession {
     screens: Vec<Screen>,
     selection: Selection,
     active_output: Option<String>,
+    /// The pointer's last known position in GLOBAL desktop coordinates,
+    /// reported by whichever window actually receives its events. Under
+    /// Wayland's implicit grab a gesture's events all go to the PRESS
+    /// window — the window the pointer physically sits over may have
+    /// never seen a single move. Cursor affordances therefore read THIS
+    /// (mapped into their own window), not a per-window position, or a
+    /// state flip that lands chrome under a "fresh" window shows a
+    /// stale cursor until the user wiggles the mouse.
+    pointer_global: Option<Point<Pixels>>,
     blocked: bool,
     /// The user-dragged toolbar position (window-local to the ACTIVE
     /// output); None → the placement anchor decides. Reset by a NEW
@@ -88,6 +97,7 @@ impl ScreenshotSession {
                 .collect(),
             selection: Selection::Idle,
             active_output: None,
+            pointer_global: None,
             blocked: false,
             toolbar_pos: None,
             toolbar_drag: None,
@@ -289,6 +299,19 @@ impl ScreenshotSession {
         local + self.screen(name).bounds().origin
     }
 
+    /// The pointer's last known global position — see the field docs.
+    pub(crate) fn pointer_global(&self) -> Option<Point<Pixels>> {
+        self.pointer_global
+    }
+
+    /// That position mapped into this output's LOCAL coordinates
+    /// (unclamped: the pointer may legitimately sit over another
+    /// output, in which case the mapped point lies outside this
+    /// window — hit-tests simply miss).
+    pub(crate) fn pointer_in(&self, name: &str) -> Option<Point<Pixels>> {
+        Some(self.pointer_global? - self.screen(name).bounds().origin)
+    }
+
     /// This output's overlay window size (logical px), as last reported by
     /// [`ScreenshotSession::set_size`]. Chrome geometry (toolbar anchor)
     /// needs it outside render — e.g. the cursor's toolbar hit-test.
@@ -372,6 +395,7 @@ impl ScreenshotSession {
         let Some(b) = self.toolbar_bounds(name) else {
             return false;
         };
+        self.pointer_global = Some(self.to_global(name, press));
         self.toolbar_drag = Some(ToolbarDrag {
             grab: press - b.origin,
             restore: self.toolbar_pos,
@@ -389,6 +413,7 @@ impl ScreenshotSession {
         let Some(ws) = self.overlay_size(name) else {
             return false;
         };
+        self.pointer_global = Some(self.to_global(name, local));
         let height = if self.annotations.enabled() {
             crate::model::placement::TB_H
         } else {
@@ -549,6 +574,7 @@ impl ScreenshotSession {
         if self.blocked {
             return;
         }
+        self.pointer_global = Some(self.to_global(name, local));
         if self.annotations.enabled() {
             if let Some(selection) = self.selection.bounds() {
                 self.annotations
@@ -575,6 +601,7 @@ impl ScreenshotSession {
         if self.blocked {
             return false;
         }
+        self.pointer_global = Some(self.to_global(name, local));
         if self.annotations.enabled() {
             if let Some(selection) = self.selection.bounds() {
                 return self.annotations.drag_to(
@@ -599,6 +626,7 @@ impl ScreenshotSession {
         if self.blocked {
             return;
         }
+        self.pointer_global = Some(self.to_global(name, local));
         if self.annotations.enabled() {
             self.pointer_move(name, local, square);
             self.annotations.end();
