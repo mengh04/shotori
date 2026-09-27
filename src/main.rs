@@ -212,7 +212,10 @@ fn full_capture(clipboard: bool, path: Option<std::path::PathBuf>, delay: f32) -
         Ok(c) => c,
         Err(e) => {
             eprintln!("[shotori] capture failed: {e:#}");
-            shotori::notify::send("Shotori", "Capture failed");
+            shotori::notify::send(
+                "Couldn’t capture screen",
+                "Try taking the screenshot again.",
+            );
             std::process::exit(1);
         }
     };
@@ -232,8 +235,8 @@ fn full_capture(clipboard: bool, path: Option<std::path::PathBuf>, delay: f32) -
     if clipboard || path.is_none() {
         match shotori::model::export::encode_png(w, h, &rgba).and_then(clipboard::copy_image) {
             Ok(()) => shotori::notify::send_with_preview(
-                "Shotori",
-                "Full screenshot copied to the clipboard",
+                "Screenshot copied",
+                "The image is ready to paste.",
                 w,
                 h,
                 &rgba,
@@ -251,13 +254,7 @@ fn full_capture(clipboard: bool, path: Option<std::path::PathBuf>, delay: f32) -
             p
         };
         match shotori::model::export::save_png(&file, w, h, &rgba) {
-            Ok(()) => shotori::notify::send_with_preview(
-                "Shotori",
-                &format!("Saved to {}", file.display()),
-                w,
-                h,
-                &rgba,
-            ),
+            Ok(()) => shotori::notify::saved(&file, w, h, &rgba),
             Err(e) => {
                 eprintln!("[shotori] save: {e:#}");
                 ok = false;

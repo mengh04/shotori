@@ -147,17 +147,14 @@ pub fn complete_pending() {
 fn write_and_notify(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) {
     if let Err(e) = export::save_png(path, w, h, rgba) {
         eprintln!("[shotori] save failed: {e:#}");
-        crate::notify::send("Shotori", &format!("Save failed: {e:#}"));
+        crate::notify::send(
+            "Couldn’t save screenshot",
+            "Check the destination folder and available disk space.",
+        );
         return;
     }
     println!("[shotori] saved {w}x{h} → {}", path.display());
     // The path is the thing users actually need — stdout is lost when
     // launched from a keybinding, so the notification is the feedback
-    crate::notify::send_with_preview(
-        "Shotori",
-        &format!("Saved {w}×{h} → {}", path.display()),
-        w,
-        h,
-        rgba,
-    );
+    crate::notify::saved(path, w, h, rgba);
 }
