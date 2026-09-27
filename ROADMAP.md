@@ -1192,3 +1192,11 @@ reported separately from recognition failures. Linux save notifications expose
 an Open image action for the actual saved file, handled by the detached notification
 child after the screenshot process exits. Body markup is escaped so recognized
 text and filenames remain literal. Windows toast action support remains a follow-up.
+
+## Coherent themes and TOML settings (2026-09-27)
+
+Default auto appearance follows GPUI system appearance updates; dark, light and
+high_contrast remain fixed choices. theme.toml replaces theme.json. Configuration
+exposes base, accent, dim_opacity and a complete annotation palette; toolbar and
+chip surfaces stay in coherent built-in palettes. Selected tint is derived from
+the accent, with contrast-aware foregrounds. Legacy JSON is not auto-loaded.

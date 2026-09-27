@@ -1,169 +1,115 @@
-//! # Theme resolution: CLI flag + JSON override file
-//!
-//! The rules, one line each:
-//! - `--theme <name>` — a built-in: `dark` (default) / `light` / `high_contrast`
-//! - `--theme <path>` — a JSON file; may name a `base`, defaults to `dark`
-//! - no flag, but `$XDG_CONFIG_HOME/shotori/theme.json` (default
-//!   `~/.config/shotori/theme.json`) exists — that file loads
-//! - otherwise — `dark`
-//!
-//! Unknown fields, bad hex or out-of-range values are reported to stderr
-//! and **the offending value falls back** — a typo in a color file must
-//! never cost anyone a screenshot. `--print-theme` prints the resolved
-//! theme (and the errors, non-zero exit) instead of running.
-
+//! TOML theme settings. Surface colors belong to complete built-in palettes;
+//! configuration cannot mix a light background with dark control states.
+use super::{PALETTE, Theme};
+use serde::Deserialize;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
-
-use super::{PALETTE, Theme};
-
-/// The JSON override file: every field optional, misspellings rejected.
-#[derive(Deserialize, Default, Debug, PartialEq)]
+#[derive(Deserialize, Default, Debug)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThemeFile {
-    /// JSON has no comments; a single `"//"` key is accepted as one.
-    #[serde(rename = "//")]
-    pub comment: Option<String>,
-    /// Built-in base to start from before applying overrides.
     pub base: Option<String>,
-    pub dim_color: Option<String>,
-    /// 0.0 .. 1.0
-    pub dim_opacity: Option<f32>,
     pub accent: Option<String>,
-    pub pin_border: Option<String>,
-    pub chip_bg: Option<String>,
-    pub hint_text: Option<String>,
-    pub btn_text: Option<String>,
-    pub btn_hover_bg: Option<String>,
-    pub toolbar_bg: Option<String>,
-    pub toolbar_text: Option<String>,
-    pub toolbar_border: Option<String>,
-    pub toolbar_hover: Option<String>,
-    pub toolbar_selected: Option<String>,
-    pub swatch_border: Option<String>,
-    /// Up to [`PALETTE`] colors; missing tail keeps the base values.
+    pub dim_opacity: Option<f32>,
     pub annotation_colors: Option<Vec<String>>,
 }
 
-/// `#RRGGBB` or `#RRGGBBAA` (the `#` is optional) → `0xRRGGBBAA`.
 fn hex(s: &str) -> Result<u32, String> {
-    let s = s.strip_prefix('#').unwrap_or(s);
-    let expect_alpha = match s.len() {
-        6 => false,
-        8 => true,
-        _ => return Err(format!("\"{s}\": expected #RRGGBB or #RRGGBBAA")),
+    let digits = s.strip_prefix('#').unwrap_or(s);
+    if !matches!(digits.len(), 6 | 8) {
+        return Err(format!("{s}: expected #RRGGBB or #RRGGBBAA"));
+    }
+    let value = u32::from_str_radix(digits, 16).map_err(|_| format!("{s}: invalid hex color"))?;
+    let value = if digits.len() == 6 {
+        value << 8 | 255
+    } else {
+        value
     };
-    let v = u32::from_str_radix(s, 16).map_err(|_| format!("\"{s}\": not a hex color"))?;
-    Ok(if expect_alpha { v } else { v << 8 | 0xFF })
+    if value & 255 != 255 {
+        return Err(format!("{s}: use an opaque color"));
+    }
+    Ok(value)
 }
-
-/// `0xRRGGBBAA` → `#RRGGBBAA` (for `--print-theme`).
 fn to_hex(v: u32) -> String {
-    format!("#{:08X}", v)
+    format!("#{v:08X}")
 }
-
-/// Where the active theme came from (for logs and `--print-theme`).
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub enum Source {
     Default,
     BuiltIn(String),
     File(PathBuf),
 }
 
-/// Built-in name → theme.
 pub fn built_in(name: &str) -> Result<Theme, String> {
     match name {
         "dark" => Ok(Theme::dark()),
         "light" => Ok(Theme::light()),
         "high_contrast" => Ok(Theme::high_contrast()),
         _ => Err(format!(
-            "unknown theme \"{name}\" (want dark | light | high_contrast)"
+            "unknown theme {name:?} (want auto | dark | light | high_contrast)"
         )),
     }
 }
 
-/// Apply every present override onto `theme`. First error wins; the
-/// caller decides whether to keep the partially applied theme (CLI does:
-/// a later bad field should not undo earlier good ones).
-pub fn apply(theme: &mut Theme, file: &ThemeFile) -> Result<(), Vec<String>> {
-    let mut errs = Vec::new();
-
-    macro_rules! color {
-        ($field:ident) => {
-            if let Some(v) = &file.$field {
-                match hex(v) {
-                    Ok(c) => theme.$field = c,
-                    Err(e) => errs.push(format!("{}: {e}", stringify!($field))),
-                }
+fn apply(theme: &mut Theme, file: &ThemeFile) -> Vec<String> {
+    let mut errors = Vec::new();
+    if let Some(value) = &file.accent {
+        match hex(value) {
+            Ok(color) => {
+                theme.accent = color;
+                theme.pin_border = (color & 0xffffff00) | 0x99;
             }
-        };
-    }
-
-    if let Some(v) = &file.dim_color {
-        match hex(v) {
-            Ok(c) => theme.dim_color = c,
-            Err(e) => errs.push(format!("dim_color: {e}")),
+            Err(e) => errors.push(format!("accent: {e}")),
         }
     }
-    if let Some(v) = file.dim_opacity {
-        if (0.0..=1.0).contains(&v) {
-            theme.dim_opacity = v;
+    if let Some(value) = file.dim_opacity {
+        if (0.0..=1.0).contains(&value) {
+            theme.dim_opacity = value;
         } else {
-            errs.push(format!("dim_opacity: {v} out of range 0.0..1.0"));
+            errors.push("dim_opacity must be between 0 and 1".into());
         }
     }
-    color!(accent);
-    color!(pin_border);
-    color!(chip_bg);
-    color!(hint_text);
-    color!(btn_text);
-    color!(btn_hover_bg);
-    color!(toolbar_bg);
-    color!(toolbar_text);
-    color!(toolbar_border);
-    color!(toolbar_hover);
-    color!(toolbar_selected);
-    color!(swatch_border);
-
-    if let Some(list) = &file.annotation_colors {
-        if list.len() > PALETTE {
-            errs.push(format!(
-                "annotation_colors: {} entries, max {PALETTE}",
-                list.len()
+    if let Some(colors) = &file.annotation_colors {
+        if colors.len() != PALETTE {
+            errors.push(format!(
+                "annotation_colors must contain exactly {PALETTE} opaque colors"
             ));
         } else {
-            for (slot, v) in theme.annotation_colors.iter_mut().zip(list) {
-                match hex(v) {
-                    Ok(c) => *slot = c,
-                    Err(e) => errs.push(format!("annotation_colors: {e}")),
-                }
+            let parsed: Result<Vec<_>, _> = colors.iter().map(|v| hex(v)).collect();
+            match parsed {
+                Ok(colors) => theme.annotation_colors.copy_from_slice(&colors),
+                Err(e) => errors.push(format!("annotation_colors: {e}")),
             }
         }
     }
-
-    if errs.is_empty() { Ok(()) } else { Err(errs) }
+    theme.adapt_accent();
+    errors
 }
 
-/// Load + parse a theme file (base + overrides in one document).
-pub fn load_file(path: &Path) -> Result<(Theme, Vec<String>), String> {
+impl ThemeFile {
+    fn palettes(&self) -> (Theme, Option<Theme>, Vec<String>) {
+        let base = self.base.as_deref().unwrap_or("auto");
+        let (mut dark, mut light, mut errors) = if base == "auto" {
+            (Theme::dark(), Some(Theme::light()), Vec::new())
+        } else {
+            match built_in(base) {
+                Ok(theme) => (theme, None, Vec::new()),
+                Err(error) => (Theme::dark(), Some(Theme::light()), vec![error]),
+            }
+        };
+        errors.extend(apply(&mut dark, self));
+        if let Some(light) = &mut light {
+            apply(light, self);
+        }
+        (dark, light, errors)
+    }
+}
+
+pub fn load_file(path: &Path) -> Result<ThemeFile, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let file: ThemeFile =
-        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut theme = match file.base.as_deref() {
-        None | Some("dark") => Theme::dark(),
-        Some(name) => built_in(name).map_err(|e| format!("{}: {e}", path.display()))?,
-    };
-    let errs = match apply(&mut theme, &file) {
-        Ok(()) => Vec::new(),
-        Err(es) => es,
-    };
-    Ok((theme, errs))
+    toml::from_str(&text).map_err(|e| format!("{}: {e}. Use a TOML file with base, accent, dim_opacity and annotation_colors; surface colors are managed together.", path.display()))
 }
 
-/// The auto-pickup config file: `$XDG_CONFIG_HOME/shotori/theme.json`
-/// (falling back to `~/.config/shotori/theme.json`) on Linux,
-/// `%APPDATA%\shotori\theme.json` on Windows.
 pub fn config_path() -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
     let base = std::env::var_os("XDG_CONFIG_HOME")
@@ -171,48 +117,63 @@ pub fn config_path() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
     #[cfg(target_os = "windows")]
     let base = std::env::var_os("APPDATA").map(PathBuf::from)?;
-    Some(base.join("shotori").join("theme.json"))
+    Some(base.join("shotori/theme.toml"))
 }
 
-/// Resolve + install from the parsed command line ([`crate::args::Cli`]).
-/// `--print-theme` prints and exits 0 (or 1 on errors).
+fn resolve(value: Option<&str>, config: Option<PathBuf>) -> (ThemeFile, Source, Vec<String>) {
+    let path = match value {
+        Some(value) if value.contains('/') || value.contains('\\') || value.contains('.') => {
+            Some(PathBuf::from(value))
+        }
+        Some(value) => {
+            return (
+                ThemeFile {
+                    base: Some(value.into()),
+                    ..Default::default()
+                },
+                Source::BuiltIn(value.into()),
+                Vec::new(),
+            );
+        }
+        None => config,
+    };
+    match path {
+        Some(path) => match load_file(&path) {
+            Ok(file) => (file, Source::File(path), Vec::new()),
+            Err(error) => (ThemeFile::default(), Source::File(path), vec![error]),
+        },
+        None => (ThemeFile::default(), Source::Default, Vec::new()),
+    }
+}
+
 pub fn init(args: &crate::args::Cli) {
-    let (theme, source, errs) = resolve(&args.theme, args.no_config);
-    for e in &errs {
-        eprintln!("[shotori] theme: {e}");
+    let config = if args.no_config {
+        None
+    } else {
+        config_path().filter(|p| p.exists())
+    };
+    let (file, source, mut errors) = resolve(args.theme.as_deref(), config);
+    let (dark, light, palette_errors) = file.palettes();
+    errors.extend(palette_errors);
+    for error in &errors {
+        eprintln!("[shotori] theme: {error}");
     }
     if args.print_theme {
-        print_theme(&theme, &source);
-        std::process::exit(if errs.is_empty() { 0 } else { 1 });
-    }
-    super::set(theme);
-}
-
-/// The resolution pipeline shared by [`init`] and tests.
-fn resolve(value: &Option<String>, no_config: bool) -> (Theme, Source, Vec<String>) {
-    match value {
-        // A name → built-in. A path separator → file. Best effort.
-        Some(v) => {
-            if v.contains('/') || v.contains('.') {
-                let (theme, errs) =
-                    load_file(Path::new(v)).unwrap_or_else(|e| (Theme::dark(), vec![e]));
-                (theme, Source::File(PathBuf::from(v)), errs)
-            } else {
-                match built_in(v) {
-                    Ok(t) => (t, Source::BuiltIn(v.clone()), Vec::new()),
-                    Err(e) => (Theme::dark(), Source::Default, vec![e]),
-                }
-            }
+        if let Some(light) = &light {
+            let _ = writeln!(
+                std::io::stdout(),
+                "auto: follows the system; both complete palettes are shown below"
+            );
+            let _ = writeln!(std::io::stdout(), "[dark appearance]");
+            print_theme(&dark, &source);
+            let _ = writeln!(std::io::stdout(), "[light appearance]");
+            print_theme(light, &source);
+        } else {
+            print_theme(&dark, &source);
         }
-        None if no_config => (Theme::dark(), Source::Default, Vec::new()),
-        None => match config_path().filter(|p| p.exists()) {
-            Some(p) => {
-                let (theme, errs) = load_file(&p).unwrap_or_else(|e| (Theme::dark(), vec![e]));
-                (theme, Source::File(p), errs)
-            }
-            None => (Theme::dark(), Source::Default, Vec::new()),
-        },
+        std::process::exit(i32::from(!errors.is_empty()));
     }
+    super::set(dark, light);
 }
 
 /// `--print-theme` output: source line, one line per field, palette tail.
@@ -222,7 +183,7 @@ fn print_theme(theme: &Theme, source: &Source) {
     // broken pipe, a truncated dump is the expected outcome there
     let mut out = std::io::stdout().lock();
     let src = match source {
-        Source::Default => "default (dark)".to_string(),
+        Source::Default => "default (auto)".to_string(),
         Source::BuiltIn(n) => format!("built-in {n}"),
         Source::File(p) => p.display().to_string(),
     };
@@ -257,75 +218,60 @@ fn print_theme(theme: &Theme, source: &Source) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn hex_accepts_six_eight_and_optional_hash() {
-        assert_eq!(hex("#FF6A00").unwrap(), 0xFF6A00FF);
-        assert_eq!(hex("FF6A0099").unwrap(), 0xFF6A0099);
-        assert_eq!(hex("#00000000").unwrap(), 0x00000000);
-        assert!(hex("#12345").is_err());
-        assert!(hex("GGHHII").is_err());
+    fn auto_and_fixed_palettes() {
+        let (_, light, errors) = ThemeFile::default().palettes();
+        assert!(light.is_some() && errors.is_empty());
+        for base in ["dark", "light", "high_contrast"] {
+            let file: ThemeFile = toml::from_str(&format!("base = {base:?}")).unwrap();
+            let (theme, auto, errors) = file.palettes();
+            assert!(auto.is_none() && errors.is_empty());
+            assert_eq!(theme.toolbar_bg, built_in(base).unwrap().toolbar_bg);
+        }
     }
-
     #[test]
-    fn partial_override_touches_only_that_field() {
-        let mut t = Theme::dark();
-        let f: ThemeFile = serde_json::from_str(r##"{"accent": "#00FF00"}"##).unwrap();
-        apply(&mut t, &f).unwrap();
-        assert_eq!(t.accent, 0x00FF00FF);
-        assert_eq!(t.chip_bg, Theme::dark().chip_bg);
-        assert_eq!(t.dim_opacity, Theme::dark().dim_opacity);
+    fn old_mixed_surface_overrides_and_unknown_fields_are_rejected() {
+        for content in [
+            "base = 'dark'\ntoolbar_bg = '#FAFAFC'\ntoolbar_selected = '#453528'",
+            "acccent = '#00FF00'",
+            r##"{"base":"dark","toolbar_bg":"#FAFAFC"}"##,
+        ] {
+            assert!(toml::from_str::<ThemeFile>(content).is_err());
+        }
     }
-
     #[test]
-    fn unknown_fields_are_rejected() {
-        assert!(serde_json::from_str::<ThemeFile>(r##"{"acccent": "#fff"}"##).is_err());
-        // one "//" comment key is legal, two are a duplicate-field error
-        assert!(serde_json::from_str::<ThemeFile>(r##"{"//": "note"}"##).is_ok());
-        assert!(serde_json::from_str::<ThemeFile>(r##"{"//": "a", "//": "b"}"##).is_err());
+    fn invalid_values_preserve_readable_palettes() {
+        let file: ThemeFile = toml::from_str("base = 'missing'\naccent = '#FFFFFF00'\ndim_opacity = nan\nannotation_colors = ['#123456']").unwrap();
+        let (theme, light, errors) = file.palettes();
+        assert_eq!(errors.len(), 4);
+        assert!(light.is_some());
+        assert_eq!(theme.accent, Theme::dark().accent);
+        assert_eq!(theme.annotation_colors, Theme::dark().annotation_colors);
+        assert_eq!(theme.dim_opacity, 0.55);
     }
-
     #[test]
-    fn short_palette_overrides_prefix_long_palette_errors() {
-        let mut t = Theme::dark();
-        let f: ThemeFile = serde_json::from_str(r##"{"annotation_colors": ["#111111"]}"##).unwrap();
-        apply(&mut t, &f).unwrap();
-        assert_eq!(t.annotation_colors[0], 0x111111FF);
-        assert_eq!(t.annotation_colors[1], Theme::dark().annotation_colors[1]);
-
-        let f: ThemeFile = serde_json::from_str(
-            r##"{"annotation_colors": ["#111","#222","#333","#444","#555","#666","#777","#888"]}"##,
-        )
-        .unwrap();
-        assert!(apply(&mut t, &f).is_err());
+    fn toml_comments_palette_and_precedence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("theme.toml");
+        std::fs::write(&path, include_str!("../../../docs/theme.example.toml")).unwrap();
+        assert!(load_file(&path).unwrap().palettes().2.is_empty());
+        std::fs::write(&path,"# theme\nbase = 'light'\naccent = '#123456'\ndim_opacity = 0.2\nannotation_colors = ['#111111', '#222222', '#333333', '#444444', '#555555', '#666666', '#777777']").unwrap();
+        let (file, _, errors) = resolve(None, Some(path.clone()));
+        let (theme, auto, _) = file.palettes();
+        assert!(errors.is_empty() && auto.is_none());
+        assert_eq!(theme.accent, 0x123456FF);
+        assert_eq!(theme.dim_opacity, 0.2);
+        assert_eq!(theme.annotation_colors[6], 0x777777FF);
+        let (file, _, _) = resolve(Some("dark"), Some(path));
+        assert_eq!(file.palettes().0.toolbar_bg, Theme::dark().toolbar_bg);
     }
-
     #[test]
-    fn bad_values_collect_errors_but_good_ones_apply() {
-        let mut t = Theme::dark();
-        let f: ThemeFile = serde_json::from_str(
-            r##"{"accent": "#00FF00", "dim_opacity": 9.5, "chip_bg": "zzz"}"##,
-        )
-        .unwrap();
-        let errs = apply(&mut t, &f).unwrap_err();
-        assert_eq!(errs.len(), 2);
-        assert_eq!(t.accent, 0x00FF00FF); // the good one stuck
-    }
-
-    #[test]
-    fn file_load_with_base_and_overrides() {
-        let dir = std::env::temp_dir().join("shotori-theme-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("t.json");
-        std::fs::write(
-            &p,
-            r##"{"base": "light", "accent": "#123456", "dim_opacity": 0.2}"##,
-        )
-        .unwrap();
-        let (t, errs) = load_file(&p).unwrap();
-        assert!(errs.is_empty());
-        assert_eq!(t.accent, 0x123456FF);
-        assert_eq!(t.dim_opacity, 0.2);
-        assert_eq!(t.chip_bg, Theme::light().chip_bg); // base came through
+    fn malformed_file_falls_back_without_partial_application() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.toml");
+        std::fs::write(&path, "base = 'light'\ntoolbar_text = '#FFFFFF'").unwrap();
+        let (file, _, errors) = resolve(None, Some(path));
+        assert_eq!(errors.len(), 1);
+        assert!(file.palettes().1.is_some());
     }
 }

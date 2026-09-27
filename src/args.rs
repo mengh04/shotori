@@ -21,16 +21,16 @@ use clap::{Parser, Subcommand};
     disable_help_subcommand = true
 )]
 pub struct Cli {
-    /// Built-in theme (dark | light | high_contrast) or a JSON theme file
+    /// Built-in theme (auto | dark | light | high_contrast) or a TOML theme file
     #[arg(long, value_name = "NAME|FILE")]
     pub theme: Option<String>,
 
-    /// Print the resolved theme and exit
+    /// Print resolved colors (both palettes for auto) and exit
     #[arg(long)]
     pub print_theme: bool,
 
-    /// Skip the config-file theme auto-pickup (~/.config/shotori/theme.json
-    /// on Linux, %APPDATA%\shotori\theme.json on Windows)
+    /// Skip the config-file theme auto-pickup (~/.config/shotori/theme.toml
+    /// on Linux, %APPDATA%\shotori\theme.toml on Windows)
     #[arg(long)]
     pub no_config: bool,
 

@@ -1,0 +1,9 @@
+# Copy to ~/.config/shotori/theme.toml (Windows: %APPDATA%\shotori\theme.toml).
+# Backgrounds, icons and control states switch together; do not copy resolved colors here.
+base = "auto" # auto | dark | light | high_contrast
+
+# Optional: opaque #RRGGBB or #RRGGBBAA colors.
+# accent = "#FF6A00"
+# dim_opacity = 0.55
+# Exactly seven annotation colors, in palette order:
+# annotation_colors = ["#FF4545", "#FF8A32", "#FFD43B", "#40C878", "#409CFF", "#222222", "#FFFFFF"]

@@ -641,7 +641,7 @@ fn control(
         .styles(|s| {
             s.selected(|s| {
                 s.bg(rgba(theme::c().toolbar_selected))
-                    .text_color(rgba(theme::c().accent))
+                    .text_color(rgba(theme::c().selected_text()))
                     .border_1()
                     .border_color(rgba(theme::c().accent))
             })
