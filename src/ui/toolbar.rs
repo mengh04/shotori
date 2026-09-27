@@ -10,9 +10,9 @@ use crate::model::session::ScreenshotSession;
 use crate::ui::theme;
 
 use crate::actions::{
-    CopySelection, OcrSelection, QuitOverlay, SaveSelection, ToggleArrow, ToggleEllipse,
-    ToggleEraser, ToggleHighlighter, ToggleLine, ToggleMosaic, ToggleNumber, TogglePencil,
-    TogglePolyline, ToggleRectangle, ToggleText,
+    CopySelection, OcrSelection, PinSelection, QuitOverlay, SaveSelection, ToggleArrow,
+    ToggleEllipse, ToggleEraser, ToggleHighlighter, ToggleLine, ToggleMosaic, ToggleNumber,
+    TogglePencil, TogglePolyline, ToggleRectangle, ToggleText,
 };
 use crate::model::placement::{GRIP_W, ROW_H};
 
@@ -271,6 +271,15 @@ pub(crate) fn selection_toolbar(
                     focus.clone(),
                     |window, cx| {
                         window.dispatch_action(Box::new(SaveSelection), cx);
+                    },
+                ))
+                .child(icon_button(
+                    "tb-pin",
+                    "Pin to screen · Ctrl+P",
+                    IconName::Pin,
+                    focus.clone(),
+                    |window, cx| {
+                        window.dispatch_action(Box::new(PinSelection), cx);
                     },
                 ))
                 .child(separator())

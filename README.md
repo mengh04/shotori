@@ -253,7 +253,17 @@ on Windows). Recognition is prewarmed while you
 draw, so it usually completes within a few hundred milliseconds. Very small
 text strains the model; HiDPI screens fare better.
 
+### Pin to screen (贴图)
 
+`Ctrl+P` or the pin button crops the selection into a floating
+borderless window that stays on screen after the overlay closes —
+drag it anywhere (native window move), scroll to zoom (5%–2400%),
+`Esc` to close. The app exits when the last pin closes.
+
+A pin is not a normal window but a transparent layer surface covering
+the host output: it sits at the selection's exact position from the
+first frame, floats above every window, is never tiled, and clicks
+outside the image pass through to the desktop.
 ## Building from source
 
 ```bash
