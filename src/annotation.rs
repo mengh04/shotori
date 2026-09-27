@@ -3,6 +3,7 @@ mod eraser;
 mod filter;
 mod highlighter;
 mod line;
+pub(crate) use line::StrokePreview;
 pub(crate) mod text;
 pub(crate) use highlighter::HighlighterCache;
 mod number;
@@ -180,6 +181,7 @@ pub(crate) struct Annotations {
     shapes: Vec<Shape>,
     undone: Vec<Shape>,
     draft: Option<Draft>,
+    draft_generation: u64,
     pressed: bool,
 }
 
@@ -198,12 +200,23 @@ impl Default for Annotations {
             shapes: Vec::new(),
             undone: Vec::new(),
             draft: None,
+            draft_generation: 0,
             pressed: false,
         }
     }
 }
 
 impl Annotations {
+    /// Only render state crosses to the worker; undo stacks and tool state stay on the UI thread.
+    pub(crate) fn render_snapshot(&self) -> Self {
+        Self {
+            shapes: self.shapes.clone(),
+            draft: self.draft.clone(),
+            draft_generation: self.draft_generation,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn enabled(&self) -> bool {
         self.tool.is_some()
     }
@@ -237,7 +250,14 @@ impl Annotations {
             self.text_size_ix = ix;
         }
     }
+    pub(crate) fn draft_generation(&self) -> u64 {
+        self.draft_generation
+    }
+
     pub(crate) fn preview_text(&mut self, bounds: Bounds<Pixels>, value: String) {
+        if !self.has_text_preview() {
+            self.draft_generation += 1;
+        }
         self.draft = Some(Draft {
             start: bounds.origin,
             shape: Shape {
@@ -351,6 +371,7 @@ impl Annotations {
         if self.tool == Some(ShapeKind::Polyline) && self.draft.is_some() {
             return;
         }
+        self.draft_generation += 1;
         self.draft = Some(Draft {
             start: p,
             shape: Shape {

@@ -34,8 +34,19 @@ struct FilterPreview {
     selection: Option<Bounds<Pixels>>,
     committed: Vec<crate::annotation::Shape>,
     draft: Option<crate::annotation::Shape>,
+    draft_generation: u64,
     original: RasterSelection,
     pixels: Vec<u8>,
+    image: Arc<RenderImage>,
+    stroke: Option<crate::annotation::StrokePreview>,
+}
+
+struct DisplayPreview {
+    selection: Option<Bounds<Pixels>>,
+    committed: Vec<crate::annotation::Shape>,
+    draft_kind: Option<crate::annotation::ShapeKind>,
+    draft_generation: u64,
+    bounds: Bounds<Pixels>,
     image: Arc<RenderImage>,
 }
 
@@ -80,6 +91,9 @@ pub struct ScreenshotSession {
     press: Option<Point<Pixels>>,
     annotations: crate::annotation::Annotations,
     filter_preview: std::cell::RefCell<Option<FilterPreview>>,
+    preview_busy: bool,
+    preview_display: Option<DisplayPreview>,
+    geometry_revision: u64,
 }
 
 impl ScreenshotSession {
@@ -109,6 +123,9 @@ impl ScreenshotSession {
             press: None,
             annotations: Default::default(),
             filter_preview: Default::default(),
+            preview_busy: false,
+            preview_display: None,
+            geometry_revision: 0,
         }
     }
 
@@ -190,6 +207,8 @@ impl ScreenshotSession {
             return false;
         }
         screen.logical_size = logical_size;
+        self.geometry_revision += 1;
+        self.preview_display = None;
         self.filter_preview.get_mut().take();
         true
     }
@@ -671,21 +690,127 @@ impl ScreenshotSession {
             .map(|r| (r.width, r.height, r.rgba))
     }
 
-    /// Reuse the exported composite for freehand strokes, pixel filters and text.
-    /// Captures are immutable; selection, shapes and display geometry own invalidation.
-    pub(crate) fn filtered_preview(
-        &self,
+    /// One background render per session. Pointer updates remain in the model;
+    /// when work finishes we snapshot only the newest state, never a frame queue.
+    pub(crate) fn request_filtered_preview(
+        &mut self,
         output: &str,
+        cx: &mut Context<Self>,
     ) -> Option<(Bounds<Pixels>, Arc<RenderImage>)> {
+        if !self.uses_raster_preview() {
+            self.filter_preview.get_mut().take();
+            self.preview_display = None;
+            return None;
+        }
+        if !self.preview_busy {
+            let unchanged = self.filter_preview.borrow().as_ref().is_some_and(|cache| {
+                cache.selection == self.selection.bounds()
+                    && cache.committed == self.annotations.committed()
+                    && cache.draft.as_ref() == self.annotations.draft_shape()
+                    && cache.draft_generation == self.annotations.draft_generation()
+            });
+            let max_scale = self
+                .screens
+                .iter()
+                .map(|s| s.capture.width as f32 / f32::from(s.logical_size.width))
+                .fold(1_f32, f32::max);
+            let heavy = self.annotations.visible().any(|shape| {
+                shape.points.len() > 1024
+                    || (matches!(
+                        shape.kind,
+                        crate::annotation::ShapeKind::Blur | crate::annotation::ShapeKind::Mosaic
+                    ) && f32::from(shape.bounds.size.width)
+                        * f32::from(shape.bounds.size.height)
+                        * max_scale
+                        * max_scale
+                        >= 262_144.)
+            });
+            if unchanged || !heavy {
+                self.preview_display = None;
+                return self.filtered_preview(output);
+            }
+            let cache = self.filter_preview.get_mut().take();
+            self.preview_display = cache.as_ref().map(|cache| DisplayPreview {
+                selection: cache.selection,
+                committed: cache.committed.clone(),
+                draft_kind: cache.draft.as_ref().map(|shape| shape.kind),
+                draft_generation: cache.draft_generation,
+                bounds: cache.original.bounds,
+                image: cache.image.clone(),
+            });
+            let captures = self
+                .screens
+                .iter()
+                .map(|screen| screen.capture.clone())
+                .collect();
+            let sizes: Vec<_> = self
+                .screens
+                .iter()
+                .map(|screen| screen.logical_size)
+                .collect();
+            let selection = self.selection;
+            let geometry_revision = self.geometry_revision;
+            let annotations = self.annotations.render_snapshot();
+            let output = output.to_owned();
+            let worker_output = output.clone();
+            self.preview_busy = true;
+            let task = cx.background_spawn(async move {
+                let mut snapshot = Self::new(captures, Vec::new());
+                for (screen, size) in snapshot.screens.iter_mut().zip(sizes) {
+                    screen.logical_size = size;
+                }
+                snapshot.selection = selection;
+                snapshot.annotations = annotations;
+                snapshot.filter_preview = std::cell::RefCell::new(cache);
+                snapshot.filtered_preview(&worker_output);
+                snapshot.filter_preview.into_inner()
+            });
+            cx.spawn(async move |this, cx| {
+                let cache = task.await;
+                let _ = this.update(cx, |session, cx| {
+                    session.preview_busy = false;
+                    // Geometry changes cannot reuse the worker's frozen crop.
+                    if session.geometry_revision == geometry_revision
+                        && session.selection.bounds() == selection.bounds()
+                    {
+                        *session.filter_preview.get_mut() = cache;
+                    }
+                    session.request_filtered_preview(&output, cx);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        let display = self.preview_display.as_ref()?;
+        // A lagging draft may be displayed while it is being extended, but never
+        // resurrect a cancelled stroke or undone history while the worker drains.
+        let committed = self.annotations.committed();
+        let same_history = display.committed == committed;
+        let same_gesture = display.draft_generation == self.annotations.draft_generation();
+        let just_finished = same_gesture
+            && self.annotations.draft_shape().is_none()
+            && committed.len() == display.committed.len() + 1
+            && committed.starts_with(&display.committed)
+            && committed.last().map(|shape| shape.kind) == display.draft_kind;
+        let valid_draft = display.draft_kind.is_none()
+            || (same_gesture
+                && display.draft_kind == self.annotations.draft_shape().map(|shape| shape.kind));
+        if display.selection != self.selection.bounds()
+            || !(just_finished || (same_history && valid_draft))
+        {
+            return None;
+        }
+        let mut bounds = display.bounds;
+        bounds.origin -= self.screen(output).bounds().origin;
+        Some((bounds, display.image.clone()))
+    }
+
+    pub(crate) fn uses_raster_preview(&self) -> bool {
         use crate::annotation::ShapeKind;
-        let mut cache = self.filter_preview.borrow_mut();
-        // Keep small geometric scenes cheap, but flatten dense histories rather
-        // than submitting an unbounded number of vector paths or image tiles.
-        let dense = self.annotations.committed().len() >= 64;
-        if !dense
-            && !self.annotations.visible().any(|s| {
+        self.annotations.committed().len() >= 64
+            || self.annotations.visible().any(|shape| {
                 matches!(
-                    s.kind,
+                    shape.kind,
                     ShapeKind::Pencil
                         | ShapeKind::Highlighter
                         | ShapeKind::Polyline
@@ -696,7 +821,17 @@ impl ScreenshotSession {
                         | ShapeKind::EraserRect
                 )
             })
-        {
+    }
+
+    /// Reuse the exported composite for freehand strokes, pixel filters and text.
+    /// Captures are immutable; selection, shapes and display geometry own invalidation.
+    pub(crate) fn filtered_preview(
+        &self,
+        output: &str,
+    ) -> Option<(Bounds<Pixels>, Arc<RenderImage>)> {
+        use crate::annotation::ShapeKind;
+        let mut cache = self.filter_preview.borrow_mut();
+        if !self.uses_raster_preview() {
             *cache = None;
             return None;
         }
@@ -715,48 +850,110 @@ impl ScreenshotSession {
                 selection,
                 committed: Vec::new(),
                 draft: None,
+                draft_generation: self.annotations.draft_generation(),
                 original,
                 pixels,
                 image,
+                stroke: None,
             });
         }
         let cached = cache.as_mut()?;
-        if cached.committed != committed || cached.draft.as_ref() != draft {
+        if cached.committed != committed
+            || cached.draft.as_ref() != draft
+            || cached.draft_generation != self.annotations.draft_generation()
+        {
             let original = &cached.original;
             // Appending a finished stroke only replays the new suffix. Undo,
             // replacement and edits rebuild from the immutable capture.
-            if !committed.starts_with(&cached.committed) {
-                cached.pixels.clone_from(&original.rgba);
-                cached.committed.clear();
+            if cached.draft_generation != self.annotations.draft_generation() {
+                cached.stroke = None;
             }
-            crate::annotation::Annotations::rasterize_shapes(
-                committed[cached.committed.len()..].iter(),
-                &mut cached.pixels,
-                &original.rgba,
-                original.width,
-                original.height,
-                original.bounds.origin,
-                original.scale,
-            );
+            let history_changed = cached.committed != committed;
+            let appended_stroke = committed.len() == cached.committed.len() + 1
+                && committed.starts_with(&cached.committed)
+                && cached.stroke.is_some()
+                && committed.last().is_some_and(|shape| {
+                    matches!(
+                        shape.kind,
+                        ShapeKind::Pencil | ShapeKind::Highlighter | ShapeKind::Eraser
+                    )
+                });
+            if appended_stroke {
+                // Promote the final incremental draft, including a new release
+                // point, instead of rasterizing the entire long stroke again.
+                cached.pixels = cached
+                    .stroke
+                    .as_mut()
+                    .unwrap()
+                    .render(
+                        committed.last().unwrap(),
+                        &cached.pixels,
+                        &original.rgba,
+                        (original.width, original.height),
+                        original.bounds.origin,
+                        original.scale,
+                    )
+                    .to_vec();
+            } else {
+                if !committed.starts_with(&cached.committed) {
+                    cached.pixels.clone_from(&original.rgba);
+                    cached.committed.clear();
+                }
+                crate::annotation::Annotations::rasterize_shapes(
+                    committed[cached.committed.len()..].iter(),
+                    &mut cached.pixels,
+                    &original.rgba,
+                    original.width,
+                    original.height,
+                    original.bounds.origin,
+                    original.scale,
+                );
+            }
+            if history_changed {
+                cached.stroke = None;
+            }
             if cached.committed != committed {
                 cached.committed = committed.to_vec();
             }
-            let mut pixels = cached.pixels.clone();
-            crate::annotation::Annotations::rasterize_shapes(
-                draft.into_iter(),
-                &mut pixels,
-                &original.rgba,
-                original.width,
-                original.height,
-                original.bounds.origin,
-                original.scale,
-            );
+            let pixels = if let Some(shape) = draft.filter(|s| {
+                matches!(
+                    s.kind,
+                    ShapeKind::Pencil | ShapeKind::Highlighter | ShapeKind::Eraser
+                )
+            }) {
+                cached
+                    .stroke
+                    .get_or_insert_with(Default::default)
+                    .render(
+                        shape,
+                        &cached.pixels,
+                        &original.rgba,
+                        (original.width, original.height),
+                        original.bounds.origin,
+                        original.scale,
+                    )
+                    .to_vec()
+            } else {
+                cached.stroke = None;
+                let mut pixels = cached.pixels.clone();
+                crate::annotation::Annotations::rasterize_shapes(
+                    draft.into_iter(),
+                    &mut pixels,
+                    &original.rgba,
+                    original.width,
+                    original.height,
+                    original.bounds.origin,
+                    original.scale,
+                );
+                pixels
+            };
             cached.image = crate::ui::image_util::rgba_to_render_image(
                 pixels,
                 original.width,
                 original.height,
             );
             cached.draft = draft.cloned();
+            cached.draft_generation = self.annotations.draft_generation();
         }
         let mut bounds = cached.original.bounds;
         bounds.origin -= self.screen(output).bounds().origin;
@@ -870,6 +1067,131 @@ mod tests {
     use crate::platform::capture::Capture;
     use gpui_kit::{Bounds, point, px, size};
     use std::sync::Arc;
+
+    #[gpui_kit::test]
+    fn background_preview_preserves_release_and_never_reuses_a_cancelled_gesture(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::annotation::ShapeKind;
+        use gpui_kit::AppContext;
+        let mut cap = Capture::for_test((0, 0), 1.);
+        cap.output_name = "left".into();
+        cap.width = 600;
+        cap.height = 600;
+        cap.rgba = vec![255; 600 * 600 * 4];
+        let session = cx.new(|_| ScreenshotSession::new(vec![Arc::new(cap)], Vec::new()));
+        session.update(cx, |s, cx| {
+            s.select_all();
+            s.edit_annotations(|a| a.toggle(ShapeKind::Blur));
+            s.pointer_down("left", point(px(0.), px(0.)));
+            s.pointer_move("left", point(px(580.), px(580.)), false);
+            s.filtered_preview("left").unwrap();
+            s.pointer_move("left", point(px(600.), px(600.)), false);
+            assert!(s.request_filtered_preview("left", cx).is_some());
+            assert!(s.preview_busy);
+            s.pointer_up("left", point(px(600.), px(600.)), false);
+            // Keep the last completed preview visible until the final one arrives.
+            assert!(s.request_filtered_preview("left", cx).is_some());
+        });
+        cx.run_until_parked();
+        session.update(cx, |s, cx| {
+            s.pointer_down("left", point(px(0.), px(0.)));
+            s.pointer_move("left", point(px(580.), px(580.)), false);
+            s.filtered_preview("left").unwrap();
+            s.pointer_move("left", point(px(600.), px(600.)), false);
+            assert!(s.request_filtered_preview("left", cx).is_some());
+            s.cancel_annotation();
+            // Same tool and same start position, but a distinct gesture.
+            s.pointer_down("left", point(px(0.), px(0.)));
+            s.pointer_move("left", point(px(550.), px(550.)), false);
+            assert!(s.request_filtered_preview("left", cx).is_none());
+        });
+        cx.run_until_parked();
+        session.update(cx, |s, cx| {
+            assert!(!s.preview_busy);
+            assert!(s.request_filtered_preview("left", cx).is_some());
+            assert_eq!(
+                s.filter_preview.borrow().as_ref().unwrap().draft_generation,
+                s.annotations.draft_generation()
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn background_preview_coalesces_updates_and_rejects_cancelled_geometry(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::annotation::ShapeKind;
+        use gpui_kit::AppContext;
+        let mut cap = Capture::for_test((0, 0), 1.);
+        cap.output_name = "left".into();
+        cap.width = 512;
+        cap.height = 512;
+        cap.rgba = (0..512 * 512)
+            .flat_map(|i| [(i % 251) as u8, 70, 140, 255])
+            .collect();
+        let session = cx.new(|_| ScreenshotSession::new(vec![Arc::new(cap)], Vec::new()));
+        session.update(cx, |s, cx| {
+            s.select_all();
+            s.edit_annotations(|a| a.toggle(ShapeKind::Blur));
+            s.pointer_down("left", point(px(0.), px(0.)));
+            s.pointer_move("left", point(px(512.), px(512.)), false);
+            assert!(s.request_filtered_preview("left", cx).is_none());
+            assert!(s.preview_busy);
+            for i in 0..100 {
+                s.pointer_move("left", point(px(400. + i as f32), px(500.)), false);
+                s.request_filtered_preview("left", cx);
+                assert!(s.preview_busy);
+            }
+            // Export is always computed from current model state, even while the
+            // preview worker is handling an older snapshot.
+            s.pointer_up("left", point(px(500.), px(500.)), false);
+        });
+        cx.run_until_parked();
+        session.update(cx, |s, cx| {
+            assert!(!s.preview_busy);
+            let (_, image) = s.request_filtered_preview("left", cx).unwrap();
+            let expected = s.crop("left").unwrap().2;
+            let expected: Vec<_> = expected
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|p| [p[2], p[1], p[0], p[3]])
+                .collect();
+            assert_eq!(image.as_bytes(0).unwrap(), expected);
+            s.pointer_down("left", point(px(0.), px(0.)));
+            s.pointer_move("left", point(px(512.), px(512.)), false);
+            s.request_filtered_preview("left", cx);
+            assert!(s.preview_busy);
+            s.cancel_annotation();
+            s.edit_annotations(|a| a.undo());
+            assert!(s.request_filtered_preview("left", cx).is_none());
+        });
+        cx.run_until_parked();
+        session.update(cx, |s, cx| {
+            assert!(!s.preview_busy);
+            assert!(s.request_filtered_preview("left", cx).is_none());
+            assert!(s.filter_preview.borrow().is_none());
+            s.pointer_down("left", point(px(0.), px(0.)));
+            s.pointer_move("left", point(px(512.), px(512.)), false);
+            s.request_filtered_preview("left", cx);
+            assert!(s.preview_busy);
+            s.set_size("left", size(px(400.), px(400.)));
+        });
+        cx.run_until_parked();
+        session.update(cx, |s, cx| {
+            assert!(!s.preview_busy);
+            let (_, actual) = s.request_filtered_preview("left", cx).unwrap();
+            let expected = s.crop("left").unwrap().2;
+            let expected: Vec<_> = expected
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|p| [p[2], p[1], p[0], p[3]])
+                .collect();
+            assert_eq!(actual.as_bytes(0).unwrap(), expected);
+        });
+    }
 
     fn screen(name: &str, pos: (i32, i32), scale: f32, color: [u8; 4]) -> Arc<Capture> {
         let mut cap = Capture::for_test(pos, scale);
@@ -1658,6 +1980,30 @@ mod tests {
             .flat_map(|p| [p[2], p[1], p[0], p[3]])
             .collect();
         assert_eq!(first.as_bytes(0).unwrap(), expected);
+        let mut full = std::time::Duration::ZERO;
+        let mut incremental = std::time::Duration::ZERO;
+        for i in 0..30 {
+            s.pointer_move(
+                "left",
+                point(px(1000. + i as f32), px(650. + (i % 2) as f32)),
+                false,
+            );
+            let start = std::time::Instant::now();
+            let raster = s.crop_impl("left", true).unwrap();
+            let expected = crate::ui::image_util::rgba_to_render_image(
+                raster.rgba,
+                raster.width,
+                raster.height,
+            );
+            full += start.elapsed();
+            let start = std::time::Instant::now();
+            let (_, image) = s.filtered_preview("left").unwrap();
+            incremental += start.elapsed();
+            assert_eq!(image.as_bytes(0).unwrap(), expected.as_bytes(0).unwrap());
+        }
+        eprintln!(
+            "30 extensions of a 20,000-point stroke: full {full:?}, incremental {incremental:?}"
+        );
         s.pointer_up("left", point(px(1000.), px(650.)), false);
         s.filtered_preview("left").unwrap();
         let start = std::time::Instant::now();

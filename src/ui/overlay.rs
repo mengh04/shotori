@@ -695,6 +695,9 @@ impl Render for Overlay {
         self.cursor.set(self.cursor_style(cx));
         // Keep display geometry stable while dragging. The backdrop paints
         // shared edges directly so fractional DPI cannot open layout seams.
+        let filtered = self.session.update(cx, |session, cx| {
+            session.request_filtered_preview(&self.capture.output_name, cx)
+        });
         let shared = self.session.read(cx);
         let selection = shared.selection();
         let sel = shared.local_bounds(&self.capture.output_name).map(round_px);
@@ -702,8 +705,7 @@ impl Render for Overlay {
             .backdrop_bounds(&self.capture.output_name)
             .map(round_px);
         let hover = shared.hover_bounds(&self.capture.output_name).map(round_px);
-        let filtered = shared.filtered_preview(&self.capture.output_name);
-        let shapes = if filtered.is_some() {
+        let shapes = if shared.uses_raster_preview() {
             Vec::new()
         } else {
             shared.local_annotations(&self.capture.output_name)

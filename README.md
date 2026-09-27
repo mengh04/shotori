@@ -24,7 +24,7 @@ out of it — all without leaving the keyboard.
 - OCR (`Ctrl+O`) — on-device, works on mixed Chinese/English text
 - Desktop notifications with a thumbnail of the result; copy/save notifications on Linux include an **Open image** action (requires `xdg-open` and a notification server with action support)
 
-Clipboard images opened from notifications retain their original resolution in the Shotori cache (`$XDG_CACHE_HOME/shotori` or `~/.cache/shotori` on Linux). Cached images older than 24 hours are removed on subsequent copy/save operations. Pencil, highlighter, polyline and filter previews reuse completed layers. Geometric shapes and number annotations also use a composite cache once the history reaches 64 marks. Replaced canvas previews explicitly release their GPU image cache entries.
+Clipboard images opened from notifications retain their original resolution in the Shotori cache (`$XDG_CACHE_HOME/shotori` or `~/.cache/shotori` on Linux). Cached images older than 24 hours are removed on subsequent copy/save operations. Pencil, highlighter, polyline and filter previews reuse completed layers. Geometric shapes and number annotations also use a composite cache once the history reaches 64 marks. Replaced canvas previews explicitly release their GPU image cache entries. Long freehand strokes update coverage incrementally without darkening intersections. Large filters and complex strokes render in the background with one active task per session and coalesced updates. The previous preview may remain visible during computation; copy/save always render the current annotations at full precision.
 
 ## Requirements
 

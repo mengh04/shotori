@@ -67,59 +67,66 @@ pub(super) fn rasterize(
         // Separable sliding sums: O(area), even at high strength. Weight by alpha
         // so transparent desktop gaps never introduce a dark halo.
         let radius = (strength / 2).max(1);
-        let mut horizontal = vec![[0_u64; 4]; width * height];
+        // Retain only the horizontal rows in the vertical window. Reading
+        // future rows before overwriting output preserves the original input.
+        let ring_height = (radius * 2 + 1).min(height);
+        let mut horizontal = vec![[0_u64; 4]; width * ring_height];
+        let mut vertical = vec![[0_u64; 4]; width];
+        let mut loaded = 0;
         for row in 0..height {
-            let mut sum = [0_u64; 4];
-            let add = |sum: &mut [u64; 4], col: usize, subtract: bool| {
-                let p = &rgba[((top + row) * stride + left + col) * 4..][..4];
-                for c in 0..4 {
-                    let v = if c == 3 {
-                        p[3] as u64
-                    } else {
-                        p[c] as u64 * p[3] as u64
-                    };
-                    if subtract {
-                        sum[c] -= v;
-                    } else {
-                        sum[c] += v;
+            let needed = (row + radius + 1).min(height);
+            while loaded < needed {
+                let slot = loaded % ring_height;
+                let values = &mut horizontal[slot * width..(slot + 1) * width];
+                let mut sum = [0_u64; 4];
+                let add = |sum: &mut [u64; 4], col: usize, subtract: bool| {
+                    let p = &rgba[((top + loaded) * stride + left + col) * 4..][..4];
+                    for c in 0..4 {
+                        let value = if c == 3 {
+                            p[3] as u64
+                        } else {
+                            p[c] as u64 * p[3] as u64
+                        };
+                        if subtract {
+                            sum[c] -= value;
+                        } else {
+                            sum[c] += value;
+                        }
+                    }
+                };
+                for col in 0..=radius.min(width - 1) {
+                    add(&mut sum, col, false);
+                }
+                for col in 0..width {
+                    values[col] = sum;
+                    for c in 0..4 {
+                        vertical[col][c] += sum[c];
+                    }
+                    if col >= radius {
+                        add(&mut sum, col - radius, true);
+                    }
+                    if col + radius + 1 < width {
+                        add(&mut sum, col + radius + 1, false);
                     }
                 }
-            };
-            for col in 0..=radius.min(width - 1) {
-                add(&mut sum, col, false);
+                loaded += 1;
             }
-            for col in 0..width {
-                horizontal[row * width + col] = sum;
-                if col >= radius {
-                    add(&mut sum, col - radius, true);
-                }
-                if col + radius + 1 < width {
-                    add(&mut sum, col + radius + 1, false);
-                }
-            }
-        }
-        for col in 0..width {
-            let mut sum = [0_u64; 4];
-            for row in 0..=radius.min(height - 1) {
-                for c in 0..4 {
-                    sum[c] += horizontal[row * width + col][c];
-                }
-            }
-            for row in 0..height {
-                let p = &mut rgba[((top + row) * stride + left + col) * 4..][..4];
-                if p[3] != 0 && sum[3] != 0 {
+            let output = &mut rgba[((top + row) * stride + left) * 4..][..width * 4];
+            for (pixel, sum) in output.as_chunks_mut::<4>().0.iter_mut().zip(&vertical) {
+                if pixel[3] != 0 && sum[3] != 0 {
                     for c in 0..3 {
-                        p[c] = ((sum[c] + sum[3] / 2) / sum[3]) as u8;
+                        pixel[c] = ((sum[c] + sum[3] / 2) / sum[3]) as u8;
                     }
                 }
-                if row >= radius {
+            }
+            if row >= radius {
+                let slot = (row - radius) % ring_height;
+                for (sum, old) in vertical
+                    .iter_mut()
+                    .zip(&horizontal[slot * width..(slot + 1) * width])
+                {
                     for c in 0..4 {
-                        sum[c] -= horizontal[(row - radius) * width + col][c];
-                    }
-                }
-                if row + radius + 1 < height {
-                    for c in 0..4 {
-                        sum[c] += horizontal[(row + radius + 1) * width + col][c];
+                        sum[c] -= old[c];
                     }
                 }
             }
@@ -142,6 +149,24 @@ mod tests {
             points: vec![],
         }
     }
+    #[test]
+    #[ignore = "manual large-area blur measurement"]
+    fn benchmark_4k_blur() {
+        let mut mark = shape(ShapeKind::Blur);
+        mark.bounds = Bounds::new(point(px(0.), px(0.)), size(px(3840.), px(2160.)));
+        mark.width = 16.;
+        let mut data: Vec<_> = (0..3840 * 2160)
+            .flat_map(|i| [(i % 251) as u8, 70, 120, 255])
+            .collect();
+        let started = std::time::Instant::now();
+        rasterize(&mark, &mut data, 3840, 2160, point(px(0.), px(0.)), 1.);
+        eprintln!(
+            "4K blur: {:?}; checksum {}",
+            started.elapsed(),
+            data.iter().map(|&b| b as u64).sum::<u64>()
+        );
+    }
+
     #[test]
     fn mosaic_averages_each_tile_and_preserves_outside_and_gaps() {
         let mut data = [20, 40, 60, 255].repeat(12 * 12);
@@ -186,34 +211,32 @@ mod tests {
                 ]
             })
             .collect();
-        let mut actual = before.clone();
-        rasterize(
-            &shape(ShapeKind::Blur),
-            &mut actual,
-            12,
-            12,
-            point(px(0.), px(0.)),
-            1.,
-        );
-        for y in 2_usize..10 {
-            for x in 2_usize..10 {
-                let at = (y * 12 + x) * 4;
-                if before[at + 3] == 0 {
-                    assert_eq!(&actual[at..at + 4], &before[at..at + 4]);
-                    continue;
-                }
-                let mut total = [0_u64; 4];
-                for row in y.saturating_sub(2).max(2)..=(y + 2).min(9) {
-                    for col in x.saturating_sub(2).max(2)..=(x + 2).min(9) {
-                        let p = &before[(row * 12 + col) * 4..][..4];
-                        for c in 0..3 {
-                            total[c] += p[c] as u64 * p[3] as u64;
-                        }
-                        total[3] += p[3] as u64;
+        for strength in [1., 4., 7., 16., 100.] {
+            let radius = (strength as usize / 2).max(1);
+            let mut mark = shape(ShapeKind::Blur);
+            mark.width = strength;
+            let mut actual = before.clone();
+            rasterize(&mark, &mut actual, 12, 12, point(px(0.), px(0.)), 1.);
+            for y in 2_usize..10 {
+                for x in 2_usize..10 {
+                    let at = (y * 12 + x) * 4;
+                    if before[at + 3] == 0 {
+                        assert_eq!(&actual[at..at + 4], &before[at..at + 4]);
+                        continue;
                     }
-                }
-                for c in 0..3 {
-                    assert_eq!(actual[at + c], ((total[c] + total[3] / 2) / total[3]) as u8);
+                    let mut total = [0_u64; 4];
+                    for row in y.saturating_sub(radius).max(2)..=(y + radius).min(9) {
+                        for col in x.saturating_sub(radius).max(2)..=(x + radius).min(9) {
+                            let p = &before[(row * 12 + col) * 4..][..4];
+                            for c in 0..3 {
+                                total[c] += p[c] as u64 * p[3] as u64;
+                            }
+                            total[3] += p[3] as u64;
+                        }
+                    }
+                    for c in 0..3 {
+                        assert_eq!(actual[at + c], ((total[c] + total[3] / 2) / total[3]) as u8);
+                    }
                 }
             }
         }

@@ -242,9 +242,231 @@ pub(super) fn coverage(
     }
 }
 
+/// Coverage intervals at the same eight vertical samples used by full export.
+/// Keeping the union (rather than blending new segments over old pixels) avoids
+/// dark seams when translucent strokes retrace or intersect themselves.
+#[derive(Default)]
+pub(crate) struct StrokePreview {
+    key: Option<StrokeKey>,
+    points: Vec<Point<Pixels>>,
+    rows: Vec<Vec<(f32, f32)>>,
+    pixels: Vec<u8>,
+}
+
+#[derive(PartialEq)]
+struct StrokeKey {
+    dimensions: (u32, u32),
+    origin: Point<Pixels>,
+    scale: f32,
+    width: f32,
+    color: u32,
+    kind: super::ShapeKind,
+}
+
+impl StrokePreview {
+    pub(crate) fn render(
+        &mut self,
+        shape: &super::Shape,
+        base: &[u8],
+        original: &[u8],
+        dimensions: (u32, u32),
+        origin: Point<Pixels>,
+        scale: f32,
+    ) -> &[u8] {
+        let (w, h) = dimensions;
+        let key = StrokeKey {
+            dimensions,
+            origin,
+            scale,
+            width: shape.width,
+            color: shape.color,
+            kind: shape.kind,
+        };
+        let reset = self.key.as_ref() != Some(&key)
+            || !shape.points.starts_with(&self.points)
+            // A dot uses a differently oriented polygon from a capsule's cap.
+            || (self.points.len() == 1 && shape.points.len() > 1);
+        if reset {
+            self.key = Some(key);
+            self.points.clear();
+            self.rows = vec![Vec::new(); h as usize * 8];
+            self.pixels = base.to_vec();
+        }
+        if !reset && self.points.len() == shape.points.len() {
+            return &self.pixels;
+        }
+        let start = self.points.len().saturating_sub(1);
+        let added = polygons(&shape.points[start..], shape.width);
+        let mut dirty = vec![(w as usize, 0_usize); h as usize];
+        for polygon in added {
+            let polygon: Vec<_> = polygon.into_iter().map(|p| (p - origin) * scale).collect();
+            let top = polygon
+                .iter()
+                .map(|p| f32::from(p.y))
+                .fold(f32::INFINITY, f32::min)
+                .floor()
+                .clamp(0., h as f32) as usize;
+            let bottom = polygon
+                .iter()
+                .map(|p| f32::from(p.y))
+                .fold(f32::NEG_INFINITY, f32::max)
+                .ceil()
+                .clamp(0., h as f32) as usize;
+            for (row, changed) in dirty.iter_mut().enumerate().take(bottom).skip(top) {
+                for sample in 0..8 {
+                    let y = row as f32 + (sample as f32 + 0.5) / 8.;
+                    let mut lo = f32::INFINITY;
+                    let mut hi = f32::NEG_INFINITY;
+                    for (a, b) in polygon.iter().zip(polygon.iter().cycle().skip(1)) {
+                        let ay = f32::from(a.y);
+                        let by = f32::from(b.y);
+                        if (ay <= y && y < by) || (by <= y && y < ay) {
+                            let x = f32::from(a.x) + (y - ay) / (by - ay) * f32::from(b.x - a.x);
+                            lo = lo.min(x);
+                            hi = hi.max(x);
+                        }
+                    }
+                    lo = lo.max(0.);
+                    hi = hi.min(w as f32);
+                    if lo >= hi {
+                        continue;
+                    }
+                    let intervals = &mut self.rows[row * 8 + sample];
+                    let first = intervals.partition_point(|&(_, end)| end < lo);
+                    if intervals
+                        .get(first)
+                        .is_some_and(|&(start, end)| start <= lo && hi <= end)
+                    {
+                        continue;
+                    }
+                    changed.0 = changed.0.min(lo.floor() as usize);
+                    changed.1 = changed.1.max(hi.ceil() as usize);
+                    let mut last = first;
+                    while last < intervals.len() && intervals[last].0 <= hi {
+                        lo = lo.min(intervals[last].0);
+                        hi = hi.max(intervals[last].1);
+                        last += 1;
+                    }
+                    intervals.splice(first..last, [(lo, hi)]);
+                }
+            }
+        }
+        let color = shape.color.to_be_bytes();
+        let mut coverage = Vec::new();
+        for (row, (left, right)) in dirty.into_iter().enumerate() {
+            if right <= left {
+                continue;
+            }
+            coverage.clear();
+            coverage.resize(right - left, 0_f32);
+            for sample in 0..8 {
+                let intervals = &self.rows[row * 8 + sample];
+                let first = intervals.partition_point(|&(_, end)| end <= left as f32);
+                for &(start, end) in intervals[first..]
+                    .iter()
+                    .take_while(|&&(start, _)| start < right as f32)
+                {
+                    let first = start.floor().max(left as f32) as usize;
+                    let last = end.ceil().min(right as f32) as usize;
+                    for x in first..last {
+                        coverage[x - left] +=
+                            (end.min(x as f32 + 1.) - start.max(x as f32)).max(0.) / 8.;
+                    }
+                }
+            }
+            for (i, coverage) in coverage.iter().enumerate() {
+                let offset = (row * w as usize + left + i) * 4;
+                let coverage = coverage.min(1.);
+                if shape.kind == super::ShapeKind::Eraser {
+                    for channel in 0..4 {
+                        self.pixels[offset + channel] = (base[offset + channel] as f32
+                            * (1. - coverage)
+                            + original[offset + channel] as f32 * coverage)
+                            .round() as u8;
+                    }
+                } else if base[offset + 3] != 0 {
+                    let alpha = coverage * color[3] as f32 / 255.;
+                    for channel in 0..3 {
+                        self.pixels[offset + channel] = (base[offset + channel] as f32
+                            * (1. - alpha)
+                            + color[channel] as f32 * alpha)
+                            .round() as u8;
+                    }
+                }
+            }
+        }
+        self.points.clone_from(&shape.points);
+        &self.pixels
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incremental_strokes_match_full_coverage_at_crossings_and_after_edits() {
+        use crate::annotation::{Shape, ShapeKind};
+        for scale in [1., 1.25, 1.73, 2.] {
+            for kind in [ShapeKind::Pencil, ShapeKind::Highlighter, ShapeKind::Eraser] {
+                let origin = point(px(-10.), px(20.));
+                let original: Vec<_> = (0..96 * 96)
+                    .flat_map(|i| [(i % 251) as u8, 90, 170, if i % 31 == 0 { 0 } else { 255 }])
+                    .collect();
+                let base: Vec<_> = original
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .flat_map(|p| [180, 120, 60, p[3]])
+                    .collect();
+                let mut shape = Shape {
+                    kind,
+                    number: None,
+                    text: None,
+                    bounds: Default::default(),
+                    color: 0xe0305060,
+                    width: 7.3,
+                    points: vec![origin + point(px(12.), px(12.))],
+                };
+                let mut cache = StrokePreview::default();
+                for i in 0..70 {
+                    if i < 60 {
+                        shape.points.push(
+                            origin
+                                + point(
+                                    px(5. + (i * 7 % 70) as f32),
+                                    px(5. + (i * 11 % 70) as f32),
+                                ),
+                        );
+                    } else if i == 60 {
+                        shape.points.truncate(5);
+                    } else if i == 61 {
+                        shape.width = 13.;
+                    } else if i == 62 {
+                        shape.color = 0x103090ff;
+                    } else if i == 63 {
+                        shape.points.reverse();
+                    }
+                    let actual = cache.render(&shape, &base, &original, (96, 96), origin, scale);
+                    let mut expected = base.clone();
+                    if kind == ShapeKind::Eraser {
+                        super::super::eraser::rasterize(
+                            &shape,
+                            &mut expected,
+                            &original,
+                            96,
+                            96,
+                            origin,
+                            scale,
+                        );
+                    } else {
+                        rasterize(&shape, &mut expected, 96, 96, origin, scale);
+                    }
+                    assert_eq!(actual, expected, "{kind:?} scale {scale}, update {i}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn arrow_tip_and_head_direction_survive_reverse_diagonal_and_short_drags() {

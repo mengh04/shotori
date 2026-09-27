@@ -1300,3 +1300,33 @@ the accent, with contrast-aware foregrounds. Legacy JSON is not auto-loaded.
   vector/composite threshold for all five remaining geometric/number tools.
 - These changes bound historical rendering and retired image storage; they do
   not make active large blur regions, complex long strokes or text layout free.
+
+
+## Incremental strokes and background previews (2026-09-27)
+
+- Pencil, highlighter and brush eraser drafts retain union intervals at the same
+  eight vertical samples as full export. New capsules update only affected pixel
+  rows; blending always uses the pre-stroke layer, including original capture
+  pixels for erasure. A final release point is incorporated before promoting the
+  draft into the committed cache. Style, geometry, history and gesture changes
+  invalidate the appropriate cache.
+- Blur retains a ring of horizontal sums plus one vertical accumulator row,
+  rather than an entire area of horizontal sums. Alpha weighting and clipping
+  remain unchanged. At 3840×2160 with strength 16, sum storage drops from about
+  253 MiB to 2.1 MiB (excluding input/output pixels).
+- Preview jobs for filters covering at least 262,144 physical pixels or strokes
+  exceeding 1,024 points use GPUI's background executor. One job runs per session;
+  while it runs only the live model changes. Completion requests the latest model
+  snapshot rather than processing a backlog of pointer positions. The cache moves
+  between jobs so incremental coverage and committed layers are retained.
+- The last compatible image remains visible while computing, including mouse
+  release. Selection/display changes invalidate old results; a gesture generation
+  prevents an old cancelled draft from appearing in a new gesture. Copy/save
+  independently rasterize current state, never exporting a stale preview.
+- Tests compare incremental and full pixels across fractional scales, crossings,
+  retracing, style changes, shortened/reversed paths and erasure. Blur reference
+  tests include strengths larger than the image region. GPUI task tests cover
+  coalescing, committing while busy, cancellation, undo, new gestures and display
+  geometry changes. Manual benchmarks cover 4K blur and extending 20,000-point
+  strokes. GPU uploads and whole-image preview conversion still have a cost;
+  background previews may lag behind pointer movement during expensive work.
