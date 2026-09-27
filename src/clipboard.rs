@@ -92,6 +92,18 @@ mod imp {
             .expect("stdin was just set to piped")
             .write_all(data)
             .context("failed to send data to clipboard daemon")?;
+        // Detect a daemon that dies at startup (compositor gone, no seat,
+        // manager vanished between probe and offer): without this check the
+        // user would get a "copied" notification for an empty clipboard.
+        // A healthy daemon never exits on its own (it serves until the
+        // selection is taken), so a live process after this window = success.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if let Some(status) = child
+            .try_wait()
+            .context("waiting for clipboard daemon startup")?
+        {
+            anyhow::bail!("clipboard daemon exited with {status} at startup");
+        }
         Ok(())
     }
 
