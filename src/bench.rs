@@ -297,9 +297,52 @@ pub fn bench_main() -> i32 {
         }
     }
 
+    // ── Dense freehand stroke export (the Ctrl+C cost after a long
+    //    pencil stroke: full coverage() replay over every capsule) ──────
+    if matches!(requested.as_str(), "all" | "stroke") {
+        use crate::annotation::{Annotations, ShapeKind};
+        use gpui_kit::{Bounds, point, px, size};
+
+        /// Deterministic dense Lissajous scribble with per-point jitter.
+        fn scribble(n: usize, w: f32, h: f32) -> Vec<gpui_kit::Point<gpui_kit::Pixels>> {
+            let mut rng = Rng(0x51ed270b);
+            let mut pts = Vec::with_capacity(n);
+            for i in 0..n {
+                let t = i as f32 * 0.021;
+                let x = (0.5 + 0.45 * t.sin()) * w + f32::from(rng.next_u8()) * 0.8;
+                let y = (0.5 + 0.45 * (2.3 * t).sin()) * h + f32::from(rng.next_u8()) * 0.8;
+                pts.push(point(px(x), px(y)));
+            }
+            pts
+        }
+
+        for (w, h, n, tag) in [
+            (1920u32, 1080u32, 2000usize, "stroke1080p-p2000"),
+            (3840u32, 2160u32, 6000usize, "stroke4k-p6000"),
+        ] {
+            let sel = Bounds::new(point(px(0.), px(0.)), size(px(w as f32), px(h as f32)));
+            let pts = scribble(n, w as f32, h as f32);
+            let mut ann = Annotations::default();
+            ann.toggle(ShapeKind::Pencil);
+            ann.begin(pts[0], sel);
+            for p in &pts[1..] {
+                ann.drag_to(*p, sel, false);
+            }
+            ann.end();
+            let base = std::sync::Arc::new(ui(w, h));
+            let workload: Workload = Box::new(move || {
+                let mut rgba = base.as_ref().clone();
+                ann.rasterize(&mut rgba, w, h, point(px(0.), px(0.)), 1.0);
+                rgba
+            });
+            run(tag, workload);
+            ran += 1;
+        }
+    }
+
     if ran == 0 {
         eprintln!(
-            "[bench] unknown benchmark '{requested}' (available: all png crop convert rotate filter)"
+            "[bench] unknown benchmark '{requested}' (available: all png crop convert rotate filter stroke)"
         );
         return 1;
     }
