@@ -272,10 +272,10 @@ impl PinSurface {
         }
     }
 
-    /// The menu's Copy: PNG-encode the selected pin's crop, hand it to
-    /// the clipboard daemon and fire the usual copied notification
-    /// (with the click-to-open action). Failures notify instead of
-    /// breaking the pin.
+    /// The menu's Copy: PNG-encode the selected pin's crop (fast tier —
+    /// it goes to the clipboard, not disk), hand it to the clipboard
+    /// daemon and fire the usual copied notification (with the
+    /// click-to-open action). Failures notify instead of breaking the pin.
     fn copy_selected(&mut self, cx: &mut Context<Self>) {
         let crop = self.board.update(cx, |board, cx| {
             let id = board.selected_id()?;
@@ -287,9 +287,9 @@ impl PinSurface {
             return;
         };
         let (w, h, rgba) = crop.as_ref();
-        match crate::model::export::encode_png(*w, *h, rgba) {
+        match crate::model::export::encode_png_fast(*w, *h, rgba) {
             Ok(png) => {
-                if let Err(e) = crate::clipboard::copy_image(png.clone()) {
+                if let Err(e) = crate::clipboard::copy_image(*w, *h, rgba, &png) {
                     eprintln!("[shotori] pin copy failed: {e:#}");
                     crate::notify::send(
                         "Couldn’t copy the pinned image",
@@ -298,7 +298,7 @@ impl PinSurface {
                     return;
                 }
                 println!("[shotori] copied pinned {w}x{h} to clipboard");
-                crate::notify::copied(&png, *w, *h, rgba);
+                crate::notify::copied(&png);
             }
             Err(e) => eprintln!("[shotori] PNG encoding failed: {e:#}"),
         }

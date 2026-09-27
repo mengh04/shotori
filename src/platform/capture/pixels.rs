@@ -15,7 +15,7 @@ use wayland_client::protocol::wl_shm;
 /// Note: the core wl_shm protocol's format is an ordinal (xrgb8888=1),
 /// NOT a DRM fourcc!
 #[cfg(target_os = "linux")]
-pub(super) fn convert_to_rgba(
+pub(crate) fn convert_to_rgba(
     bytes: &[u8],
     format: wl_shm::Format,
     w: i32,
@@ -30,6 +30,37 @@ pub(super) fn convert_to_rgba(
         let src_row = &bytes[y * stride as usize..][..(w * 4) as usize];
         let dst_y = if y_invert { h as usize - 1 - y } else { y };
         let dst_row = &mut rgba[dst_y * (w * 4) as usize..][..(w * 4) as usize];
+        // Fast path: whole-pixel u32 swizzle (little-endian: memory
+        // B,G,R,X reads as B | G<<8 | R<<16 | X<<24). Two shifts + two
+        // ORs per pixel instead of four byte stores; the compiler keeps
+        // it register-resident. The API does not promise 4-byte
+        // alignment, so fall back to the byte loop when unaligned —
+        // mmap pages and fresh Vec allocations always qualify.
+        let (sw, dw) = (
+            src_row.as_ptr() as *const u32,
+            dst_row.as_mut_ptr() as *mut u32,
+        );
+        if (sw.addr() % 4) == 0 && (dw.addr() % 4) == 0 {
+            let (s, d) = unsafe {
+                (
+                    std::slice::from_raw_parts(sw, w as usize),
+                    std::slice::from_raw_parts_mut(dw, w as usize),
+                )
+            };
+            for (out, &word) in d.iter_mut().zip(s) {
+                if is_xrgb {
+                    // B,G,R,(X) → R,G,B,A
+                    *out = ((word & 0xFF) << 16)
+                        | (word & 0x00FF00)
+                        | ((word >> 16) & 0xFF)
+                        | 0xFF00_0000;
+                } else {
+                    // R,G,B,(X) → R,G,B,A
+                    *out = (word & 0x00FF_FFFF) | 0xFF00_0000;
+                }
+            }
+            continue;
+        }
         let (src_chunks, _) = src_row.as_chunks::<4>();
         let (dst_chunks, _) = dst_row.as_chunks_mut::<4>();
         for (px, chunk) in src_chunks.iter().zip(dst_chunks) {
@@ -56,11 +87,33 @@ pub(super) fn convert_to_rgba(
 // only the wayland backend captures un-rotated buffers today; the windows
 // backend keeps the pure functions exercised through tests
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(super) fn rotated_size(w: u32, h: u32, t: Transform) -> (u32, u32) {
+pub(crate) fn rotated_size(w: u32, h: u32, t: Transform) -> (u32, u32) {
     use Transform::*;
     match t {
         Normal | Rot180 | Flipped | Flipped180 => (w, h),
         _ => (h, w),
+    }
+}
+
+/// Reverse one row PIXEL-wise (4-byte groups), not byte-wise — a plain
+/// `row.reverse()` would scramble each pixel's channels. The word path
+/// needs 4-byte alignment of the row start (fresh allocations and row
+/// offsets that are multiples of 4 qualify; fall back to byte swaps).
+fn reverse_row_pixels(row: &mut [u8]) {
+    let n = row.len() / 4;
+    if n > 0 && row.as_ptr().addr().is_multiple_of(4) {
+        let words = unsafe { std::slice::from_raw_parts_mut(row.as_mut_ptr().cast::<u32>(), n) };
+        words.reverse();
+    } else {
+        let mut i = 0usize;
+        let mut j = n - 1;
+        while i < j {
+            for k in 0..4 {
+                row.swap(i * 4 + k, j * 4 + k);
+            }
+            i += 1;
+            j -= 1;
+        }
     }
 }
 
@@ -69,28 +122,59 @@ pub(super) fn rotated_size(w: u32, h: u32, t: Transform) -> (u32, u32) {
 /// Note: niri's "90° counter-clockwise" (Rot90) actually fills the panel by
 /// rotating the buffer **clockwise** 90° (opposite of the protocol wording;
 /// pinned down by comparing against grim).
+///
+/// The 180° family is row-reversal (one memcpy per row pair); only the
+/// 90°/270° family pays the per-pixel transpose. `Flipped` stays
+/// identity-mapped exactly as before (an unverified rare case — the
+/// protocol says it should mirror, but no real output has been
+/// calibrated against it; see the grim-calibration note above).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(super) fn rotate_rgba(rgba: Vec<u8>, w: u32, h: u32, t: Transform) -> Vec<u8> {
+pub(crate) fn rotate_rgba(rgba: Vec<u8>, w: u32, h: u32, t: Transform) -> Vec<u8> {
     use Transform::*;
-    let (rw, _rh) = rotated_size(w, h, t);
-    let mut out = vec![0u8; rgba.len()];
-    for y in 0..h {
-        for x in 0..w {
-            let src = ((y * w + x) * 4) as usize;
-            let (dx, dy) = match t {
-                Normal | Flipped => (x, y),
-                Rot90 => (h - 1 - y, x),
-                Rot180 | Flipped180 => (w - 1 - x, h - 1 - y),
-                Rot270 => (y, w - 1 - x),
-                // Flipped90/Flipped270 and other rare combos: treat as Rot90
-                // for now (handle when actually encountered)
-                _ => (h - 1 - y, x),
-            };
-            let dst = ((dy * rw + dx) * 4) as usize;
-            out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+    match t {
+        Normal | Flipped => rgba,
+        Rot180 | Flipped180 => {
+            let mut out = rgba;
+            let row_len = (w * 4) as usize;
+            let n = h as usize;
+            let mut tmp = vec![0u8; row_len];
+            let mut i = 0;
+            while i < n / 2 {
+                let a = i * row_len;
+                let b = (n - 1 - i) * row_len;
+                // out[a] = reverse(src[b]); out[b] = reverse(src[a])
+                tmp.copy_from_slice(&out[a..a + row_len]);
+                out.copy_within(b..b + row_len, a);
+                reverse_row_pixels(&mut out[a..a + row_len]);
+                out[b..b + row_len].copy_from_slice(&tmp);
+                reverse_row_pixels(&mut out[b..b + row_len]);
+                i += 1;
+            }
+            if n % 2 == 1 {
+                let m = (n / 2) * row_len;
+                reverse_row_pixels(&mut out[m..m + row_len]);
+            }
+            out
+        }
+        _ => {
+            let (rw, _rh) = rotated_size(w, h, t);
+            let mut out = vec![0u8; rgba.len()];
+            for y in 0..h {
+                for x in 0..w {
+                    let src = ((y * w + x) * 4) as usize;
+                    let (dx, dy) = match t {
+                        Rot90 | Flipped90 | Flipped270 => (h - 1 - y, x),
+                        Rot270 => (y, w - 1 - x),
+                        // anything exotic left unhandled above: treat as Rot90
+                        _ => (h - 1 - y, x),
+                    };
+                    let dst = ((dy * rw + dx) * 4) as usize;
+                    out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+                }
+            }
+            out
         }
     }
-    out
 }
 
 // tests avoids `use super::*`: the parent module's glob import pulls gpui's

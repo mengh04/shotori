@@ -55,12 +55,33 @@ pub(crate) fn save_dir() -> anyhow::Result<PathBuf> {
     }
 }
 
-/// Encode RGBA8 pixels as PNG (in memory; shared by clipboard and disk)
+/// Encode RGBA8 pixels as PNG with balanced compression (the png crate's
+/// default — the quality/size balance for files on disk)
 pub fn encode_png(w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<Vec<u8>> {
+    encode_png_with(w, h, rgba, png::Compression::Balanced)
+}
+
+/// Encode RGBA8 pixels as PNG with fast compression (fdeflate — a
+/// specialized DEFLATE tuned for PNG).
+///
+/// For the clipboard and notification thumbnails: the bytes go through a
+/// pipe or a 256px downscale, not a download — the speedup is worth the
+/// larger size (measured in the v0.10.2 ROADMAP note).
+pub fn encode_png_fast(w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<Vec<u8>> {
+    encode_png_with(w, h, rgba, png::Compression::Fast)
+}
+
+fn encode_png_with(
+    w: u32,
+    h: u32,
+    rgba: &[u8],
+    compression: png::Compression,
+) -> anyhow::Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut enc = png::Encoder::new(&mut out, w, h);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
+    enc.set_compression(compression);
     let mut writer = enc.write_header().context("PNG header")?;
     writer.write_image_data(rgba).context("PNG data")?;
     writer.finish().context("PNG IEND chunk")?;

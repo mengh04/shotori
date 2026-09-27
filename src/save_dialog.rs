@@ -155,6 +155,7 @@ fn write_and_notify(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) {
     }
     println!("[shotori] saved {w}x{h} → {}", path.display());
     // The path is the thing users actually need — stdout is lost when
-    // launched from a keybinding, so the notification is the feedback
-    crate::notify::saved(path, w, h, rgba);
+    // launched from a keybinding, so the notification is the feedback.
+    // The thumbnail renders inside the notify child from this very file
+    crate::notify::saved(path);
 }
