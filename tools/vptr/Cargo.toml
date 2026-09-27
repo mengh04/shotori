@@ -1,0 +1,12 @@
+[package]
+name = "vptr"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "wlr virtual pointer injector for interactive e2e tests (Linux/Wayland)"
+
+[dependencies]
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+niri-ipc = "26.4.0"
