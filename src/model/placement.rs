@@ -26,7 +26,14 @@ const INSET: f32 = 12.;
 /// Toolbar: [Copy][Save][OCR][Cancel] on row one; annotation tools,
 /// colors and widths on row two (only while a tool is active).
 /// Includes the two edge drag-grips (see [`GRIP_W`]).
-pub(crate) const TB_W: f32 = 544.;
+/// Toolbar width — MEASURED live (grim + per-icon ink-slot scan of the
+/// final layout): the full row demands a ~631px window; 632 keeps a
+/// hair of headroom (narrow screens clamp it down; see
+/// `toolbar_bounds`). Do not "fix" this back to a first-principles
+/// 16×30+gaps estimate — the real pitch is 33px/button and the naive
+/// sum runs ~70px short, which silently clips copy + the right grip
+/// (bit us at 544, 576 AND 608).
+pub(crate) const TB_W: f32 = 632.;
 /// Width of one drag-grip strip at the toolbar's left/right edge.
 pub(crate) const GRIP_W: f32 = 12.;
 /// The bar rows' horizontal padding. The grip elements sit INSIDE that

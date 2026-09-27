@@ -274,15 +274,20 @@ pub(crate) fn selection_toolbar(
                         window.dispatch_action(Box::new(SaveSelection), cx);
                     },
                 ))
-                .child(icon_button(
-                    "tb-pin",
-                    "Pin to screen · Ctrl+P",
-                    IconName::Pin,
-                    focus.clone(),
-                    |window, cx| {
-                        window.dispatch_action(Box::new(PinSelection), cx);
-                    },
-                ))
+                .child(
+                    // own icon: the gpui-kit asset whitelist (`icon_assets!`)
+                    // does not bundle a pin, and IconName::Pin would render
+                    // an empty slot — same situation as the mosaic icon
+                    control(
+                        "tb-pin".into(),
+                        "Pin to screen · Ctrl+P".into(),
+                        focus.clone(),
+                        |window, cx| {
+                            window.dispatch_action(Box::new(PinSelection), cx);
+                        },
+                    )
+                    .child(own_icon("icons/pin.svg")),
+                )
                 .child(separator())
                 .child(icon_button(
                     "tb-cancel",
