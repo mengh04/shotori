@@ -35,6 +35,12 @@ fn main() {
         std::process::exit(shotori::notify::notify_main());
     }
 
+    // Microbenchmarks: `shotori --bench [name]` (see bench.rs) — must run
+    // before clap (free-form argument) and before any GUI/theme init
+    if std::env::args().nth(1).as_deref() == Some(shotori::bench::BENCH_ARG) {
+        std::process::exit(shotori::bench::bench_main());
+    }
+
     // Clipboard daemon (Linux only): the background resident process
     // behind the copy action (see the resident-offer model in
     // clipboard.rs). Windows owns clipboard data after SetClipboardData
@@ -242,19 +248,24 @@ fn full_capture(clipboard: bool, path: Option<std::path::PathBuf>, delay: f32) -
     };
 
     let mut ok = true;
-    // Clipboard: the default, and alongside --path when asked explicitly
+    // Clipboard: the default, and alongside --path when asked explicitly.
+    // Fast-tier PNG: the bytes go through the daemon's pipe, not a download
     if clipboard || path.is_none() {
-        let copied = shotori::model::export::encode_png(w, h, &rgba).and_then(|png| {
-            clipboard::copy_image(png.clone())?;
-            shotori::notify::copied(&png, w, h, &rgba);
-            Ok(())
-        });
-        match copied {
-            Ok(()) => {}
+        let png = match shotori::model::export::encode_png_fast(w, h, &rgba) {
+            Ok(p) => p,
             Err(e) => {
                 eprintln!("[shotori] clipboard: {e:#}");
                 ok = false;
+                Vec::new()
             }
+        };
+        if !png.is_empty()
+            && let Err(e) = clipboard::copy_image(w, h, &rgba, &png)
+        {
+            eprintln!("[shotori] clipboard: {e:#}");
+            ok = false;
+        } else if !png.is_empty() {
+            shotori::notify::copied(&png);
         }
     }
     if let Some(p) = path {
@@ -264,7 +275,8 @@ fn full_capture(clipboard: bool, path: Option<std::path::PathBuf>, delay: f32) -
             p
         };
         match shotori::model::export::save_png(&file, w, h, &rgba) {
-            Ok(()) => shotori::notify::saved(&file, w, h, &rgba),
+            // The thumbnail renders in the notify child from the saved file
+            Ok(()) => shotori::notify::saved(&file),
             Err(e) => {
                 eprintln!("[shotori] save: {e:#}");
                 ok = false;

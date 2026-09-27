@@ -16,12 +16,24 @@
 //! with a `file://`-style local path (verified against noctalia).
 //! Thumbnails are written to the cache dir and must outlive the
 //! notification — cleaned up lazily (24h).
+//!
+//! Thumbnails render INSIDE the detached child, never in the parent:
+//! the parent hands over full-resolution PNG bytes (stdin for copies,
+//! the saved file itself for saves) and exits; the child — a short-lived
+//! process anyway — does the decode + downscale + thumbnail encode. The
+//! copy path additionally caches the full-resolution PNG so the
+//! notification's Open action can show it.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 /// The argv marker for the notify child (main.rs dispatches on this)
 pub const NOTIFY_ARG: &str = "--notify";
+
+/// Image-argument marker: the child renders the thumbnail itself from
+/// the full-resolution PNG — read from the saved path when one is
+/// passed, otherwise from stdin. The parent does no pixel work.
+pub const STDIN_IMAGE: &str = "-";
 
 /// Max thumbnail edge (px) — enough for any daemon's rendering, tiny file
 const PREVIEW_MAX: u32 = 256;
@@ -33,10 +45,12 @@ pub fn send(summary: &str, body: &str) {
     spawn_child(summary, body, None, None);
 }
 
-/// Retain the full-resolution clipboard PNG so the notification can open it.
-/// Cache failures must not turn a successful clipboard copy into an error.
-pub fn copied(png: &[u8], w: u32, h: u32, rgba: &[u8]) {
-    let preview = write_preview(w, h, rgba);
+/// Retain the full-resolution clipboard PNG so the notification can open
+/// it, and queue the notification. The parent does NO pixel work: writing
+/// the cache file is a plain byte copy; the thumbnail renders in the
+/// detached child from the same file (see `STDIN_IMAGE`). Cache failures
+/// must not turn a successful clipboard copy into an error.
+pub fn copied(png: &[u8]) {
     let path = cache_dir().and_then(|dir| match write_clipboard_image(&dir, png) {
         Ok(path) => Some(path),
         Err(error) => {
@@ -47,7 +61,7 @@ pub fn copied(png: &[u8], w: u32, h: u32, rgba: &[u8]) {
     spawn_child(
         "Screenshot copied",
         "The image is ready to paste.",
-        preview.as_deref(),
+        Some(std::path::Path::new(STDIN_IMAGE)),
         path.as_deref(),
     );
 }
@@ -66,13 +80,14 @@ fn write_clipboard_image(dir: &std::path::Path, png: &[u8]) -> std::io::Result<P
 }
 
 /// Saving has a separate action target: never open the temporary thumbnail.
-pub fn saved(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) {
+/// The thumbnail renders in the child from the file the user just saved —
+/// the parent has nothing left to do (no pixels, no copy).
+pub fn saved(path: &std::path::Path) {
     let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    let preview = write_preview(w, h, rgba);
     spawn_child(
         "Screenshot saved",
         &path.to_string_lossy(),
-        preview.as_deref(),
+        Some(std::path::Path::new(STDIN_IMAGE)),
         Some(&path),
     );
 }
@@ -104,8 +119,10 @@ fn spawn_child(
     // usually exits a moment later and the OS reaps it.
 }
 
-/// Child entry point: `shotori --notify <summary> <body> [image path] [saved path]`
-/// → show → exit.
+/// Child entry point: `shotori --notify <summary> <body> [image] [saved path]`
+/// → show → exit. `image` is either a ready thumbnail path or `-`
+/// (`STDIN_IMAGE`), which renders the thumbnail here from the full-resolution
+/// PNG at `saved path` — the parent process does no pixel work.
 pub fn notify_main() -> i32 {
     let mut args = std::env::args_os().skip(2);
     let (Some(summary), Some(body)) = (args.next(), args.next()) else {
@@ -114,7 +131,21 @@ pub fn notify_main() -> i32 {
     };
     let image = args.next().filter(|s| !s.is_empty());
     let open_path = args.next();
-    let image_path = image.as_deref().map(std::path::Path::new);
+    let is_marker = image
+        .as_deref()
+        .is_some_and(|img| img == std::ffi::OsStr::new(STDIN_IMAGE));
+    let rendered = if is_marker {
+        open_path
+            .as_deref()
+            .and_then(|p| render_preview(std::path::Path::new(p)))
+    } else {
+        None
+    };
+    let image_path = match image.as_deref() {
+        Some(_) if is_marker => rendered.as_deref(),
+        Some(img) => Some(std::path::Path::new(img)),
+        None => None,
+    };
     match show(
         &summary.to_string_lossy(),
         &body.to_string_lossy(),
@@ -243,9 +274,11 @@ fn cache_dir() -> Option<PathBuf> {
     Some(dir)
 }
 
-/// Downscale raw RGBA pixels to a cached PNG and return its path.
-fn write_preview(w: u32, h: u32, rgba: &[u8]) -> Option<PathBuf> {
-    let img = image::RgbaImage::from_raw(w, h, rgba.to_vec())?;
+/// Child-side: load the full-resolution PNG, downscale it to a cached
+/// thumbnail and return the thumbnail's path. Runs in the detached child,
+/// so the parent never pays for the decode + downscale + re-encode.
+fn render_preview(png_path: &std::path::Path) -> Option<PathBuf> {
+    let img = image::open(png_path).ok()?.to_rgba8();
     let thumb = image::imageops::thumbnail(&img, PREVIEW_MAX, PREVIEW_MAX);
     let dir = cache_dir()?;
     cleanup_old_previews(&dir);

@@ -24,9 +24,9 @@ use gpui_kit::*;
 
 use crate::platform::capture::Capture;
 
-/// Wait until displays() is usable and match each capture. Outputs that time
-/// out (1s) get None — falling back to the old "compositor picks" behavior,
-/// at least a window opens.
+/// Wait until displays() is usable and match each capture. Outputs that
+/// time out (~1 s) get None — falling back to the old "compositor picks"
+/// behavior, at least a window opens.
 pub async fn await_display_ids(
     caps: Vec<Capture>,
     cx: &AsyncApp,
@@ -38,9 +38,11 @@ pub async fn await_display_ids(
         if all_matched {
             break;
         }
-        cx.background_executor()
-            .timer(std::time::Duration::from_millis(50))
-            .await;
+        // 10 ms for the first four rounds (displays usually appear within
+        // one event-loop pass — the old flat 50 ms cost a full round of
+        // it), 50 ms afterwards; worst-case wait stays ~1 s
+        let delay = std::time::Duration::from_millis(if attempt < 4 { 10 } else { 50 });
+        cx.background_executor().timer(delay).await;
     }
     targets
 }

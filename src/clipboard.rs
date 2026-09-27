@@ -19,13 +19,44 @@
 
 // ── Public surface (platform-neutral) ────────────────────────────────
 
-/// Put PNG bytes on the clipboard.
+/// Put an image on the clipboard.
 ///
-/// Linux: hand them to the resident daemon. Windows: decode and offer
-/// CF_DIB + raw PNG (the round trip costs a few ms; callers keep their
-/// single PNG-encoding path).
-pub fn copy_image(png: Vec<u8>) -> anyhow::Result<()> {
-    imp::copy_image(png)
+/// Linux: hand the PNG bytes to the resident daemon (the pixels are not
+/// needed — the daemon serves `image/png`). Windows: build CF_DIB directly
+/// from the pixels + offer the "PNG" format from the bytes (no
+/// encode→decode round trip; see `imp`).
+pub fn copy_image(w: u32, h: u32, rgba: &[u8], png: &[u8]) -> anyhow::Result<()> {
+    imp::copy_image(w, h, rgba, png)
+}
+
+/// CF_DIB bytes for an RGBA8 buffer: BITMAPINFOHEADER (40 B) + bottom-up
+/// BGRA rows. Pure byte processing — shared by the Windows clipboard and
+/// the `--bench` harness / tests (the old per-pixel `extend_from_slice`
+/// loop is gone; rows are preallocated and swizzled in place).
+pub(crate) fn dib_from_rgba(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+    let row = (w * 4) as usize;
+    let mut dib = Vec::with_capacity(40 + row * h as usize);
+    dib.extend_from_slice(&40u32.to_le_bytes()); // biSize
+    dib.extend_from_slice(&(w as i32).to_le_bytes()); // biWidth
+    dib.extend_from_slice(&(h as i32).to_le_bytes()); // biHeight (positive = bottom-up)
+    dib.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
+    dib.extend_from_slice(&32u16.to_le_bytes()); // biBitCount
+    dib.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
+    dib.extend_from_slice(&((row * h as usize) as u32).to_le_bytes());
+    dib.extend_from_slice(&[0u8; 16]); // resolution / colors / important
+    for y in (0..h).rev() {
+        let start = dib.len();
+        dib.resize(start + row, 0);
+        let src = &rgba[(y * w * 4) as usize..((y + 1) * w * 4) as usize];
+        let dst = &mut dib[start..start + row];
+        for (out, px) in dst.chunks_mut(4).zip(src.chunks(4)) {
+            out[0] = px[2]; // B
+            out[1] = px[1]; // G
+            out[2] = px[0]; // R
+            out[3] = px[3]; // A
+        }
+    }
+    dib
 }
 
 /// Put plain text on the clipboard (the OCR output path).
@@ -64,8 +95,10 @@ mod imp {
     /// Text MIME (with charset suffix; GTK/Qt paste it correctly)
     const TEXT_MIME: &str = "text/plain;charset=utf-8";
 
-    pub fn copy_image(png: Vec<u8>) -> anyhow::Result<()> {
-        spawn_daemon(IMAGE_MIME, &png)
+    pub fn copy_image(_w: u32, _h: u32, _rgba: &[u8], png: &[u8]) -> anyhow::Result<()> {
+        // The daemon serves image/png over zwlr_data_control — only the
+        // bytes cross the pipe
+        spawn_daemon(IMAGE_MIME, png)
     }
 
     pub fn copy_text(text: String) -> anyhow::Result<()> {
@@ -409,36 +442,14 @@ mod imp {
         }
     }
 
-    pub fn copy_image(png: Vec<u8>) -> anyhow::Result<()> {
-        if png.is_empty() {
+    pub fn copy_image(w: u32, h: u32, rgba: &[u8], png: &[u8]) -> anyhow::Result<()> {
+        if png.is_empty() || rgba.is_empty() {
             anyhow::bail!("refusing to copy empty data");
         }
-        // Decode once: CF_DIB needs pixels, the "PNG" format wants the bytes
-        let decoded = image::load_from_memory(&png)
-            .with_context(|| "decoding PNG for the clipboard")?
-            .to_rgba8();
-        let (w, h) = decoded.dimensions();
-        let rgba = decoded.into_raw();
-
-        // CF_DIB: BITMAPINFOHEADER + bottom-up BGRA rows
-        let mut dib = Vec::with_capacity(40 + rgba.len());
-        let bi_size_image = w * h * 4;
-        dib.extend_from_slice(&40u32.to_le_bytes()); // biSize
-        dib.extend_from_slice(&(w as i32).to_le_bytes()); // biWidth
-        dib.extend_from_slice(&(h as i32).to_le_bytes()); // biHeight (positive = bottom-up)
-        dib.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
-        dib.extend_from_slice(&32u16.to_le_bytes()); // biBitCount
-        dib.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
-        dib.extend_from_slice(&bi_size_image.to_le_bytes());
-        dib.extend_from_slice(&[0u8; 16]); // resolution / colors / important
-        for y in (0..h).rev() {
-            let row = &rgba[(y * w * 4) as usize..][..(w * 4) as usize];
-            for px in row.as_chunks::<4>().0 {
-                dib.extend_from_slice(&[px[2], px[1], px[0], 255]); // BGRA
-            }
-        }
-
-        let png_bytes = png;
+        // CF_DIB straight from the caller's pixels — the old path decoded
+        // the PNG first, paying an encode→decode round trip for bytes the
+        // caller already had
+        let dib = super::dib_from_rgba(w, h, rgba);
         with_clipboard(|| unsafe {
             // The registered "PNG" format: paste targets that understand it
             // (browsers, GIMP, Paint.NET…) get the lossless original

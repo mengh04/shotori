@@ -1367,3 +1367,68 @@ the accent, with contrast-aware foregrounds. Legacy JSON is not auto-loaded.
   independent closing, menu dismissal, IPC acknowledgements, invalid payloads
   and owner recovery. Windows cross-process ownership and live display-layout
   changes remain follow-ups.
+
+## Copy/save fast path (2026-09-27)
+
+The Enter/Ctrl+C and `shotori full` copy path spent its whole budget on the
+main thread: a balanced-tier PNG encode (the quality/size choice for files on
+disk) plus the clipboard handoff, before the overlay could quit. The disk
+tier is kept for `--path` saves; the clipboard gets a fast tier, the work
+moves off the UI thread, and the notification thumbnail renders in the
+detached child instead of the parent.
+
+### Changes
+
+- Two-tier PNG: `encode_png` (balanced, disk) and `encode_png_fast`
+  (fdeflate, clipboard) share `encode_png_with`. Clipboard bytes go through
+  the resident daemon's pipe, so speed matters more than size there.
+- `copy_selection` crops on the main thread, then spawns encode +
+  clipboard handoff on the background executor and quits once it lands. The
+  daemon spawn (blocking I/O) rides the same task. The overlay no longer
+  freezes for the duration of a large encode.
+- `copy_image(w, h, rgba, png)` takes the pixels the caller already has:
+  Windows builds CF_DIB directly from them (`dib_from_rgba`, preallocated +
+  in-place swizzle) instead of decoding its own PNG; Linux still hands the
+  bytes to the resident daemon.
+- Notification thumbnails render inside the detached `--notify` child
+  (`render_preview` loads the full-resolution PNG, downscales, caches). The
+  copy parent only byte-copies the full-res file for the Open action; the
+  save parent does nothing at all.
+- Capture-side u32 swizzles (`convert_to_rgba`, `rgba_to_render_image`)
+  replace per-byte loops on the aligned fast path; 180°/flipped-180 rotation
+  is a row reversal instead of a per-pixel copy.
+- In-binary `--bench` harness (fixed-seed LCG inputs, release-only) so the
+  numbers below are reproducible with `shotori --bench all`.
+
+### Measured (release, 16-core; `--bench`, mean of ≥300 ms sampling)
+
+| workload | before | after |
+| --- | --- | --- |
+| png1080-ui encode | 342.7 ms (balanced) | 11.1 ms (fast) — 31× |
+| png4k-ui encode | 1383.9 ms (balanced) | 45.5 ms (fast) — 30× |
+| png4k-noise encode | 1012.7 ms (balanced) | 48.5 ms (fast) — 21× |
+| convert4k-xrgb | 6.3 ms | 3.2 ms — 2× |
+| rotate1080p-180 | 3.1 ms | 1.2 ms — 2.6× |
+| dib4k (Windows DIB build) | (PNG decode, main thread) | 6.0 ms (direct, off-thread) |
+
+Balanced-tier numbers are unchanged by design (the disk tier is preserved).
+Filter workloads are unchanged — they are the preview path, not the copy path.
+
+### E2E (niri, eDP-1 2560×1600 @ 1.75; `SHOTORI_DEBUG_ACTION=copy`)
+
+| selection | before | after |
+| --- | --- | --- |
+| full screen (2558×1599) | 1.76 s | 1.65 s |
+| medium (1200×900 logical) | 1.73 s | 1.64 s |
+
+The E2E wall clock is dominated by the fixed 1.5 s debug-action delay, so the
+visible delta is small; the real change is that the encode + clipboard no
+longer block the overlay's main thread, and incompressible content encodes
+~30× faster on the fast tier.
+
+### Scope note
+
+The companion preview-split work (cached base layer + rect-only draft layer)
+was not landed here: this tree already carries the "Incremental strokes and
+background previews" pass, which is a more complete preview subsystem. The
+copy/save fast path above is independent of it.

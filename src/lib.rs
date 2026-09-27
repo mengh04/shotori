@@ -47,6 +47,9 @@
 pub mod actions;
 
 pub mod args;
+
+/// In-binary microbenchmarks (`shotori --bench`); see bench.rs
+pub mod bench;
 pub mod model;
 pub mod platform;
 pub mod ui;

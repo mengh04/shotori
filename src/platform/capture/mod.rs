@@ -12,6 +12,11 @@
 
 mod pixels;
 
+// Re-exported at crate level for the microbenchmark harness (`--bench`)
+#[cfg(target_os = "linux")]
+pub(crate) use pixels::convert_to_rgba;
+pub(crate) use pixels::rotate_rgba;
+
 #[cfg(target_os = "linux")]
 mod wayland;
 #[cfg(target_os = "windows")]

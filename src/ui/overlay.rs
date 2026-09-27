@@ -378,42 +378,26 @@ impl Overlay {
         self.session.read(cx).crop(&self.capture.output_name)
     }
 
-    /// Enter / Ctrl+C / toolbar [Copy]: crop → PNG → clipboard (resident
-    /// daemon) → exit. The primary exit of daily use.
+    /// Enter / Ctrl+C / toolbar [Copy]: crop → PNG (fast, background) →
+    /// clipboard (resident daemon) → exit. The primary exit of daily use.
+    /// The encode + clipboard handoff run on the background executor so the
+    /// overlay never blocks on compression (the balanced-tier 4K encode cost
+    /// ~1.4 s; the fast tier is ~45 ms — ROADMAP perf pass).
     fn copy_selection(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.session.update(cx, |s, cx| {
             s.edit_annotations(|a| a.finish_polyline());
             cx.notify();
         });
-        let (w, h, rgba) = match self.crop(cx) {
-            Some(x) => x,
-            None => {
-                println!("[shotori] empty selection, ignoring");
-                return;
-            }
-        };
-        let png = match crate::model::export::encode_png(w, h, &rgba) {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("[shotori] PNG encoding failed: {e:#}");
-                return;
-            }
-        };
-        if let Err(e) = crate::clipboard::copy_image(png.clone()) {
-            // Stay in the overlay on failure: the user can still Ctrl+S
-            eprintln!("[shotori] copy failed: {e:#}");
-            crate::notify::send(
-                "Couldn’t copy screenshot",
-                "Try again, or save the image to a file.",
-            );
+        let Some((w, h, rgba)) = self.crop(cx) else {
+            println!("[shotori] empty selection, ignoring");
             return;
-        }
-        println!(
-            "[shotori] copied {w}x{h} (from {}) to clipboard",
-            self.capture.output_name
-        );
-        crate::notify::copied(&png, w, h, &rgba);
-        cx.quit();
+        };
+        let name = self.capture.output_name.clone();
+        let entity = cx.entity();
+        cx.spawn(async move |_, cx| {
+            copy_to_clipboard(w, h, rgba, name, entity, cx).await;
+        })
+        .detach();
     }
 
     /// Ctrl+S / toolbar [Save]: crop → stash pixels → quit the overlay.
@@ -668,6 +652,47 @@ impl Overlay {
         });
         window.focus(&self.focus_handle, cx);
         cx.notify();
+    }
+}
+
+/// Enter/Ctrl+C exit path: PNG-encode (fast tier) + clipboard handoff run
+/// on the background executor so the frozen overlay never blocks on
+/// compression (the balanced-tier 4K encode cost ~1.4 s; the fast tier is
+/// ~45 ms — ROADMAP perf pass). The daemon spawn (Linux) is blocking I/O
+/// and rides the same background task.
+async fn copy_to_clipboard(
+    w: u32,
+    h: u32,
+    rgba: Vec<u8>,
+    name: String,
+    entity: gpui_kit::Entity<Overlay>,
+    cx: &mut gpui_kit::AsyncApp,
+) {
+    let result = cx
+        .background_executor()
+        .spawn(async move {
+            let png = crate::model::export::encode_png_fast(w, h, &rgba)?;
+            crate::clipboard::copy_image(w, h, &rgba, &png)?;
+            Ok::<Vec<u8>, anyhow::Error>(png)
+        })
+        .await;
+    match result {
+        Ok(png) => {
+            println!("[shotori] copied {w}x{h} (from {name}) to clipboard");
+            // The thumbnail renders inside the detached notify child —
+            // the parent does no pixel work (see notify::copied)
+            crate::notify::copied(&png);
+            cx.update(|cx| cx.quit());
+        }
+        Err(e) => {
+            // Stay in the overlay on failure: the user can still Ctrl+S
+            eprintln!("[shotori] copy failed: {e:#}");
+            entity.update(cx, |_, cx| cx.notify());
+            crate::notify::send(
+                "Couldn’t copy screenshot",
+                "Try again, or save the image to a file.",
+            );
+        }
     }
 }
 
