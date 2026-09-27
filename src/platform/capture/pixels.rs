@@ -23,6 +23,13 @@ pub(crate) fn convert_to_rgba(
     stride: i32,
     y_invert: bool,
 ) -> Vec<u8> {
+    // The buffer contract (stride >= w*4, len >= stride*h) is the
+    // compositor's; a buggy or malicious compositor can violate it, so
+    // fail soft (empty result → caller skips the output) instead of
+    // panicking on a slice in the event loop.
+    if w <= 0 || h <= 0 || stride < w * 4 || (stride as u64 * h as u64) as usize > bytes.len() {
+        return Vec::new();
+    }
     let mut rgba = vec![0u8; (w * h * 4) as usize];
     let is_xrgb = matches!(format, wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888);
 
