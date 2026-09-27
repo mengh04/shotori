@@ -3,6 +3,7 @@
 
 use std::sync::{Arc, OnceLock};
 
+#[cfg(target_os = "linux")]
 use gpui_kit::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui_kit::*;
 
@@ -482,9 +483,19 @@ fn open_board(spec: PinSpec, cx: &mut App) -> anyhow::Result<Entity<PinBoard>> {
                 focus: false,
                 display_id: output.display_id,
                 window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-                    point(px(0.), px(0.)),
+                    {
+                        #[cfg(target_os = "linux")]
+                        {
+                            point(px(0.), px(0.))
+                        }
+                        #[cfg(not(target_os = "linux"))]
+                        {
+                            output.bounds.origin
+                        }
+                    },
                     output.bounds.size,
                 ))),
+                #[cfg(target_os = "linux")]
                 kind: WindowKind::LayerShell(LayerShellOptions {
                     namespace: "shotori-pin".into(),
                     layer: Layer::Top,
@@ -493,6 +504,8 @@ fn open_board(spec: PinSpec, cx: &mut App) -> anyhow::Result<Entity<PinBoard>> {
                     keyboard_interactivity: KeyboardInteractivity::OnDemand,
                     ..Default::default()
                 }),
+                #[cfg(not(target_os = "linux"))]
+                kind: WindowKind::PopUp,
                 ..Default::default()
             },
             move |window, cx| cx.new(|cx| PinSurface::new(st, output, window, cx)),
