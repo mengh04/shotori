@@ -370,15 +370,23 @@ impl Render for PinSurface {
                 }
                 let id = pin.id;
                 let local = pin.rect.origin - output.origin;
+                // The frame is drawn AROUND the image, not inside it: the
+                // div is grown by the 1px border width on every side, so
+                // the border box's CONTENT area is exactly the pin rect
+                // and the bitmap lands pixel-perfect over the desktop it
+                // froze. A border drawn inside the rect insets and
+                // resamples the image — visibly dimmer, softened text
+                // (border-box sizing).
+                let frame = px(1.);
                 Some(
                     div()
                         .id(("pin-image", id))
                         .debug_selector(move || format!("pin-image-{id}"))
                         .absolute()
-                        .left(local.x)
-                        .top(local.y)
-                        .w(pin.rect.size.width)
-                        .h(pin.rect.size.height)
+                        .left(local.x - frame)
+                        .top(local.y - frame)
+                        .w(pin.rect.size.width + frame * 2.)
+                        .h(pin.rect.size.height + frame * 2.)
                         .overflow_hidden()
                         // a thin ACCENT frame distinguishes the pin from
                         // the desktop beneath — the same orange as the
@@ -389,6 +397,27 @@ impl Render for PinSurface {
                         // painted (measured), the plain border box does
                         .border_1()
                         .border_color(rgba(crate::ui::theme::c().accent))
+                        // neon halo: the accent blurred around the frame —
+                        // a tight hot ring hugging the border plus a wide
+                        // soft wash. Derived from the accent so custom
+                        // themes glow in their own color. Drop shadows are
+                        // painted before the element's own content mask
+                        // (Style::paint), so the overflow_hidden above
+                        // does not clip them
+                        .shadow(vec![
+                            BoxShadow::new(
+                                px(0.),
+                                px(0.),
+                                rgba((crate::ui::theme::c().accent & 0xFFFFFF00) | 0x8C).into(),
+                            )
+                            .blur_radius(px(6.)),
+                            BoxShadow::new(
+                                px(0.),
+                                px(0.),
+                                rgba((crate::ui::theme::c().accent & 0xFFFFFF00) | 0x47).into(),
+                            )
+                            .blur_radius(px(24.)),
+                        ])
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -437,9 +466,18 @@ impl Render for PinSurface {
                             },
                         ))
                         .child(
-                            img(pin.image.clone())
+                            // probe + pixel-alignment guard: this wrapper
+                            // fills the border box's CONTENT area, which
+                            // must equal the pin rect exactly — the frozen
+                            // bitmap over the desktop it copied
+                            div()
                                 .size_full()
-                                .object_fit(ObjectFit::Fill),
+                                .debug_selector(move || format!("pin-img-{id}"))
+                                .child(
+                                    img(pin.image.clone())
+                                        .size_full()
+                                        .object_fit(ObjectFit::Fill),
+                                ),
                         ),
                 )
             })
@@ -896,16 +934,27 @@ mod interaction_tests {
             vcx.simulate_resize(size(px(200.), px(200.)));
             vcx.update(|window, cx| window.draw(cx).clear(cx));
         }
+        // the frame div is grown by the 1px border on every side…
         assert_eq!(
             first.debug_bounds("pin-image-1").unwrap().origin,
-            point(px(150.), px(20.))
+            point(px(149.), px(19.))
         );
         assert_eq!(
             second.debug_bounds("pin-image-1").unwrap().origin,
-            point(px(-50.), px(20.))
+            point(px(-51.), px(19.))
         );
         assert_eq!(
             second.debug_bounds("pin-image-1").unwrap().size,
+            size(px(102.), px(62.))
+        );
+        // …so the CONTENT area — where the frozen bitmap lands — is the
+        // pin rect to the pixel (no border inset, no resampling)
+        assert_eq!(
+            second.debug_bounds("pin-img-1").unwrap().origin,
+            point(px(-50.), px(20.))
+        );
+        assert_eq!(
+            second.debug_bounds("pin-img-1").unwrap().size,
             size(px(100.), px(60.))
         );
         first.simulate_click(point(px(155.), px(25.)), Default::default());
