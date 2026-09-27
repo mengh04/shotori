@@ -18,7 +18,7 @@ without leaving the keyboard.
   scales and rotated outputs, with selections spanning screens
 - Annotations: rectangle, ellipse, line, polyline, arrow, numbered steps,
   pencil, highlighter, mosaic/blur, eraser, and text
-- Pin (贴图): crop a selection into a floating always-on-top image that
+- Pin: crop a selection into a floating always-on-top image that
   survives the overlay — drag across outputs, scroll to zoom
 - Copy to clipboard, save via the system "save as" dialog, or OCR to text
   (fully offline after a one-time ~31 MB model download)
