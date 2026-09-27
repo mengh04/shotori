@@ -1255,6 +1255,90 @@ mod multi_output_tests {
         });
     }
 
+    /// The user's cross-screen repro: select on one output, then MOVE the
+    /// selection across the seam and release. Wayland's implicit grab
+    /// delivers the entire gesture to the press window — without the
+    /// rehost on release, the size label and toolbar rendered on NEITHER
+    /// output until a fresh click happened to re-host the chrome.
+    #[gpui_kit::test]
+    fn chrome_follows_a_cross_output_move_through_the_event_pipeline(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::base::init);
+        let make_capture = |name: &str, x| {
+            let mut capture = Capture::for_test((x, 0), 1.);
+            capture.output_name = name.into();
+            capture.width = 400;
+            capture.height = 400;
+            capture.rgba = vec![255; 400 * 400 * 4];
+            Arc::new(capture)
+        };
+        let left = make_capture("left", 0);
+        let right = make_capture("right", 400);
+        let session =
+            cx.new(|_| ScreenshotSession::new(vec![left.clone(), right.clone()], Vec::new()));
+        let mut second_context = cx.clone();
+        let (_, left_cx) =
+            cx.add_window_view(|window, cx| Overlay::new(left, session.clone(), window, cx));
+        let (_, right_cx) = second_context
+            .add_window_view(|window, cx| Overlay::new(right, session.clone(), window, cx));
+        for context in [&mut *left_cx, &mut *right_cx] {
+            context.simulate_resize(size(px(400.), px(400.)));
+            context.update(|window, cx| window.draw(cx).clear(cx));
+            context.run_until_parked();
+        }
+
+        // a selection fully on "right": global (500,80)-(700,280)
+        right_cx.simulate_mouse_down(
+            point(px(100.), px(80.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        right_cx.simulate_mouse_move(
+            point(px(300.), px(280.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        right_cx.simulate_mouse_up(
+            point(px(300.), px(280.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        right_cx.run_until_parked();
+        right_cx.update(|_, cx| {
+            assert!(session.read(cx).active_on("right"));
+            assert!(session.read(cx).toolbar_bounds("right").is_some());
+        });
+
+        // grab the interior on right's window and drag across the seam:
+        // every event keeps arriving through the press window
+        // (right-local, far negative x = pointer over "left")
+        right_cx.simulate_mouse_down(
+            point(px(150.), px(150.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        right_cx.simulate_mouse_move(
+            point(px(-300.), px(150.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        right_cx.simulate_mouse_up(
+            point(px(-300.), px(150.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        right_cx.run_until_parked();
+        left_cx.run_until_parked();
+        right_cx.update(|_, cx| {
+            let shared = session.read(cx);
+            assert!(shared.selection().is_selected());
+            // the render inputs for left's label + toolbar, none for right
+            assert!(shared.active_on("left"), "chrome re-hosts on release");
+            assert!(shared.toolbar_bounds("left").is_some());
+            assert!(shared.local_bounds("left").is_some());
+            assert!(shared.toolbar_bounds("right").is_none());
+        });
+    }
+
     #[gpui_kit::test]
     fn selection_moves_and_resizes_after_release_through_the_event_pipeline(
         cx: &mut TestAppContext,

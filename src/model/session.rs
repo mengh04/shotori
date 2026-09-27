@@ -205,6 +205,45 @@ impl ScreenshotSession {
         self.active_output = Some(name.to_owned());
     }
 
+    /// A finalized selection must carry its chrome with it. The size
+    /// label and toolbar render only on the active output — but a
+    /// move/resize edit (or a fresh drag) released with the selection
+    /// living on a DIFFERENT output leaves `active_output` stale:
+    /// Wayland's implicit grab delivers the whole gesture to the window
+    /// where the press happened, and only `pointer_down` re-hosts. The
+    /// result was both screens blank (the old one no longer intersects
+    /// the selection, the new one is not "active") until the next click
+    /// bailed it out. Follow the selection to the output holding its
+    /// largest intersection. STICKY: the incumbent host wins ties — an
+    /// ambiguous straddle across the seam must not churn the chrome to
+    /// the other window (and a same-host call is a no-op, keeping any
+    /// dragged toolbar position).
+    fn follow_selection_host(&mut self) {
+        let Some(bounds) = self.selection.bounds() else {
+            return; // no finalized selection: nothing to follow
+        };
+        let overlap = |screen: &Screen| {
+            let o = screen.bounds().intersect(&bounds);
+            f32::from(o.size.width) * f32::from(o.size.height)
+        };
+        let incumbent = self
+            .active_output
+            .as_deref()
+            .and_then(|name| self.screens.iter().find(|s| s.capture.output_name == name))
+            .map(overlap)
+            .unwrap_or(0.);
+        // only a STRICTLY larger intersection dethrones the incumbent
+        let challenger = self
+            .screens
+            .iter()
+            .filter(|s| overlap(s) > incumbent)
+            .map(|s| (s.capture.output_name.clone(), overlap(s)))
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        if let Some((name, _)) = challenger {
+            self.set_active_output(&name);
+        }
+    }
+
     pub(crate) fn local_bounds(&self, name: &str) -> Option<Bounds<Pixels>> {
         let screen = self.screen(name).bounds();
         let mut bounds = self.selection.bounds()?.intersect(&screen);
@@ -406,6 +445,10 @@ impl ScreenshotSession {
             };
         }
         self.press = None;
+        // A fresh drag can finish over the seam on another output — the
+        // chrome host must follow the selection there, exactly like an
+        // edit-release does (see `follow_selection_host`).
+        self.follow_selection_host();
     }
 
     /// Track the window under the cursor for the hover outline. Returns
@@ -561,6 +604,7 @@ impl ScreenshotSession {
             self.annotations.end();
         } else if self.selection.is_editing() {
             self.selection.end_edit();
+            self.follow_selection_host();
             self.press = None;
         } else {
             self.end(name, local);
@@ -893,9 +937,49 @@ mod tests {
         let mut s = session();
         s.begin("left", point(px(80.), px(20.)));
         s.end("left", point(px(120.), px(40.)));
-        assert!(s.selection().is_selected());
+        assert!(s.selection.is_selected());
         assert!(s.local_bounds("right").is_some());
         assert_eq!(s.crop("left").unwrap().0, 80);
+    }
+
+    #[test]
+    fn chrome_follows_a_selection_moved_to_another_output() {
+        let mut s = session();
+        s.set_size("left", size(px(100.), px(100.)));
+        s.set_size("right", size(px(100.), px(100.)));
+        // a selection fully on "right", made there: chrome lives there
+        s.begin("right", point(px(10.), px(10.)));
+        s.end("right", point(px(60.), px(60.)));
+        assert!(s.active_on("right"));
+        assert!(s.toolbar_bounds("right").is_some());
+
+        // move it across the seam: press inside on right's window, drag
+        // and release with the pointer already on "left" — Wayland's
+        // implicit grab delivers the WHOLE gesture to the press window
+        s.pointer_down("right", point(px(30.), px(30.)));
+        assert!(s.selection.is_editing());
+        s.pointer_move("right", point(px(-40.), px(50.)), false);
+        s.pointer_up("right", point(px(-40.), px(50.)), false);
+
+        // regression: without the rehost both screens rendered nothing
+        // (old host no longer intersects, new host not "active") until
+        // the next click re-hosted via pointer_down
+        assert!(s.selection.is_selected());
+        assert!(s.local_bounds("left").is_some(), "label render input");
+        assert!(s.active_on("left"), "the chrome host follows the selection");
+        assert!(
+            s.toolbar_bounds("left").is_some(),
+            "toolbar re-hosts on release"
+        );
+        assert!(s.toolbar_bounds("right").is_none());
+
+        // a FRESH drag released with the bulk on another output rehosts
+        // too (press screen ≠ host screen from the start)
+        s.begin("right", point(px(5.), px(40.)));
+        s.drag_to("right", point(px(-50.), px(60.)));
+        s.end("right", point(px(-50.), px(60.)));
+        assert!(s.active_on("left"), "largest-intersection output wins");
+        assert!(s.toolbar_bounds("left").is_some());
     }
 
     #[test]

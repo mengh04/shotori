@@ -925,6 +925,39 @@ Follow-ups: arrow-key nudging, pixel-exact sizing via Shift+arrows,
 handle size scaling with DPI, keyboard-only resize (Tab between
 handles).
 
+### Addendum: the chrome must follow a cross-screen release (2026-09-27)
+
+User report: drag a selection onto another monitor, release — the size
+label and toolbar appear on NEITHER screen until the next click. The
+label and toolbar both render only on `active_output`'s overlay
+(`sel.filter(|_| active)` / `toolbar_bounds` gates on `active_on`),
+but only `pointer_down` ever re-hosts — and Wayland's implicit grab
+delivers the whole gesture (including the release) to the window where
+the press happened. So a move/resize edit released over the seam left
+`active_output` on the press screen: the old screen no longer
+intersects the selection (`local_bounds` → None kills the toolbar),
+the new one is not "active" (kills both) — blank everywhere, until a
+click's `pointer_down` re-hosted by accident.
+
+Fix: `follow_selection_host()` after every finalized landing — both
+`end_edit` releases and fresh `end()` drags (a fresh drag can cross
+the seam too). It re-hosts to the output holding the selection's
+largest intersection, STICKY: the incumbent wins ties, so an
+ambiguous straddle never churns the chrome (the sticky rule fell out
+of an existing test whose synthetic screens overlap — real monitors
+don't, but the tie-break needed a principled answer anyway).
+`set_active_output`'s guard makes same-host calls no-ops, preserving
+a dragged toolbar position.
+
+- session test: press on right's window, release with the selection
+  fully on left → active/label-input/toolbar all re-host; a fresh
+  seam-crossing drag rehosts by majority overlap
+- overlay test: the same through real window events, events delivered
+  via the press window the whole way (implicit-grab faithful)
+- live: injected selection fully on eDP-1 via the HDMI-scoped backdoor
+  → label + toolbar on eDP-1, HDMI clean (pre-fix: blank everywhere)
+- 163 green
+
 ## Annotation tools — incremental implementation
 
 Reference: [PixPin annotation basics](https://pixpin.cn/docs/mark/base-use)
