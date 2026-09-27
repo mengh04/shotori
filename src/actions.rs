@@ -14,6 +14,7 @@ gpui_kit::actions!([
     QuitOverlay,
     CopySelection,
     SaveSelection,
+    PinSelection,
     OcrSelection,
     SelectScreen
 ]);
@@ -47,7 +48,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-a", SelectScreen, Some("ShotoriOverlay")),
         KeyBinding::new("ctrl-c", CopySelection, Some("ShotoriOverlay")),
         KeyBinding::new("ctrl-s", SaveSelection, Some("ShotoriOverlay")),
+        KeyBinding::new("ctrl-p", PinSelection, Some("ShotoriOverlay")),
         KeyBinding::new("ctrl-o", OcrSelection, Some("ShotoriOverlay")),
+        // pins are their own windows with their own context
+        KeyBinding::new("escape", crate::ui::pin::ClosePin, Some("ShotoriPin")),
     ]);
 }
 
