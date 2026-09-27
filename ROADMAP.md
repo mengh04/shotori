@@ -1010,6 +1010,27 @@ delivered the event. The stale-focus press grabs; the cursor (pushed
 by whichever window holds focus, derived from the global pointer) is
 a hand even at rest.
 
+### Shelved: one-frame default-cursor flash on the first motion (2026-09-27)
+
+Known-open, user-shelved: after a cross-screen release, the FIRST
+pointer motion flashes the default arrow (hand → arrow → hand). The
+compositor resets the cursor shape on every pointer focus switch and
+waits for the newly focused surface to re-assert; gpui can only
+assert during paint, so the switch landing at MOTION time always
+costs at least one default frame. Two attempts were built and later
+REVERTED (git reset, see history if needed): (1) detecting window
+entry (pointer_inside) and forcing one repaint — re-asserts one frame
+later, still visible; (2) flipping the stale focus at the release by
+momentarily emptying the old window's input region (forces the
+compositor to re-evaluate) and restoring it 40 ms later — user still
+saw the flash; root cause of the residual flash not established
+(may be niri-side cursor update latency, unmeasured). Next attempt
+should start by MEASURING where the gap comes from (compositor logs /
+cursor protocol tracing), not by another assert-timing guess. The
+working parts (global pointer tracking, window-level down, chrome
+rehost) are unaffected and stay.
+
+
 
 
 ## Annotation tools — incremental implementation
