@@ -1774,6 +1774,93 @@ mod multi_output_tests {
     }
 
     #[gpui_kit::test]
+    fn toolbar_hugs_its_content(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::base::init(cx);
+            crate::actions::init_annotation_keybindings(cx);
+        });
+        let mut capture = Capture::for_test((0, 0), 1.);
+        capture.output_name = "main".into();
+        capture.width = 800;
+        capture.height = 600;
+        capture.rgba = vec![255; 800 * 600 * 4];
+        let capture = Arc::new(capture);
+        let session = cx.new(|_| ScreenshotSession::new(vec![capture.clone()], Vec::new()));
+        let (_overlay, vcx) =
+            cx.add_window_view(|window, cx| Overlay::new(capture, session.clone(), window, cx));
+        vcx.simulate_resize(size(px(800.), px(600.)));
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        vcx.run_until_parked();
+        vcx.simulate_mouse_down(
+            point(px(100.), px(200.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_move(
+            point(px(600.), px(560.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_up(
+            point(px(600.), px(560.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+
+        // Single row (no tool active): the bar is TB_W_ROW1 wide and the
+        // flex_1 spacer between the tool cluster and the action cluster
+        // collapses to a small deliberate group break — NOT the ~70px
+        // dead hole a full-TB_W bar showed (user-reported).
+        vcx.update(|_, cx| {
+            assert_eq!(
+                session.read(cx).toolbar_bounds("main").unwrap().size.width,
+                px(crate::model::placement::TB_W_ROW1)
+            );
+        });
+        let gap = f32::from(
+            vcx.debug_bounds("tb-ocr").unwrap().left()
+                - vcx.debug_bounds("tb-text").unwrap().right(),
+        );
+        assert!(
+            gap <= 10.,
+            "single-row toolbar has a {gap}px hole between the tools and the actions"
+        );
+        // …and the right edge is intact: the copy button ends far enough
+        // from the bar's right edge that the grip strip still fits
+        // (no clipping — the failure mode that motivated measuring
+        // widths in the first place).
+        let copy_right = f32::from(vcx.debug_bounds("tb-copy").unwrap().right());
+        let bar_right =
+            vcx.update(|_, cx| f32::from(session.read(cx).toolbar_bounds("main").unwrap().right()));
+        assert!(
+            copy_right
+                <= bar_right - crate::model::placement::BAR_PAD - crate::model::placement::GRIP_W,
+            "copy clipped: {copy_right} vs bar right {bar_right}"
+        );
+
+        // Two rows (a tool with the color settings row): the bar keeps
+        // the full TB_W the color row needs — its last swatch must fit
+        // inside the bar with room for the bar's padding.
+        vcx.simulate_keystrokes("r");
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        vcx.update(|_, cx| {
+            let b = session.read(cx).toolbar_bounds("main").unwrap();
+            assert_eq!(b.size.height, px(crate::model::placement::TB_H));
+        });
+        let swatch = vcx.debug_bounds("tb-color-5").unwrap();
+        let bar_right =
+            vcx.update(|_, cx| f32::from(session.read(cx).toolbar_bounds("main").unwrap().right()));
+        assert!(
+            f32::from(swatch.right()) <= bar_right - 4.,
+            "color row overflows the toolbar: {} > {bar_right}",
+            f32::from(swatch.right())
+        );
+    }
+
+    #[gpui_kit::test]
     fn toolbar_drag_works_through_the_event_pipeline(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_kit::base::init(cx);
@@ -1845,7 +1932,11 @@ mod multi_output_tests {
         vcx.update(|_, cx| {
             assert_eq!(overlay.read(cx).cursor.get(), CursorStyle::ClosedHand);
             let b = session.read(cx).toolbar_bounds("main").unwrap();
-            assert_eq!(b.origin, point(px(160.), px(81.))); // grab (6,19) held
+            // grab (6,19) held, x clamped to the window (narrow single-row bar)
+            assert_eq!(
+                b.origin,
+                point(px(800. - crate::model::placement::TB_W_ROW1 - 8.), px(81.))
+            );
         });
         vcx.simulate_mouse_up(
             point(px(250.), px(100.)),
@@ -1857,7 +1948,7 @@ mod multi_output_tests {
             assert!(!session.read(cx).toolbar_drag_active());
             assert_eq!(
                 session.read(cx).toolbar_bounds("main").unwrap().origin,
-                point(px(160.), px(81.))
+                point(px(800. - crate::model::placement::TB_W_ROW1 - 8.), px(81.))
             );
             // the press on the grip never became a selection interaction
             let b = session.read(cx).selection().bounds().unwrap();

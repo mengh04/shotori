@@ -34,6 +34,12 @@ const INSET: f32 = 12.;
 /// sum runs ~70px short, which silently clips copy + the right grip
 /// (bit us at 544, 576 AND 608).
 pub(crate) const TB_W: f32 = 632.;
+/// Toolbar width for the SINGLE-ROW state (no tool active): row one's
+/// natural content width, measured via test probe
+/// (`toolbar_hugs_its_content`): the full TB_W leaves a ~70px dead
+/// hole between the tool cluster and the action cluster, which the
+/// flex_1 spacer widens into a visible gap (user-reported).
+pub(crate) const TB_W_ROW1: f32 = 562.;
 /// Width of one drag-grip strip at the toolbar's left/right edge.
 pub(crate) const GRIP_W: f32 = 12.;
 /// The bar rows' horizontal padding. The grip elements sit INSIDE that
@@ -67,12 +73,17 @@ pub(crate) fn label_anchor(b: &Bounds<Pixels>, ws: Size<Pixels>) -> (f32, f32) {
 
 /// Toolbar placement: BELOW the selection, or — when the selection
 /// reaches the bottom of the screen — INSIDE the box at its bottom-left
-/// corner. Horizontally clamped; `height` is the toolbar's current
-/// height (single row, or two rows while annotating).
-pub(crate) fn toolbar_anchor(b: &Bounds<Pixels>, ws: Size<Pixels>, height: f32) -> (f32, f32) {
+/// corner. Horizontally clamped; `width`/`height` are the toolbar's
+/// current size basis (see [`toolbar_size`]).
+pub(crate) fn toolbar_anchor(
+    b: &Bounds<Pixels>,
+    ws: Size<Pixels>,
+    width: f32,
+    height: f32,
+) -> (f32, f32) {
     let inside = f32::from(b.bottom()) + height + 8. + EDGE_B > f32::from(ws.height);
     let x = (f32::from(b.left()) + if inside { INSET } else { 0. })
-        .clamp(8., (f32::from(ws.width) - TB_W - 8.).max(8.));
+        .clamp(8., (f32::from(ws.width) - width - 8.).max(8.));
     let y = if inside {
         // inside, bottom-left corner (inset from the border)
         f32::from(b.bottom()) - height - 8.
@@ -83,15 +94,31 @@ pub(crate) fn toolbar_anchor(b: &Bounds<Pixels>, ws: Size<Pixels>, height: f32) 
 }
 
 /// The toolbar's full rect: [`toolbar_anchor`] plus the width clamp the
-/// render side applies (`TB_W`, or the window minus breathing room on
-/// narrow screens). One source of truth for render, cursor hit-tests and
-/// the drag clamp — they cannot drift apart.
-pub(crate) fn toolbar_bounds(b: &Bounds<Pixels>, ws: Size<Pixels>, height: f32) -> Bounds<Pixels> {
-    let (x, y) = toolbar_anchor(b, ws, height);
-    let w = TB_W.min((f32::from(ws.width) - 16.).max(1.));
+/// render side applies (the state's base width, or the window minus
+/// breathing room on narrow screens). One source of truth for render,
+/// cursor hit-tests and the drag clamp — they cannot drift apart.
+pub(crate) fn toolbar_bounds(
+    b: &Bounds<Pixels>,
+    ws: Size<Pixels>,
+    width: f32,
+    height: f32,
+) -> Bounds<Pixels> {
+    let (x, y) = toolbar_anchor(b, ws, width, height);
+    let w = width.min((f32::from(ws.width) - 16.).max(1.));
     Bounds {
         origin: point(px(x), px(y)),
         size: size(px(w), px(height)),
+    }
+}
+
+/// The toolbar's (width, height) basis for its two row-count states.
+/// Two-row bars keep the measured TB_W — the color settings row needs
+/// it; single-row bars hug row one's natural width instead.
+pub(crate) fn toolbar_size(annotating: bool) -> (f32, f32) {
+    if annotating {
+        (TB_W, TB_H)
+    } else {
+        (TB_W_ROW1, ROW_H)
     }
 }
 
@@ -114,7 +141,9 @@ pub(crate) fn round_px(b: Bounds<Pixels>) -> Bounds<Pixels> {
 mod tests {
     // Explicit imports (same reason as selection.rs: avoid gpui's test
     // macro shadowing the built-in #[test])
-    use super::{LABEL_H, ROW_H, TB_H, label_anchor, toolbar_anchor};
+    use super::{
+        LABEL_H, ROW_H, TB_H, TB_W, TB_W_ROW1, label_anchor, toolbar_anchor, toolbar_size,
+    };
     use gpui_kit::{Bounds, Pixels, point, px, size};
 
     fn bounds(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
@@ -156,14 +185,14 @@ mod tests {
 
     #[test]
     fn toolbar_sits_below_by_default() {
-        let (x, y) = toolbar_anchor(&bounds(50., 100., 300., 200.), screen(), ROW_H);
+        let (x, y) = toolbar_anchor(&bounds(50., 100., 300., 200.), screen(), TB_W_ROW1, ROW_H);
         assert_eq!((x, y), (50., 308.));
     }
 
     #[test]
     fn toolbar_goes_inside_bottom_left_when_reaching_the_bottom() {
         // two-row toolbar (annotating): the tall case
-        let (x, y) = toolbar_anchor(&bounds(50., 300., 300., 780.), screen(), TB_H);
+        let (x, y) = toolbar_anchor(&bounds(50., 300., 300., 780.), screen(), TB_W, TB_H);
         assert_eq!((x, y), (50. + 12., 1080. - TB_H - 8.));
     }
 
@@ -171,8 +200,14 @@ mod tests {
     fn toolbar_clamps_horizontally() {
         // a selection hugging the right edge: the toolbar pins into the screen
         let b = bounds(1800., 500., 100., 200.);
-        let (x, _) = toolbar_anchor(&b, screen(), TB_H);
+        let (x, _) = toolbar_anchor(&b, screen(), TB_W, TB_H);
         assert_eq!(x, 1920. - super::TB_W - 8.);
+    }
+
+    #[test]
+    fn toolbar_size_switches_with_state() {
+        assert_eq!(toolbar_size(false), (TB_W_ROW1, ROW_H));
+        assert_eq!(toolbar_size(true), (TB_W, TB_H));
     }
 
     #[test]
@@ -188,7 +223,7 @@ mod tests {
                 }
                 let b = bounds(50., top, 300., bottom - top);
                 let (_, ly) = label_anchor(&b, screen());
-                let (_, ty) = toolbar_anchor(&b, screen(), TB_H);
+                let (_, ty) = toolbar_anchor(&b, screen(), TB_W, TB_H);
                 assert!(ly >= 0., "label off-screen for {b:?}");
                 assert!(
                     ty >= 0. && ty + TB_H <= 1080.,
