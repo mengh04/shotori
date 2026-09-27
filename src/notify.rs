@@ -149,15 +149,18 @@ fn show(
         n.image_path(&format!("file://{}", path.display()));
     }
     if open_path.is_some() {
-        // Some notification centers render the default action as another button.
-        // Register only the explicit action so there is exactly one opening control.
-        n.action("open", "Open image")
+        // Two ways to open: click the notification body (the freedesktop
+        // "default" action — every major daemon invokes it on click) or
+        // the explicit button. Daemons that render "default" as a second
+        // button simply show two opening controls; harmless either way.
+        n.action("default", "View image")
+            .action("open", "View image")
             .timeout(notify_rust::Timeout::Milliseconds(10000));
     }
     let handle = n.show()?;
     if let Some(path) = open_path {
         handle.wait_for_action(|action| {
-            if action == "open"
+            if matches!(action, "default" | "open")
                 && let Err(error) = open_image(path)
             {
                 eprintln!("[shotori] could not open saved screenshot: {error}");
