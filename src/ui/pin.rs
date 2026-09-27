@@ -202,11 +202,22 @@ impl PinBoard {
         }
     }
 
-    fn zoom(&mut self, id: u64, lines: f32) {
+    /// Zoom anchored at the CURSOR: the image point under the pointer
+    /// stays under the pointer (map-style zoom — the friendly behavior),
+    /// then clamped so a grabbable slice remains on the desktop.
+    fn zoom_at(&mut self, id: u64, lines: f32, cursor: Point<Pixels>) {
         if let Some(pin) = self.pins.iter_mut().find(|pin| pin.id == id) {
-            let zoom = f32::from(pin.rect.size.width) / f32::from(pin.base.width);
-            let size = zoomed_size(pin.base, next_zoom(zoom, lines));
-            pin.rect = Bounds::new(clamp_origin(pin.rect.origin, size, &self.outputs), size);
+            let z0 = f32::from(pin.rect.size.width) / f32::from(pin.base.width);
+            let z1 = next_zoom(z0, lines);
+            let size = zoomed_size(pin.base, z1);
+            // the image point (in base units) the cursor is over
+            let img = point(
+                (f32::from(cursor.x - pin.rect.origin.x) / z0).clamp(0., f32::from(pin.base.width)),
+                (f32::from(cursor.y - pin.rect.origin.y) / z0)
+                    .clamp(0., f32::from(pin.base.height)),
+            );
+            let origin = point(cursor.x - px(img.x * z1), cursor.y - px(img.y * z1));
+            pin.rect = Bounds::new(clamp_origin(origin, size, &self.outputs), size);
         }
     }
 }
@@ -369,6 +380,15 @@ impl Render for PinSurface {
                         .w(pin.rect.size.width)
                         .h(pin.rect.size.height)
                         .overflow_hidden()
+                        // a thin ACCENT frame distinguishes the pin from
+                        // the desktop beneath — the same orange as the
+                        // overlay's selection border, solid because a pin
+                        // must read against ANY content (palette-specific
+                        // borders vanish on half the wallpapers). On the
+                        // div itself: an absolute overlay child never
+                        // painted (measured), the plain border box does
+                        .border_1()
+                        .border_color(rgba(crate::ui::theme::c().accent))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -405,8 +425,12 @@ impl Render for PinSurface {
                                     ScrollDelta::Lines(lines) => lines.y,
                                     ScrollDelta::Pixels(pixels) => f32::from(pixels.y) / 40.,
                                 };
+                                // zoom around the cursor, not the pin's
+                                // corner — the point under the pointer
+                                // stays under the pointer
+                                let cursor = event.position + output.origin;
                                 this.board.update(cx, |board, cx| {
-                                    board.zoom(id, lines);
+                                    board.zoom_at(id, lines, cursor);
                                     cx.notify();
                                 });
                                 cx.stop_propagation();
@@ -416,15 +440,6 @@ impl Render for PinSurface {
                             img(pin.image.clone())
                                 .size_full()
                                 .object_fit(ObjectFit::Fill),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .size_full()
-                                .border_1()
-                                .border_color(rgba(crate::ui::theme::c().toolbar_border)),
                         ),
                 )
             })
@@ -1062,11 +1077,66 @@ mod interaction_tests {
         board.update(cx, |board, cx| {
             board.add(spec(-100., -100.), cx);
             for _ in 0..20 {
-                board.zoom(1, -2.);
+                let center = board.pins[0].rect.center();
+                board.zoom_at(1, -2., center);
+                // center-anchored shrinking drifts the rect, so the
+                // grabbable slice may land on EITHER output — assert
+                // the best-visible one keeps its grip
                 let rect = board.pins[0].rect;
-                let visible = rect.intersect(&board.outputs[0]);
-                assert!(visible.size.width >= rect.size.width.min(px(super::MIN_VISIBLE)));
-                assert!(visible.size.height >= rect.size.height.min(px(super::MIN_VISIBLE)));
+                let best = board
+                    .outputs
+                    .iter()
+                    .fold(size(px(0.), px(0.)), |acc, output| {
+                        let visible = rect.intersect(output).size;
+                        size(acc.width.max(visible.width), acc.height.max(visible.height))
+                    });
+                // a hair of tolerance: the intersect() round-trip loses
+                // float ulps against the original size
+                let need_w = rect.size.width.min(px(super::MIN_VISIBLE));
+                let need_h = rect.size.height.min(px(super::MIN_VISIBLE));
+                assert!(best.width - need_w > px(-0.05));
+                assert!(best.height - need_h > px(-0.05));
+            }
+        });
+    }
+
+    /// Zoom anchors on the cursor: the image point under the pointer
+    /// stays under the pointer in both directions (while the pin fits
+    /// the desktop; the grabbable clamp may shift it past that).
+    #[gpui_kit::test]
+    fn zoom_anchors_on_the_cursor_point(cx: &mut TestAppContext) {
+        let board = board(cx);
+        board.update(cx, |board, cx| board.add(spec(20., 20.), cx));
+        board.update(cx, |board, _| {
+            let cursor = point(px(90.), px(70.));
+            for lines in [2., -1., 3., -2., 4.] {
+                let before = board.pins[0].rect;
+                let base = board.pins[0].base;
+                let z0 = f32::from(before.size.width) / f32::from(base.width);
+                let img = (
+                    f32::from(cursor.x - before.origin.x) / z0,
+                    f32::from(cursor.y - before.origin.y) / z0,
+                );
+                board.zoom_at(1, lines, cursor);
+                let after = board.pins[0].rect;
+                let z1 = f32::from(after.size.width) / f32::from(base.width);
+                let back = (
+                    f32::from(cursor.x - after.origin.x) / z1,
+                    f32::from(cursor.y - after.origin.y) / z1,
+                );
+                let unclamped = point(cursor.x - px(img.0 * z1), cursor.y - px(img.1 * z1));
+                let expected = super::zoomed_size(base, z1);
+                assert!(
+                    (f32::from(after.size.width) - f32::from(expected.width)).abs() < 0.01
+                        && (f32::from(after.size.height) - f32::from(expected.height)).abs() < 0.01
+                );
+                if after.origin == unclamped {
+                    assert!(
+                        (back.0 - img.0).abs() < 0.5 && (back.1 - img.1).abs() < 0.5,
+                        "anchor drifted: {back:?} vs {img:?}"
+                    );
+                }
+                assert!(after.contains(&cursor), "cursor left the pin");
             }
         });
     }
