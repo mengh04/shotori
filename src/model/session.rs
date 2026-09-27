@@ -960,6 +960,29 @@ impl ScreenshotSession {
     /// Keep the original single-output crop when possible. Spanning selections
     /// use the highest participating pixel density; desktop gaps stay transparent.
     fn crop_impl(&self, fallback_output: &str, marked: bool) -> Option<RasterSelection> {
+        // Export shortcut: the preview cache holds exactly this composite
+        // (full-selection crop + committed annotations) whenever the
+        // selection and history are unchanged since the last render.
+        // Reusing it makes copy/save/pin/OCR O(memcpy) instead of a full
+        // re-rasterization — decisive for long pencil strokes. The cache
+        // only exists while `uses_raster_preview()` is true (it is taken
+        // when that flips off), so no extra predicate is needed.
+        if marked
+            && let Some(cached) = self.filter_preview.borrow().as_ref()
+            && let Some(selection) = self.selection.bounds()
+            && cached.selection == Some(selection)
+            && cached.draft.is_none()
+            && cached.committed == self.annotations.committed()
+            && cached.draft_generation == self.annotations.draft_generation()
+        {
+            return Some(RasterSelection {
+                scale: cached.original.scale,
+                width: cached.original.width,
+                height: cached.original.height,
+                rgba: cached.pixels.clone(),
+                bounds: cached.original.bounds,
+            });
+        }
         let selected = self
             .selection
             .bounds()
