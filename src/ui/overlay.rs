@@ -124,9 +124,8 @@ impl Overlay {
                 if this.ocr_setup.is_none() && this.text_editing.is_none() {
                     window.focus(&this.focus_handle, cx);
                 }
-                // State changed without motion (Ctrl+A, snap, undo…): the
-                // cursor must follow the new state, not the stale pointer.
-                this.refresh_cursor(cx);
+                // The repaint below re-derives the window cursor in
+                // render() — no cursor plumbing needed here.
                 cx.notify();
             }),
             cx.observe_window_bounds(window, |this, window, cx| {
@@ -200,8 +199,11 @@ impl Overlay {
         }
     }
 
-    /// Recompute and store the cursor; returns whether it changed (the
-    /// caller decides on cx.notify()). Cheap enough to run on every move.
+    /// Recompute and store the cursor; returns whether it changed. The
+    /// PRIMARY derivation point is the top of `render` — this method
+    /// exists for the one case where the cursor changes while nothing
+    /// else does: a pointer move across an affordance boundary needs a
+    /// repaint to push the new style, so the move listener must know.
     fn refresh_cursor(&self, cx: &App) -> bool {
         let style = self.cursor_style(cx);
         if self.cursor.get() == style {
@@ -288,6 +290,24 @@ impl Overlay {
         });
         window.focus(&self.focus_handle, cx);
         cx.notify();
+    }
+
+    /// Shared body of every annotation-tool toggle action: commit any
+    /// pending text edit, take the keyboard focus back from the toolbar
+    /// button, and flip the tool in the session. One place instead of a
+    /// dozen keybindings' worth of identical plumbing.
+    fn toggle_tool(
+        &mut self,
+        kind: crate::annotation::ShapeKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.finish_text(true, window, cx);
+        window.focus(&self.focus_handle, cx);
+        self.session.update(cx, |s, cx| {
+            s.edit_annotations(|a| a.toggle(kind));
+            cx.notify();
+        });
     }
 
     /// WindowOptions for the overlay window. Linux: a layer-shell surface
@@ -671,6 +691,12 @@ async fn ocr_to_clipboard(
 
 impl Render for Overlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // THE cursor derivation point: every repaint stores the style the
+        // handles canvas pushes during paint. Deriving here — instead of
+        // at every event and action site — means any state flip lands
+        // with a correct cursor on EVERY window, pointer motion or not
+        // (e.g. chrome re-hosted by another window's release event).
+        self.cursor.set(self.cursor_style(cx));
         // Keep display geometry stable while dragging. The backdrop paints
         // shared edges directly so fractional DPI cannot open layout seams.
         let shared = self.session.read(cx);
@@ -713,44 +739,19 @@ impl Render for Overlay {
             .relative()
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|this, _: &ToggleRectangle, window, cx| {
-                this.finish_text(true, window, cx);
-                window.focus(&this.focus_handle, cx);
-                this.session.update(cx, |s, cx| {
-                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Rectangle));
-                    cx.notify();
-                });
+                this.toggle_tool(crate::annotation::ShapeKind::Rectangle, window, cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleEllipse, window, cx| {
-                this.finish_text(true, window, cx);
-                window.focus(&this.focus_handle, cx);
-                this.session.update(cx, |s, cx| {
-                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Ellipse));
-                    cx.notify();
-                });
+                this.toggle_tool(crate::annotation::ShapeKind::Ellipse, window, cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleLine, window, cx| {
-                this.finish_text(true, window, cx);
-                window.focus(&this.focus_handle, cx);
-                this.session.update(cx, |s, cx| {
-                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Line));
-                    cx.notify();
-                });
+                this.toggle_tool(crate::annotation::ShapeKind::Line, window, cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleArrow, window, cx| {
-                this.finish_text(true, window, cx);
-                window.focus(&this.focus_handle, cx);
-                this.session.update(cx, |s, cx| {
-                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Arrow));
-                    cx.notify();
-                });
+                this.toggle_tool(crate::annotation::ShapeKind::Arrow, window, cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleText, window, cx| {
-                this.finish_text(true, window, cx);
-                window.focus(&this.focus_handle, cx);
-                this.session.update(cx, |s, cx| {
-                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Text));
-                    cx.notify();
-                });
+                this.toggle_tool(crate::annotation::ShapeKind::Text, window, cx);
             }))
             .on_action(
                 cx.listener(|this, _: &CancelText, window, cx| this.finish_text(false, window, cx)),
@@ -774,28 +775,13 @@ impl Render for Overlay {
                 }),
             )
             .on_action(cx.listener(|this, _: &ToggleNumber, window, cx| {
-                this.finish_text(true, window, cx);
-                window.focus(&this.focus_handle, cx);
-                this.session.update(cx, |s, cx| {
-                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Number));
-                    cx.notify();
-                });
+                this.toggle_tool(crate::annotation::ShapeKind::Number, window, cx);
             }))
             .on_action(cx.listener(|this, _: &TogglePencil, window, cx| {
-                this.finish_text(true, window, cx);
-                window.focus(&this.focus_handle, cx);
-                this.session.update(cx, |s, cx| {
-                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Pencil));
-                    cx.notify();
-                });
+                this.toggle_tool(crate::annotation::ShapeKind::Pencil, window, cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleHighlighter, window, cx| {
-                this.finish_text(true, window, cx);
-                window.focus(&this.focus_handle, cx);
-                this.session.update(cx, |s, cx| {
-                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Highlighter));
-                    cx.notify();
-                });
+                this.toggle_tool(crate::annotation::ShapeKind::Highlighter, window, cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleEraser, window, cx| {
                 this.finish_text(true, window, cx);
@@ -813,27 +799,19 @@ impl Render for Overlay {
                 });
             }))
             .on_action(cx.listener(|this, _: &ToggleMosaic, window, cx| {
-                this.finish_text(true, window, cx);
-                window.focus(&this.focus_handle, cx);
-                this.session.update(cx, |s, cx| {
-                    s.edit_annotations(|a| {
-                        let kind = if a.tool() == Some(crate::annotation::ShapeKind::Blur) {
-                            crate::annotation::ShapeKind::Blur
-                        } else {
-                            crate::annotation::ShapeKind::Mosaic
-                        };
-                        a.toggle(kind);
-                    });
-                    cx.notify();
-                });
+                // The toolbar's mosaic slot re-toggles BLUR when that is
+                // the active filter variant (they share one button).
+                let blur = this.session.read(cx).annotations().tool()
+                    == Some(crate::annotation::ShapeKind::Blur);
+                let kind = if blur {
+                    crate::annotation::ShapeKind::Blur
+                } else {
+                    crate::annotation::ShapeKind::Mosaic
+                };
+                this.toggle_tool(kind, window, cx);
             }))
             .on_action(cx.listener(|this, _: &TogglePolyline, window, cx| {
-                this.finish_text(true, window, cx);
-                window.focus(&this.focus_handle, cx);
-                this.session.update(cx, |s, cx| {
-                    s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Polyline));
-                    cx.notify();
-                });
+                this.toggle_tool(crate::annotation::ShapeKind::Polyline, window, cx);
             }))
             .on_action(cx.listener(|this, _: &FinishPolyline, window, cx| {
                 window.focus(&this.focus_handle, cx);
@@ -955,20 +933,17 @@ impl Render for Overlay {
                     if this.session.read(cx).blocked() {
                         return; // modal dialog: no new selections
                     }
-                    if this.session.read(cx).annotations().tool() == Some(crate::annotation::ShapeKind::Text) {
-                        this.start_text(ev.position,window,cx);
+                    if this.session.read(cx).annotations().tool()
+                        == Some(crate::annotation::ShapeKind::Text)
+                    {
+                        this.start_text(ev.position, window, cx);
                         return;
                     }
                     window.focus(&this.focus_handle, cx);
                     this.session.update(cx, |s, cx| {
                         s.pointer_down(&this.capture.output_name, ev.position);
-                        cx.notify();
+                        cx.notify(); // repaint re-derives the cursor in render
                     });
-                    // the press itself can flip the state (an edit grab) —
-                    // the cursor must follow before the next move; the
-                    // repaint is already covered by the notify above
-                    this.refresh_cursor(cx);
-                    cx.notify();
                 }),
             )
             .on_mouse_down(MouseButton::Right, cx.listener(|this, _, window, cx| {
@@ -1060,85 +1035,8 @@ impl Render for Overlay {
             // ②½ Window-snap hover outline (above the dim, below all
             // selection chrome: it is a hint, not a selection)
             .children(hover.map(hover_outline))
-            // Wayland may keep delivering a drag to its original surface even
-            // outside its bounds. Element hover handlers would drop these events.
-            .child(
-                canvas(
-                    |_, _, _| (),
-                    move |_, (), window, _| {
-                        let view = input_view.clone();
-                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                            if phase != DispatchPhase::Bubble {
-                                return;
-                            }
-                            let _ = view.update(cx, |this, cx| {
-                                // One event feed drives selection drag,
-                                // annotation drawing, hover tracking and
-                                // toolbar dragging — THEN the cursor is
-                                // derived, with state AND the session's
-                                // tracked pointer position both current.
-                                // (Refreshing first would lag an event:
-                                // the affordance would be computed from
-                                // the previous position — the cursor
-                                // equivalent of a dropped frame.)
-                                this.session.update(cx, |s, cx| {
-                                    if s.toolbar_drag_active() {
-                                        // the toolbar follows the pointer;
-                                        // hover tracking stays off under it
-                                        if s.toolbar_drag_move(
-                                            &this.capture.output_name,
-                                            event.position,
-                                        ) {
-                                            cx.notify();
-                                        }
-                                        return;
-                                    }
-                                    let changed = s.pointer_move(
-                                        &this.capture.output_name,
-                                        event.position,
-                                        event.modifiers.shift,
-                                    );
-                                    let hovered =
-                                        s.hover_at(&this.capture.output_name, event.position);
-                                    if changed || hovered {
-                                        cx.notify();
-                                    }
-                                });
-                                if this.refresh_cursor(cx) {
-                                    cx.notify();
-                                }
-                            });
-                        });
-                        window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-                            if phase != DispatchPhase::Bubble || event.button != MouseButton::Left {
-                                return;
-                            }
-                            let _ = input_view.update(cx, |this, cx| {
-                                this.session.update(cx, |s, cx| {
-                                    if s.toolbar_drag_active() {
-                                        s.toolbar_drag_end();
-                                        cx.notify();
-                                        return;
-                                    }
-                                    let finish =
-                                        event.click_count >= 2 && s.annotations().is_pressed();
-                                    s.pointer_up(
-                                        &this.capture.output_name,
-                                        event.position,
-                                        event.modifiers.shift,
-                                    );
-                                    if finish {
-                                        s.edit_annotations(|a| a.finish_polyline());
-                                    }
-                                    cx.notify();
-                                });
-                            });
-                        });
-                    },
-                )
-                .absolute()
-                .size_full(),
-            )
+            // ②¾ Window-level pointer listeners (see `pointer_event_sink`)
+            .child(pointer_event_sink(input_view))
             // ③ Size label stays independent so narrow selections cannot wrap it.
             .children(
                 sel.filter(|_| active)
@@ -1176,6 +1074,84 @@ impl Render for Overlay {
 
 // ── Render helpers ──────────────────────────────────────────────────
 // (display-pixel rounding now lives in `model::placement::round_px`)
+
+/// The invisible canvas that owns the window-level pointer listeners.
+///
+/// `window.on_mouse_event` registrations live for one frame's event
+/// dispatch, so they must be re-attached during every paint — a canvas
+/// whose paint closure registers them is the sanctioned hook. Element-
+/// level mouse handlers are not an alternative: under Wayland's
+/// implicit grab a drag's events keep arriving at the PRESS window
+/// even outside its bounds, and element hit-testing would drop exactly
+/// those events.
+fn pointer_event_sink(input_view: WeakEntity<Overlay>) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |_, (), window, _| {
+            let view = input_view.clone();
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                if phase != DispatchPhase::Bubble {
+                    return;
+                }
+                let _ = view.update(cx, |this, cx| {
+                    // Apply the event to the session FIRST — state and the
+                    // tracked pointer position both current — THEN derive
+                    // the cursor. Deriving first would compute the
+                    // affordance from the previous position: one event of
+                    // lag on every move.
+                    this.session.update(cx, |s, cx| {
+                        if s.toolbar_drag_active() {
+                            // the toolbar follows the pointer; hover
+                            // tracking stays off under it
+                            if s.toolbar_drag_move(&this.capture.output_name, event.position) {
+                                cx.notify();
+                            }
+                            return;
+                        }
+                        let changed = s.pointer_move(
+                            &this.capture.output_name,
+                            event.position,
+                            event.modifiers.shift,
+                        );
+                        let hovered = s.hover_at(&this.capture.output_name, event.position);
+                        if changed || hovered {
+                            cx.notify();
+                        }
+                    });
+                    if this.refresh_cursor(cx) {
+                        cx.notify();
+                    }
+                });
+            });
+            window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                if phase != DispatchPhase::Bubble || event.button != MouseButton::Left {
+                    return;
+                }
+                let _ = input_view.update(cx, |this, cx| {
+                    this.session.update(cx, |s, cx| {
+                        if s.toolbar_drag_active() {
+                            s.toolbar_drag_end();
+                            cx.notify();
+                            return;
+                        }
+                        let finish = event.click_count >= 2 && s.annotations().is_pressed();
+                        s.pointer_up(
+                            &this.capture.output_name,
+                            event.position,
+                            event.modifiers.shift,
+                        );
+                        if finish {
+                            s.edit_annotations(|a| a.finish_polyline());
+                        }
+                        cx.notify();
+                    });
+                });
+            });
+        },
+    )
+    .absolute()
+    .size_full()
+}
 
 #[cfg(test)]
 mod multi_output_tests {
