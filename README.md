@@ -268,7 +268,16 @@ first frame, floats above every window, is never tiled, and clicks
 outside the image pass through to the desktop. Mixed-DPI selections keep their
 original logical size; each output displays the corresponding part of the image.
 Dragging and zooming keep a grabbable area on a real output, including staggered
-layouts with gaps. Close removes every surface belonging to that pin.
+layouts with gaps. Close removes only the chosen pin, across all outputs.
+
+On Linux/Wayland, pins from separate screenshot sessions share one scene.
+New pins appear on top; clicking or right-clicking an exposed part of an older
+pin raises it on every output. Closing one leaves the others in place. The
+first pin process owns the scene until the last pin closes; subsequent screenshot
+processes transfer their image before exiting. Windows keeps its existing
+per-session behavior. Changing the display layout while pins are open is not
+supported yet.
+
 ## Building from source
 
 ```bash

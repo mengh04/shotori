@@ -1354,4 +1354,16 @@ the accent, with contrast-aware foregrounds. Legacy JSON is not auto-loaded.
 - Right-click opens a themed Close menu, clamped inside the current output.
 - Escape only dismisses the menu. Shift+F10 opens it and Enter activates Close.
 - Menu clicks outside the image remain reachable; outside clicks dismiss it.
-- Shared ownership and click-to-front ordering across pin processes remain a follow-up.
+- Linux/Wayland pins now share one scene across processes and output surfaces.
+  New pins and clicked pins move to the end of the paint order; native windows
+  are not recreated. Stable pin IDs keep drag, menu and close targets correct.
+- A private Unix socket per Wayland display transfers bounded RGBA payloads.
+  File locking elects one owner and allows stale socket recovery after a crash.
+  Sender overlays close only after scene acceptance; transfer failures keep the
+  selection available. Socket work runs outside the UI thread.
+- Closing a pin removes only that image. Surface windows close with the last pin.
+  Menus dismiss across outputs, and input regions cover the union of visible pins.
+- Tests cover overlap targeting after raising, cross-output order and geometry,
+  independent closing, menu dismissal, IPC acknowledgements, invalid payloads
+  and owner recovery. Windows cross-process ownership and live display-layout
+  changes remain follow-ups.
