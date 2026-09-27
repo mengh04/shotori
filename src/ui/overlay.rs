@@ -1823,7 +1823,7 @@ mod multi_output_tests {
         vcx.update(|_, cx| {
             assert_eq!(overlay.read(cx).cursor.get(), CursorStyle::ClosedHand);
             let b = session.read(cx).toolbar_bounds("main").unwrap();
-            assert_eq!(b.origin, point(px(244.), px(81.))); // grab (6,19) held
+            assert_eq!(b.origin, point(px(160.), px(81.))); // grab (6,19) held
         });
         vcx.simulate_mouse_up(
             point(px(250.), px(100.)),
@@ -1835,7 +1835,7 @@ mod multi_output_tests {
             assert!(!session.read(cx).toolbar_drag_active());
             assert_eq!(
                 session.read(cx).toolbar_bounds("main").unwrap().origin,
-                point(px(244.), px(81.))
+                point(px(160.), px(81.))
             );
             // the press on the grip never became a selection interaction
             let b = session.read(cx).selection().bounds().unwrap();
@@ -1883,20 +1883,20 @@ mod multi_output_tests {
             assert!(!session.read(cx).toolbar_drag_active());
             assert_eq!(
                 session.read(cx).toolbar_bounds("main").unwrap().origin,
-                point(px(244.), px(81.)) // unmoved
+                point(px(160.), px(81.)) // unmoved
             );
         });
 
         // row ONE's strip still grabs with two rows on screen
         vcx.simulate_mouse_move(
-            point(px(255.), px(100.)),
+            point(px(171.), px(100.)),
             MouseButton::Left,
             Default::default(),
         );
         vcx.run_until_parked();
         vcx.update(|_, cx| assert_eq!(overlay.read(cx).cursor.get(), CursorStyle::OpenHand));
         vcx.simulate_mouse_down(
-            point(px(255.), px(100.)),
+            point(px(171.), px(100.)),
             MouseButton::Left,
             Default::default(),
         );
@@ -1913,10 +1913,11 @@ mod multi_output_tests {
         vcx.run_until_parked();
         vcx.update(|_, cx| {
             assert!(!session.read(cx).toolbar_drag_active());
-            // grab was (11,19) from the row-one press
+            // grab was (11,19); the clamp pins the toolbar at the
+            // right margin on this narrow test window
             assert_eq!(
                 session.read(cx).toolbar_bounds("main").unwrap().origin,
-                point(px(189.), px(281.))
+                point(px(160.), px(281.))
             );
         });
     }
