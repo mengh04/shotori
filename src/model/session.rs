@@ -22,12 +22,12 @@ impl Screen {
     }
 }
 
-struct RasterSelection {
+pub(crate) struct RasterSelection {
     scale: f32,
-    width: u32,
-    height: u32,
-    rgba: Vec<u8>,
-    bounds: Bounds<Pixels>,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) rgba: Vec<u8>,
+    pub(crate) bounds: Bounds<Pixels>,
 }
 
 struct FilterPreview {
@@ -684,7 +684,12 @@ impl ScreenshotSession {
         self.crop_impl(output, true)
             .map(|r| (r.width, r.height, r.rgba))
     }
-    /// Export without annotations — also the `full` subcommand's path
+    /// Preserve the exact logical bounds of the rasterized crop for pin placement.
+    pub(crate) fn crop_for_pin(&self, output: &str) -> Option<RasterSelection> {
+        self.crop_impl(output, true)
+    }
+
+    /// Export without annotations — also the `full` subcommand's path.
     pub fn crop_original(&self, output: &str) -> Option<(u32, u32, Vec<u8>)> {
         self.crop_impl(output, false)
             .map(|r| (r.width, r.height, r.rgba))
@@ -1210,6 +1215,34 @@ mod tests {
             ],
             Vec::new(),
         )
+    }
+
+    #[test]
+    fn pin_crop_keeps_global_geometry_independent_of_trigger_output() {
+        let mut s = session();
+        s.begin("left", point(px(80.), px(20.)));
+        s.end("right", point(px(40.), px(90.)));
+        let expected = Bounds::new(point(px(-20.), px(40.)), size(px(60.), px(50.)));
+        for output in ["left", "right"] {
+            let crop = s.crop_for_pin(output).unwrap();
+            assert_eq!(crop.bounds, expected);
+            assert_eq!((crop.width, crop.height), (120, 100));
+            assert_eq!(crop.rgba, s.crop(output).unwrap().2);
+        }
+        // Native-pixel rounding and clipping must also be reflected in the
+        // pin's origin, rather than using the unrounded requested selection.
+        let mut s = ScreenshotSession::new(
+            vec![screen("single", (-100, 20), 1.25, [255; 4])],
+            Vec::new(),
+        );
+        s.begin("single", point(px(10.3), px(11.6)));
+        s.end("single", point(px(50.3), px(61.6)));
+        let crop = s.crop_for_pin("single").unwrap();
+        assert_eq!(crop.bounds.origin, point(px(-89.6), px(32.)));
+        assert_eq!(
+            crop.bounds.size,
+            size(px(crop.width as f32 / 1.25), px(crop.height as f32 / 1.25))
+        );
     }
 
     fn snap(x: f32, y: f32, w: f32, h: f32) -> crate::platform::windowsnap::SnapRect {

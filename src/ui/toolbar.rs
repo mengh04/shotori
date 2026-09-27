@@ -33,6 +33,7 @@ gpui_kit::assets::icon_assets!(
         ListOrdered,
         ScanText,
         Save,
+        Pin,
         X,
         Copy
     ]
@@ -708,6 +709,7 @@ mod tests {
             IconName::ListOrdered,
             IconName::ScanText,
             IconName::Save,
+            IconName::Pin,
             IconName::X,
             IconName::Copy,
         ] {

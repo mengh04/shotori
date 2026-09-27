@@ -462,20 +462,20 @@ impl Overlay {
             s.edit_annotations(|a| a.finish_polyline());
             cx.notify();
         });
-        let Some((w, h, rgba)) = self.crop(cx) else {
+        let Some(crop) = self
+            .session
+            .read(cx)
+            .crop_for_pin(&self.capture.output_name)
+        else {
             println!("[shotori] empty selection, ignoring");
             return;
         };
-        // the selection's GLOBAL rect is the pin's birth geometry
-        let Some(bounds) = self.session.read(cx).selection().bounds() else {
-            return;
-        };
+        let (w, h) = (crop.width, crop.height);
         let spec = crate::ui::pin::PinSpec {
             w,
             h,
-            rgba,
-            source_scale: self.capture.scale,
-            rect: bounds,
+            rgba: crop.rgba,
+            rect: crop.bounds,
         };
         if let Err(e) = crate::ui::pin::open(spec, cx) {
             eprintln!("[shotori] pin failed: {e:#}");
