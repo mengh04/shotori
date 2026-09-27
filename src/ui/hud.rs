@@ -159,7 +159,7 @@ pub(crate) fn selection_label(
         .rounded(px(4.))
         .bg(rgba(theme::c().accent))
         .text_size(px(12.))
-        .text_color(rgba(0xFFFFFFFF))
+        .text_color(rgba(theme::c().accent_text()))
         .child(format!(
             "{} × {}",
             f32::from(selected_size.width).round() as i32,

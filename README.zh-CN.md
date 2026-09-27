@@ -82,6 +82,22 @@ Plasma、GNOME appindicator 扩展）；也可以继续用合成器键位
 | `Esc`（拖拽中）   | 放弃本次拖拽                           |
 | `Esc`             | 退出                                   |
 
+### 主题
+
+默认 `auto` 跟随系统深浅色，截图过程中系统主题变化也会同步更新。可用 `--theme dark`、`--theme light` 或 `--theme high_contrast` 固定主题。
+
+复制 [`docs/theme.example.toml`](docs/theme.example.toml) 到 `~/.config/shotori/theme.toml`（Windows 为 `%APPDATA%\shotori\theme.toml`；Linux 遵循 `XDG_CONFIG_HOME`），也可用 `--theme /路径/theme.toml` 指定文件：
+
+```toml
+base = "auto"
+# accent = "#FF6A00"
+# dim_opacity = 0.55
+```
+
+背景、图标、悬停与选中状态按整套主题切换，不再允许分别覆盖。选中背景随强调色生成，强调色背景上的文字及选中按钮文字自动选择可读颜色。可用 `annotation_colors` 设置完整的七个不透明标注颜色。
+
+旧 JSON 不再加载，可保留作为备份；请从 TOML 最小示例开始，不要复制旧 `toolbar_*` 字段。无效数值会提示并回退，未知字段会使整份配置回退。`--no-config` 跳过默认配置文件，显式 `--theme` 优先。`--print-theme` 输出颜色供检查，自动模式会列出两套配色。
+
 ### 矩形与椭圆标注
 
 完成框选后，点击矩形图标（`R`）或椭圆图标（`E`），在选区内拖拽绘制。

@@ -106,22 +106,33 @@ the screen's native resolution.
 
 ### Themes
 
-Three built-in themes ship in the binary: `dark` (default), `light` and
-`high_contrast`:
+The default `auto` follows system light/dark appearance, including changes while
+an overlay is open. Set `dark`, `light` or `high_contrast` to keep a fixed theme.
 
 ```sh
 shotori --theme light
-shotori --print-theme   # dump the resolved values and exit
+shotori --print-theme   # auto shows both palettes; fixed themes show one
 ```
 
-For anything beyond the built-ins, write a JSON override file — copy
-[`docs/theme.example.json`](docs/theme.example.json) to
-`~/.config/shotori/theme.json` (`%APPDATA%\shotori\theme.json` on Windows;
-picked up automatically) or point at it
-explicitly with `--theme /path/to/theme.json`. Every field is optional and
-layers on the chosen `base`; bad values are reported to stderr and fall
-back, never blocking a screenshot. The annotation color palette is
-themeable too.
+Copy [`docs/theme.example.toml`](docs/theme.example.toml) to
+`~/.config/shotori/theme.toml` (`%APPDATA%\shotori\theme.toml` on Windows),
+or pass `--theme /path/to/theme.toml`. Linux honors `XDG_CONFIG_HOME`.
+
+```toml
+base = "auto"
+# accent = "#FF6A00"
+# dim_opacity = 0.55
+```
+
+Backgrounds, icon colors, hover and selection states belong to a complete palette
+and cannot be overridden separately. Selection tint follows the accent; text on
+accent backgrounds and selected controls uses a readable contrasting color.
+Optional `annotation_colors` contains exactly seven opaque colors. Invalid values
+are reported and safely fall back; unknown keys reject the file. `--no-config`
+skips automatic configuration, while an explicit `--theme` takes precedence.
+
+Old JSON files are no longer loaded. Create the TOML file using the minimal example;
+do not copy old `toolbar_*` overrides. The old JSON can remain as a backup.
 
 ### Rectangle and ellipse annotations
 

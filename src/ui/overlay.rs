@@ -60,6 +60,7 @@ impl Overlay {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        crate::ui::theme::follow_system(window.appearance());
         let frozen =
             image_util::rgba_to_render_image(capture.rgba.clone(), capture.width, capture.height);
 
@@ -107,6 +108,10 @@ impl Overlay {
 
     fn attach_observers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self._subscriptions = vec![
+            window.observe_window_appearance(|window, cx| {
+                crate::ui::theme::follow_system(window.appearance());
+                cx.refresh_windows();
+            }),
             cx.observe_in(&self.session, window, |this, _, window, cx| {
                 // A change from another output can remove this toolbar while
                 // one of its controls still owns the local keyboard focus.

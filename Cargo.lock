@@ -6735,6 +6735,7 @@ dependencies = [
  "smallvec",
  "tauri-winrt-notification 0.8.1",
  "tempfile",
+ "toml 0.8.23",
  "wayland-client",
  "wayland-protocols",
  "wayland-protocols-wlr",

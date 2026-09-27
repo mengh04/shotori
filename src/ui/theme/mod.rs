@@ -4,12 +4,12 @@
 //! [`Theme`] struct instead of loose constants, so the look can be
 //! swapped as a whole. Resolution order (see [`load`]):
 //!
-//! 1. a built-in base theme — `dark` (default) / `light` / `high_contrast`
-//! 2. an optional JSON override file — `--theme <file>` or the XDG
-//!    config fallback (`~/.config/shotori/theme.json`)
+//! 1. a built-in base theme — `auto` (default) / `dark` / `light` / `high_contrast`
+//! 2. an optional TOML settings file — `--theme <file>` or the XDG
+//!    config fallback (`~/.config/shotori/theme.toml`)
 //!
 //! The theme is installed once at startup ([`set`]) and read everywhere
-//! ([`c`]); the overlay lives for seconds, so there is no hot-swap story.
+//! ([`c`]); the overlay lives for seconds, so system appearance changes switch the complete palette.
 //!
 //! Colors are `u32` in gpui's `0xRRGGBBAA` layout (e.g. the orange
 //! accent is `0xFF6A00FF`).
@@ -27,6 +27,7 @@ pub const PALETTE_NAMES: [&str; PALETTE] =
 
 /// The complete visual vocabulary of the overlay. One struct so a theme
 /// is a value: build it, override it, ship it.
+#[derive(Clone)]
 pub struct Theme {
     /// Dim layer OUTSIDE the selection: color at full opacity + strength.
     /// What gets painted is [`Theme::dim`] (color with alpha applied).
@@ -116,10 +117,35 @@ impl Theme {
             toolbar_bg: 0xFFFFFFFF,
             toolbar_text: 0x000000FF,
             toolbar_border: 0x000000FF,
-            toolbar_hover: 0x00000026,
-            toolbar_selected: 0x30303AFF,
+            toolbar_hover: 0xD9D9D9FF,
+            toolbar_selected: 0xDCDCDCFF,
             swatch_border: 0x00000059,
             ..dark_const()
+        }
+    }
+
+    /// Accent tint stays within the active surface palette. Never import a
+    /// background from another appearance when only the accent changes.
+    pub(crate) fn adapt_accent(&mut self) {
+        let bg = self.toolbar_bg.to_be_bytes();
+        let accent = self.accent.to_be_bytes();
+        let tint = |i: usize| ((bg[i] as u32 * 88 + accent[i] as u32 * 12) / 100) as u8;
+        self.toolbar_selected = u32::from_be_bytes([tint(0), tint(1), tint(2), 255]);
+    }
+
+    pub(crate) fn accent_text(&self) -> u32 {
+        if contrast(0xFFFFFFFF, self.accent) >= 4.5 {
+            0xFFFFFFFF
+        } else {
+            0x000000FF
+        }
+    }
+
+    pub(crate) fn selected_text(&self) -> u32 {
+        if contrast(self.accent, self.toolbar_selected) >= 4.5 {
+            self.accent
+        } else {
+            self.toolbar_text
         }
     }
 
@@ -136,24 +162,101 @@ const fn dark_const() -> Theme {
     Theme::dark()
 }
 
-static ACTIVE: OnceLock<Theme> = OnceLock::new();
+struct Palettes {
+    fixed_or_dark: Theme,
+    light: Option<Theme>,
+}
+static ACTIVE: OnceLock<Palettes> = OnceLock::new();
+static SYSTEM_DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 const FALLBACK: Theme = Theme::dark();
 
-/// The process-wide active theme. Falls back to `dark` when nobody
-/// called [`set`] (tests, library embeds).
-pub fn c() -> &'static Theme {
-    ACTIVE.get().unwrap_or(&FALLBACK)
+impl Palettes {
+    fn current(&self, dark: bool) -> &Theme {
+        if dark {
+            &self.fixed_or_dark
+        } else {
+            self.light.as_ref().unwrap_or(&self.fixed_or_dark)
+        }
+    }
 }
 
-/// Install the theme; called once during startup. A second call is
-/// ignored — resolution happened, the decision is final.
-pub fn set(theme: Theme) {
-    let _ = ACTIVE.set(theme);
+pub fn c() -> &'static Theme {
+    ACTIVE
+        .get()
+        .map(|p| p.current(SYSTEM_DARK.load(std::sync::atomic::Ordering::Relaxed)))
+        .unwrap_or(&FALLBACK)
+}
+
+pub fn set(theme: Theme, light: Option<Theme>) {
+    let _ = ACTIVE.set(Palettes {
+        fixed_or_dark: theme,
+        light,
+    });
+}
+
+/// Called by GPUI on initial window creation and appearance changes.
+pub fn follow_system(appearance: gpui_kit::WindowAppearance) {
+    SYSTEM_DARK.store(
+        matches!(
+            appearance,
+            gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark
+        ),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+fn contrast(a: u32, b: u32) -> f32 {
+    let luminance = |color: u32| {
+        let rgb = color.to_be_bytes();
+        let linear = |i: usize| {
+            let v = rgb[i] as f32 / 255.;
+            if v <= 0.04045 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        linear(0) * 0.2126 + linear(1) * 0.7152 + linear(2) * 0.0722
+    };
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_accents_keep_all_control_text_readable() {
+        for mut theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            for accent in [0xFFFFFFFF, 0x000000FF, 0xFF6A00FF, 0x00FF00FF, 0x202028FF] {
+                theme.accent = accent;
+                theme.adapt_accent();
+                assert!(contrast(theme.selected_text(), theme.toolbar_selected) >= 4.5);
+                assert!(contrast(theme.accent_text(), theme.accent) >= 4.5);
+                assert!(contrast(theme.toolbar_text, theme.toolbar_bg) >= 4.5);
+                assert!(contrast(theme.toolbar_text, theme.toolbar_hover) >= 4.5);
+            }
+        }
+    }
+
+    #[test]
+    fn appearance_changes_switch_whole_palettes_but_fixed_theme_stays() {
+        let auto = Palettes {
+            fixed_or_dark: Theme::dark(),
+            light: Some(Theme::light()),
+        };
+        assert_eq!(auto.current(true).toolbar_bg, Theme::dark().toolbar_bg);
+        assert_eq!(
+            auto.current(false).toolbar_text,
+            Theme::light().toolbar_text
+        );
+        let fixed = Palettes {
+            fixed_or_dark: Theme::dark(),
+            light: None,
+        };
+        assert_eq!(fixed.current(false).toolbar_bg, Theme::dark().toolbar_bg);
+    }
 
     /// dark().dim() must equal the original hard-coded DIM constant.
     #[test]
