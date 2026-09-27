@@ -1330,3 +1330,28 @@ the accent, with contrast-aware foregrounds. Legacy JSON is not auto-loaded.
   geometry changes. Manual benchmarks cover 4K blur and extending 20,000-point
   strokes. GPU uploads and whole-image preview conversion still have a cost;
   background previews may lag behind pointer movement during expensive work.
+
+
+## Pin review fixes (2026-09-27)
+
+- The Close command removes the active window directly, then closes its sibling surfaces;
+  it no longer tries to update the active window through its unavailable handle.
+- Every output lays out the entire image at the same global size and offset,
+  clipped by the fullscreen surface. Borders follow the full image rectangle,
+  without introducing an extra border or shrinking the image at output seams.
+- Pin placement uses the crop's actual global logical bounds, including native
+  pixel rounding, clipping and mixed-DPI composition. It does not divide the
+  composite by the toolbar-host display's scale.
+- Drag and zoom choose the nearest position with a grabbable area on a real
+  output. Desktop gaps are not treated as visible screen area. Mouse release
+  applies its final position before clearing the drag.
+- Regression coverage: multi-window Close, cross-output image layout and hidden
+  outputs, mixed-DPI crop geometry, fractional rounding, edge zooming, staggered
+  output gaps and release without a final move event. The Pin icon is now bundled.
+
+### Pin context menu
+
+- Right-click opens a themed Close menu, clamped inside the current output.
+- Escape only dismisses the menu. Shift+F10 opens it and Enter activates Close.
+- Menu clicks outside the image remain reachable; outside clicks dismiss it.
+- Shared ownership and click-to-front ordering across pin processes remain a follow-up.

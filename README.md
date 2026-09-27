@@ -257,13 +257,18 @@ text strains the model; HiDPI screens fare better.
 
 `Ctrl+P` or the pin button crops the selection into a floating
 borderless window that stays on screen after the overlay closes —
-drag it anywhere (native window move), scroll to zoom (5%–2400%),
-`Esc` to close. The app exits when the last pin closes.
+drag it across outputs, scroll to zoom (5%–2400%),
+right-click and choose **Close** to close the pin. `Esc` only dismisses the menu.
+You can also open the menu with `Shift+F10` and choose Close with `Enter`.
+The app exits when the last pin closes.
 
 A pin is not a normal window but a transparent layer surface covering
 the host output: it sits at the selection's exact position from the
 first frame, floats above every window, is never tiled, and clicks
-outside the image pass through to the desktop.
+outside the image pass through to the desktop. Mixed-DPI selections keep their
+original logical size; each output displays the corresponding part of the image.
+Dragging and zooming keep a grabbable area on a real output, including staggered
+layouts with gaps. Close removes every surface belonging to that pin.
 ## Building from source
 
 ```bash
