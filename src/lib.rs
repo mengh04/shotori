@@ -12,16 +12,14 @@
 //! │  └─ placement             two-zone chrome geometry (label top,
 //! │                           toolbar bottom — disjoint by construction)
 //! ├─ platform/                compositor & desktop integration
-//! │  ├─ capture/              screen freeze: wlr-screencopy (Linux) or
-//! │  │                        GDI BitBlt (Windows); pixels is pure
-//! │  │                        format/rotation processing
+//! │  ├─ capture/              screen freeze: wlr-screencopy; pixels is
+//! │  │                        pure format/rotation processing
 //! │  ├─ display               capture ↔ gpui display matching
 //! │  └─ windowsnap/           window-rect backends: niri / sway /
-//! │                           Hyprland IPC (Linux), EnumWindows (Windows)
+//! │                           Hyprland IPC
 //! ├─ ui/                      gpui windows & elements
 //! │  ├─ overlay               overlay assembly (one per screen):
-//! │  │                        layer-shell on Linux, borderless topmost
-//! │  │                        popup on Windows
+//! │  │                        layer-shell surfaces
 //! │  ├─ hud / toolbar         selection visuals & buttons
 //! │  ├─ ocr_setup             first-run OCR model dialog
 //! │  ├─ e2e                   SHOTORI_DEBUG_* backdoors for headless tests
@@ -29,9 +27,8 @@
 //! ├─ annotation/             in-canvas annotations: arrow / number /
 //! │                          pencil / highlighter / mosaic+blur
 //! └─ clipboard / notify / ocr / save_dialog
-//!      the four post-selection exits: clipboard (resident daemon on
-//!      Linux, Win32 on Windows), notifications (D-Bus / toast), OCR
-//!      engine, native save dialog
+//!      the four post-selection exits: clipboard (resident daemon),
+//!      notifications (D-Bus), OCR engine, native save dialog
 //! ```
 //!
 //! Dependency direction: `ui → model`, `model → platform` (session holds

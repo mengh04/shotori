@@ -1,30 +1,24 @@
-//! # Screen capture library: a multi-output wrapper over per-platform backends
+//! # Screen capture library: a multi-output wrapper over the Wayland backend
 //!
 //! Submodules:
 //! - [`pixels`]: pure pixel processing (format conversion / transform
 //!   rotation), unit-tested
-//! - `wayland` (Linux): the wlr-screencopy event state machine
-//! - `windows` (Windows): one GDI `BitBlt` per monitor
+//! - `wayland`: the wlr-screencopy event state machine
 //!
 //! One-shot synchronous capture: ~15ms for a single output, ~350ms for
-//! three on Linux (including encoding). The Linux backend runs on a
-//! dedicated Wayland connection and does not interfere with gpui's.
+//! three on Linux (including encoding). The backend runs on a dedicated
+//! Wayland connection and does not interfere with gpui's.
 
 mod pixels;
 
 // Re-exported at crate level for the microbenchmark harness (`--bench`)
-#[cfg(target_os = "linux")]
 pub(crate) use pixels::convert_to_rgba;
 pub(crate) use pixels::rotate_rgba;
 
-#[cfg(target_os = "linux")]
 mod wayland;
-#[cfg(target_os = "windows")]
-mod windows;
 
-/// Output orientation, platform-neutral (Linux converts from
-/// `wl_output::Transform`; Windows GDI pixels are already in displayed
-/// orientation, so that backend always reports [`Transform::Normal`])
+/// Output orientation, platform-neutral (converted from
+/// `wl_output::Transform`)
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Transform {
     #[default]
@@ -41,27 +35,19 @@ pub enum Transform {
 /// One successful capture (one output)
 pub struct Capture {
     pub output_name: String,
-    /// Global logical position of the output. Linux: wl_output::Geometry,
-    /// refined by zxdg_output_v1::LogicalPosition when available.
-    /// Windows: the monitor's physical origin in the virtual-desktop
-    /// space (see the coordinate-space note in `windows.rs`)
+    /// Global logical position of the output (wl_output::Geometry,
+    /// refined by zxdg_output_v1::LogicalPosition when available)
     pub logical_pos: (i32, i32),
-    /// Logical size: the TRUE size after fractional scale and transform.
-    /// Linux: zxdg_output_v1's LogicalSize (None without the protocol —
-    /// consumers fall back to width÷scale × height÷scale). Windows:
-    /// always None — the fallback **is** the true value there (the
-    /// effective scale is exact, unlike wl_output's integer rounding)
+    /// Logical size: the TRUE size after fractional scale and transform
+    /// (zxdg_output_v1's LogicalSize; None without the protocol —
+    /// consumers fall back to width÷scale × height÷scale)
     pub logical_size: Option<(i32, i32)>,
-    /// The physical-to-logical pixel ratio. Linux: the **integer** scale
-    /// from wl_output (a 1.5x output reports 2). Windows: the effective
-    /// DPI ÷ 96 (fractional values such as 1.5 are exact). gpui's display
-    /// bounds origin = logical position ÷ this value on both platforms
-    /// (verified against both backends' source), so display matching
-    /// uses the same algorithm everywhere (see crate::platform::display)
+    /// The physical-to-logical pixel ratio: the **integer** scale from
+    /// wl_output (a 1.5x output reports 2). gpui's display bounds origin
+    /// = logical position ÷ this value (see crate::platform::display)
     pub scale: f32,
-    /// Output orientation. Linux: the wl_output transform (a 90° panel's
-    /// physical buffer is landscape). Windows: always Normal — GDI
-    /// already delivers displayed-orientation pixels
+    /// Output orientation: the wl_output transform (a 90° panel's
+    /// physical buffer is landscape)
     pub transform: Transform,
     /// Physical size (**already rotated per transform**, matching what the
     /// screen shows)
@@ -108,7 +94,6 @@ impl Capture {
 }
 
 /// Capture all outputs (at least one is required, otherwise error)
-#[cfg(target_os = "linux")]
 pub fn capture_all_outputs() -> anyhow::Result<Vec<Capture>> {
     use wayland::*;
 
@@ -180,18 +165,4 @@ pub fn capture_all_outputs() -> anyhow::Result<Vec<Capture>> {
         anyhow::bail!("all output captures failed");
     }
     Ok(caps)
-}
-
-/// Capture all monitors (GDI `BitBlt`, one per monitor — see `windows.rs`)
-#[cfg(target_os = "windows")]
-pub fn capture_all_outputs() -> anyhow::Result<Vec<Capture>> {
-    windows::capture_all()
-}
-
-/// Windows: switch the process to per-monitor-v2 DPI awareness before
-/// any window opens or GDI call runs (no-op on other platforms; see
-/// `windows.rs` for why it matters)
-#[cfg(target_os = "windows")]
-pub fn enable_per_monitor_dpi_awareness() {
-    windows::enable_per_monitor_dpi_awareness()
 }

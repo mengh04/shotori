@@ -1,62 +1,20 @@
 //! # Clipboard: put pixels and text on the system clipboard
 //!
-//! Two wildly different platform models hide behind the same two
-//! functions:
-//!
-//! - **Linux/Wayland** — the "resident offer" model: the data-source
-//!   process must stay alive for the clipboard to hold anything. Copy =
-//!   hand the bytes to a **background daemon** (a re-exec of ourselves
-//!   with [`DAEMON_ARG`], avoiding raw fork inside a multithreaded
-//!   process) which connects to the compositor and serves paste requests
-//!   until someone else takes the clipboard. N screenshots in a row are
-//!   fine: each new daemon replaces the previous one automatically.
-//!
-//! - **Windows** — the system owns the data after `SetClipboardData`;
-//!   the caller can exit immediately (the Linux daemon's entire reason
-//!   to exist evaporates). We offer `CF_DIB` (universally pasteable) and
-//!   the registered `"PNG"` format side by side, so both legacy apps and
-//!   PNG-aware ones get the best bytes.
+//! Wayland uses the "resident offer" model: the data-source process must
+//! stay alive for the clipboard to hold anything. Copy = hand the bytes
+//! to a **background daemon** (a re-exec of ourselves with [`DAEMON_ARG`],
+//! avoiding raw fork inside a multithreaded process) which connects to
+//! the compositor and serves paste requests until someone else takes the
+//! clipboard. N screenshots in a row are fine: each new daemon replaces
+//! the previous one automatically.
 
 // ── Public surface (platform-neutral) ────────────────────────────────
 
-/// Put an image on the clipboard.
-///
-/// Linux: hand the PNG bytes to the resident daemon (the pixels are not
-/// needed — the daemon serves `image/png`). Windows: build CF_DIB directly
-/// from the pixels + offer the "PNG" format from the bytes (no
-/// encode→decode round trip; see `imp`).
+/// Put an image on the clipboard: the PNG bytes are handed to the
+/// resident daemon, which serves `image/png` to paste targets. The raw
+/// pixels are unused on Wayland (kept for a stable internal API).
 pub fn copy_image(w: u32, h: u32, rgba: &[u8], png: &[u8]) -> anyhow::Result<()> {
     imp::copy_image(w, h, rgba, png)
-}
-
-/// CF_DIB bytes for an RGBA8 buffer: BITMAPINFOHEADER (40 B) + bottom-up
-/// BGRA rows. Pure byte processing — shared by the Windows clipboard and
-/// the `--bench` harness / tests (the old per-pixel `extend_from_slice`
-/// loop is gone; rows are preallocated and swizzled in place).
-pub(crate) fn dib_from_rgba(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
-    let row = (w * 4) as usize;
-    let mut dib = Vec::with_capacity(40 + row * h as usize);
-    dib.extend_from_slice(&40u32.to_le_bytes()); // biSize
-    dib.extend_from_slice(&(w as i32).to_le_bytes()); // biWidth
-    dib.extend_from_slice(&(h as i32).to_le_bytes()); // biHeight (positive = bottom-up)
-    dib.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
-    dib.extend_from_slice(&32u16.to_le_bytes()); // biBitCount
-    dib.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
-    dib.extend_from_slice(&((row * h as usize) as u32).to_le_bytes());
-    dib.extend_from_slice(&[0u8; 16]); // resolution / colors / important
-    for y in (0..h).rev() {
-        let start = dib.len();
-        dib.resize(start + row, 0);
-        let src = &rgba[(y * w * 4) as usize..((y + 1) * w * 4) as usize];
-        let dst = &mut dib[start..start + row];
-        for (out, px) in dst.chunks_mut(4).zip(src.chunks(4)) {
-            out[0] = px[2]; // B
-            out[1] = px[1]; // G
-            out[2] = px[0]; // R
-            out[3] = px[3]; // A
-        }
-    }
-    dib
 }
 
 /// Put plain text on the clipboard (the OCR output path).
@@ -382,94 +340,3 @@ mod imp {
     }
 }
 
-// ── Windows: system-owned clipboard, no daemon ───────────────────────
-
-#[cfg(target_os = "windows")]
-mod imp {
-    use anyhow::Context as _;
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::System::DataExchange::{
-        CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
-    };
-    use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
-    use windows::core::PCWSTR;
-
-    /// Hand a block of bytes to the clipboard under one format id.
-    /// `hmem` ownership passes to the system on success.
-    unsafe fn set_format(format: u32, bytes: &[u8]) -> anyhow::Result<()> {
-        unsafe {
-            let hmem = GlobalAlloc(GMEM_MOVEABLE, bytes.len())
-                .map_err(|e| anyhow::anyhow!("GlobalAlloc: {e}"))?;
-            let dst = GlobalLock(hmem);
-            if dst.is_null() {
-                // GlobalFree is gone from windows 0.62's Memory module; the
-                // short-lived process lets the OS reclaim the block
-                anyhow::bail!("GlobalLock failed");
-            }
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst.cast(), bytes.len());
-            let _ = GlobalUnlock(hmem);
-
-            if SetClipboardData(format, Some(HANDLE(hmem.0))).is_err() {
-                // ownership did NOT pass; leak rather than risk a double
-                // free — the process is on its way out anyway
-                anyhow::bail!("SetClipboardData(format {format}) failed");
-            }
-            Ok(())
-        }
-    }
-
-    /// Open (with retries — other apps hold the clipboard briefly),
-    /// empty, run the setter, always close.
-    fn with_clipboard(set: impl FnOnce() -> anyhow::Result<()>) -> anyhow::Result<()> {
-        unsafe {
-            let mut opened = false;
-            for _ in 0..10 {
-                if OpenClipboard(None).is_ok() {
-                    opened = true;
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            if !opened {
-                anyhow::bail!("could not open the clipboard (busy)");
-            }
-            let result = (|| {
-                EmptyClipboard().context("EmptyClipboard")?;
-                set()
-            })();
-            let _ = CloseClipboard();
-            result
-        }
-    }
-
-    pub fn copy_image(w: u32, h: u32, rgba: &[u8], png: &[u8]) -> anyhow::Result<()> {
-        if png.is_empty() || rgba.is_empty() {
-            anyhow::bail!("refusing to copy empty data");
-        }
-        // CF_DIB straight from the caller's pixels — the old path decoded
-        // the PNG first, paying an encode→decode round trip for bytes the
-        // caller already had
-        let dib = super::dib_from_rgba(w, h, rgba);
-        with_clipboard(|| unsafe {
-            // The registered "PNG" format: paste targets that understand it
-            // (browsers, GIMP, Paint.NET…) get the lossless original
-            let format_name: Vec<u16> = "PNG\0".encode_utf16().collect();
-            let png_format = RegisterClipboardFormatW(PCWSTR(format_name.as_ptr()));
-            if png_format != 0 {
-                let _ = set_format(png_format, png); // best effort
-            }
-            set_format(windows::Win32::System::Ole::CF_DIB.0 as u32, &dib)
-        })
-    }
-
-    pub fn copy_text(text: String) -> anyhow::Result<()> {
-        if text.is_empty() {
-            anyhow::bail!("refusing to copy empty data");
-        }
-        let mut utf16: Vec<u8> = text.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
-        utf16.extend_from_slice(&[0, 0]); // terminating NUL
-        with_clipboard(|| unsafe {
-            set_format(windows::Win32::System::Ole::CF_UNICODETEXT.0 as u32, &utf16)
-        })
-    }
-}

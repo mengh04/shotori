@@ -1,8 +1,8 @@
 //! # Tray mode: a resident launcher behind a system tray icon
 //!
-//! `shotori tray` keeps a tray icon alive (Windows: Shell_NotifyIcon,
-//! Linux: StatusNotifierItem, via gpui-tray) and starts a **separate**
-//! `shotori gui` process on activation. The screenshot session keeps
+//! `shotori tray` keeps a tray icon alive (StatusNotifierItem, via
+//! gpui-tray) and starts a **separate** `shotori gui` process on
+//! activation. The screenshot session keeps
 //! its run-and-exit lifecycle — the tray never shares a process with
 //! the overlay, so `cx.quit()` at the end of a capture cannot tear the
 //! tray down, and a wedged overlay can't take the launcher with it.
@@ -73,8 +73,6 @@ fn take_screenshot(_: &TakeScreenshot, _: &mut App) {
     cmd.arg("gui");
     // Detached: the gui process outlives this call; dropping the handle
     // leaves it running (same pattern as the notify child).
-    #[cfg(target_os = "windows")]
-    suppress_console_window(&mut cmd);
     match cmd.spawn() {
         Ok(child) => {
             drop(child);
@@ -90,22 +88,6 @@ fn quit_tray(_: &QuitTray, cx: &mut App) {
         eprintln!("[shotori] tray: close failed: {e}");
     }
     cx.quit();
-}
-
-/// Only spawn the gui with CREATE_NO_WINDOW when this process itself has
-/// no console (tray launched from Explorer/autostart): a fresh overlay
-/// would flash an empty console window. When the tray runs from a
-/// terminal, inherit it instead — the gui's `[shotori] …` logs stay
-/// visible during development.
-#[cfg(target_os = "windows")]
-fn suppress_console_window(cmd: &mut Command) {
-    use std::os::windows::process::CommandExt as _;
-    use windows::Win32::System::Console::GetConsoleWindow;
-
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    if unsafe { GetConsoleWindow() }.is_invalid() {
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
 }
 
 /// A viewfinder frame with a center dot — drawn in code so no asset

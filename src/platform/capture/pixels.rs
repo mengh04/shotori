@@ -84,10 +84,7 @@ pub(crate) fn convert_to_rgba(
 
 /// Size after transform (90/270 swap width and height; 180 and the flipped
 /// family keep them)
-// only the wayland backend captures un-rotated buffers today; the windows
-// backend keeps the pure functions exercised through tests
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(crate) fn rotated_size(w: u32, h: u32, t: Transform) -> (u32, u32) {
+pub(super) fn rotated_size(w: u32, h: u32, t: Transform) -> (u32, u32) {
     use Transform::*;
     match t {
         Normal | Rot180 | Flipped | Flipped180 => (w, h),

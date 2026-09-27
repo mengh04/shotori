@@ -10,17 +10,7 @@ permissions:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact: release-tarball-linux
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: release-zip-windows
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -28,8 +18,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install native build deps (Linux)
-        if: runner.os == 'Linux'
+      - name: Install native build deps
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -39,26 +28,16 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
-      - name: Package (strip + tarball, Linux)
-        if: runner.os == 'Linux'
+      - name: Package (strip + tarball)
         run: |
           strip target/release/shotori
           mkdir dist
           cp target/release/shotori LICENSE dist/
           tar -C dist -czf "shotori-${GITHUB_REF_NAME}-x86_64.tar.gz" shotori LICENSE
 
-      - name: Package (zip, Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path dist -Force | Out-Null
-          Copy-Item -Path "target/release/shotori.exe", "LICENSE" -Destination dist
-          Compress-Archive -Path "dist/shotori.exe", "dist/LICENSE" `
-            -DestinationPath "shotori-${env:GITHUB_REF_NAME}-x86_64-pc-windows-msvc.zip"
-
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
+          name: release-tarball-linux
           path: shotori-*
 
   github-release:
@@ -72,15 +51,11 @@ jobs:
         with:
           name: release-tarball-linux
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-zip-windows
-
       - name: Create release with artifact
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ARTIFACTS=$(ls shotori-*.tar.gz shotori-*.zip)
+          ARTIFACTS=$(ls shotori-*.tar.gz)
           gh release create "${GITHUB_REF_NAME}" $ARTIFACTS \
             --title "shotori ${GITHUB_REF_NAME}" \
             --generate-notes

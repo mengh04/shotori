@@ -9,10 +9,8 @@
 //!
 //! **Matching algorithm (one rule only — resist adding complexity)**:
 //! gpui's display bounds origin = the capture's logical position ÷ its
-//! scale. On Linux the backend divides the output's logical position by
-//! the wl_output integer scale and on Windows by the effective-DPI scale
-//! (both verified against the backend sources); positions are unique in
-//! a multi-monitor layout → match on position only, ignore sizes
+//! scale (the wl_output integer scale); positions are unique in a
+//! multi-monitor layout → match on position only, ignore sizes
 //! (fractional scales report no true value, see
 //! [`crate::platform::capture::Capture::scale`]).
 //!

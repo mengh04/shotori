@@ -30,10 +30,6 @@
 //! - sway — `SWAYSOCK`, i3 IPC `GET_TREE` (rect field, decade-stable)
 //! - Hyprland — `HYPRLAND_INSTANCE_SIGNATURE`, request socket `j/clients`
 //!
-//! On Windows, EnumWindows + DWM uncloaking replaces the compositor IPC
-//! (every visible toplevel is enumerable there — no tiled-window blind
-//! spot, see `windows.rs`).
-//!
 //! Anything else (GNOME, KDE, river, labwc) → `query()` returns None and
 //! the feature is silently off; behavior is identical to pre-snap builds.
 //!
@@ -47,8 +43,6 @@ mod hyprland;
 mod niri;
 #[cfg(target_os = "linux")]
 mod sway;
-#[cfg(target_os = "windows")]
-mod windows;
 
 use gpui_kit::*;
 
@@ -80,29 +74,22 @@ pub fn query() -> Option<Vec<SnapRect>> {
 }
 
 fn detect_and_query() -> Option<Vec<SnapRect>> {
-    #[cfg(target_os = "linux")]
+    if std::env::var_os("NIRI_SOCKET").is_some()
+        && let Some(rects) = niri::query()
     {
-        if std::env::var_os("NIRI_SOCKET").is_some()
-            && let Some(rects) = niri::query()
-        {
-            return Some(rects);
-        }
-        if std::env::var_os("SWAYSOCK").is_some()
-            && let Some(rects) = sway::query()
-        {
-            return Some(rects);
-        }
-        if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
-            && let Some(rects) = hyprland::query()
-        {
-            return Some(rects);
-        }
-        None
+        return Some(rects);
     }
-    #[cfg(target_os = "windows")]
+    if std::env::var_os("SWAYSOCK").is_some()
+        && let Some(rects) = sway::query()
     {
-        windows::query()
+        return Some(rects);
     }
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
+        && let Some(rects) = hyprland::query()
+    {
+        return Some(rects);
+    }
+    None
 }
 
 /// Which window (if any) contains a point. Focused wins, then the most
