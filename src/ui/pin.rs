@@ -9,7 +9,10 @@ use gpui_kit::*;
 
 use crate::ui::image_util;
 
-actions!(pin, [ClosePin, DismissPinMenu, OpenPinMenu]);
+actions!(
+    pin,
+    [ClosePin, DismissPinMenu, OpenPinMenu, CopyPin, ResetPinZoom]
+);
 
 /// How far one "line" of scroll zooms.
 const ZOOM_STEP: f32 = 1.12;
@@ -18,6 +21,12 @@ const ZOOM_MIN: f32 = 0.05;
 const ZOOM_MAX: f32 = 24.;
 /// At least this much of the pin must stay on-screen while dragging.
 const MIN_VISIBLE: f32 = 24.;
+/// Context-menu geometry (logical px): one column, three items
+/// (Copy / Reset zoom / Close). Height = items + two inter-item gaps
+/// + top/bottom padding, all 4px — keep in sync with the menu styles.
+const MENU_W: f32 = 160.;
+const MENU_ITEM_H: f32 = 32.;
+const MENU_H: f32 = 3. * MENU_ITEM_H + 4. * 4.;
 
 /// One output the pin can live on: global logical bounds + the
 /// display the layer surface binds to.
@@ -104,6 +113,9 @@ struct Pin {
     image: Arc<RenderImage>,
     base: Size<Pixels>,
     rect: Bounds<Pixels>,
+    /// Device-pixel crop backing the menu's Copy: PNG-encoded on demand
+    /// (keeping the raw pixels beats re-capturing).
+    crop: Arc<(u32, u32, Vec<u8>)>,
 }
 
 struct PinBoard {
@@ -133,13 +145,46 @@ impl PinBoard {
         rect.origin = clamp_origin(rect.origin, rect.size, &self.outputs);
         self.pins.push(Pin {
             id: self.next_id,
-            image: image_util::rgba_to_render_image(spec.rgba, spec.w, spec.h),
+            image: image_util::rgba_to_render_image(spec.rgba.clone(), spec.w, spec.h),
             base: spec.rect.size,
             rect,
+            crop: Arc::new((spec.w, spec.h, spec.rgba)),
         });
         self.menu = None;
         self.drag = None;
         cx.notify();
+    }
+
+    /// The menu's pin while a menu is open; otherwise the topmost pin —
+    /// the one `Esc` closes and the keyboard menu addresses.
+    fn selected_id(&self) -> Option<u64> {
+        self.menu
+            .map(|(id, _)| id)
+            .or_else(|| self.pins.last().map(|pin| pin.id))
+    }
+
+    /// The raw crop of one pin, for Copy.
+    fn crop_of(&self, id: u64) -> Option<Arc<(u32, u32, Vec<u8>)>> {
+        self.pins
+            .iter()
+            .find(|pin| pin.id == id)
+            .map(|pin| pin.crop.clone())
+    }
+
+    /// Back to 100%, keeping the visual center anchored (and the pin
+    /// grabbable) — the menu's "Reset zoom".
+    fn reset_zoom(&mut self, id: u64) {
+        if let Some(pin) = self.pins.iter_mut().find(|pin| pin.id == id) {
+            let center = point(
+                pin.rect.origin.x + pin.rect.size.width / 2.,
+                pin.rect.origin.y + pin.rect.size.height / 2.,
+            );
+            let origin = point(
+                center.x - pin.base.width / 2.,
+                center.y - pin.base.height / 2.,
+            );
+            pin.rect = Bounds::new(clamp_origin(origin, pin.base, &self.outputs), pin.base);
+        }
     }
 
     fn raise(&mut self, id: u64) {
@@ -192,14 +237,15 @@ impl PinSurface {
     }
 
     fn close_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.board.read(cx).selected_id() else {
+            return;
+        };
         let empty = self.board.update(cx, |board, cx| {
-            let Some((id, _)) = board.menu.take() else {
-                return false;
-            };
             board.pins.retain(|pin| pin.id != id);
             if board.drag.is_some_and(|(drag_id, _)| drag_id == id) {
                 board.drag = None;
             }
+            board.menu = None;
             cx.notify();
             board.pins.is_empty()
         });
@@ -212,6 +258,38 @@ impl PinSurface {
                     let _ = handle.update(cx, |_, window, _| window.remove_window());
                 }
             }
+        }
+    }
+
+    /// The menu's Copy: PNG-encode the selected pin's crop, hand it to
+    /// the clipboard daemon and fire the usual copied notification
+    /// (with the click-to-open action). Failures notify instead of
+    /// breaking the pin.
+    fn copy_selected(&mut self, cx: &mut Context<Self>) {
+        let crop = self.board.update(cx, |board, cx| {
+            let id = board.selected_id()?;
+            board.menu = None;
+            cx.notify();
+            board.crop_of(id)
+        });
+        let Some(crop) = crop else {
+            return;
+        };
+        let (w, h, rgba) = crop.as_ref();
+        match crate::model::export::encode_png(*w, *h, rgba) {
+            Ok(png) => {
+                if let Err(e) = crate::clipboard::copy_image(png.clone()) {
+                    eprintln!("[shotori] pin copy failed: {e:#}");
+                    crate::notify::send(
+                        "Couldn’t copy the pinned image",
+                        "Try again, or copy from the overlay instead.",
+                    );
+                    return;
+                }
+                println!("[shotori] copied pinned {w}x{h} to clipboard");
+                crate::notify::copied(&png, *w, *h, rgba);
+            }
+            Err(e) => eprintln!("[shotori] PNG encoding failed: {e:#}"),
         }
     }
 }
@@ -354,8 +432,8 @@ impl Render for PinSurface {
 
         let menu_el = menu.map(|(_, position)| {
             let menu_size = size(
-                px(160.).min(output.size.width),
-                px(40.).min(output.size.height),
+                px(MENU_W).min(output.size.width),
+                px(MENU_H).min(output.size.height),
             );
             let local = position - output.origin;
             let origin = point(
@@ -365,6 +443,23 @@ impl Render for PinSurface {
                     .max(px(0.))
                     .min(output.size.height - menu_size.height),
             );
+            let item = |id: &'static str,
+                        label: &'static str,
+                        action: fn() -> Box<dyn gpui_kit::Action>| {
+                gpui_kit::base::Button::new(id)
+                    .debug_selector(move || id.into())
+                    .accessibility_label(label)
+                    .w_full()
+                    .h(px(MENU_ITEM_H))
+                    .px_2()
+                    .rounded_sm()
+                    .text_sm()
+                    .text_color(rgba(crate::ui::theme::c().toolbar_text))
+                    .hover(|s| s.bg(rgba(crate::ui::theme::c().toolbar_hover)))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(move |_, window, cx| window.dispatch_action(action(), cx))
+                    .child(label)
+            };
             div()
                 .id("pin-menu")
                 .debug_selector(|| "pin-menu".into())
@@ -374,25 +469,17 @@ impl Render for PinSurface {
                 .w(menu_size.width)
                 .h(menu_size.height)
                 .p_1()
+                .flex()
+                .flex_col()
+                .gap_1()
                 .rounded_md()
                 .border_1()
                 .border_color(rgba(crate::ui::theme::c().toolbar_border))
                 .bg(rgba(crate::ui::theme::c().toolbar_bg))
                 .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                .child(
-                    gpui_kit::base::Button::new("pin-close")
-                        .debug_selector(|| "pin-close".into())
-                        .accessibility_label("Close pin")
-                        .size_full()
-                        .px_2()
-                        .rounded_sm()
-                        .text_sm()
-                        .text_color(rgba(crate::ui::theme::c().toolbar_text))
-                        .hover(|s| s.bg(rgba(crate::ui::theme::c().toolbar_hover)))
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(|_, window, cx| window.dispatch_action(Box::new(ClosePin), cx))
-                        .child("Close"),
-                )
+                .child(item("pin-copy", "Copy", || Box::new(CopyPin)))
+                .child(item("pin-zoom", "Reset zoom", || Box::new(ResetPinZoom)))
+                .child(item("pin-close", "Close", || Box::new(ClosePin)))
         });
         // All outputs consume the dismissing click, including outputs without the menu.
         let backdrop = any_menu.then(|| {
@@ -452,6 +539,16 @@ impl Render for PinSurface {
             .on_action(
                 cx.listener(|this, _: &ClosePin, window, cx| this.close_selected(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &CopyPin, _, cx| this.copy_selected(cx)))
+            .on_action(cx.listener(|this, _: &ResetPinZoom, _, cx| {
+                this.board.update(cx, |board, cx| {
+                    if let Some(id) = board.selected_id() {
+                        board.menu = None;
+                        board.reset_zoom(id);
+                        cx.notify();
+                    }
+                });
+            }))
             .child(sink)
             .children(pins)
             .children(backdrop)
@@ -849,8 +946,9 @@ mod interaction_tests {
             }));
         }
         board.update(first, |board, _| board.windows = handles.clone());
-        first.simulate_keystrokes("escape");
-        assert!(first.windows().contains(&handles[0]));
+        // (Esc with no menu open closes the topmost pin — covered by
+        // `escape_without_menu_closes_the_topmost_pin`; here the menu
+        // interactions need the pin alive, so they come first.)
         first.simulate_mouse_down(
             point(px(190.), px(190.)),
             MouseButton::Right,
@@ -875,6 +973,84 @@ mod interaction_tests {
         let button = first.debug_bounds("pin-close").unwrap();
         first.simulate_click(button.center(), Default::default());
         first.run_until_parked();
+        for handle in handles {
+            assert!(!first.windows().contains(&handle));
+        }
+    }
+
+    /// Esc with no menu open closes the TOPMOST pin (the one a click
+    /// raised); closing the last pin tears down every output surface.
+    #[gpui_kit::test]
+    fn escape_without_menu_closes_the_topmost_pin(cx: &mut TestAppContext) {
+        let board = board(cx);
+        board.update(cx, |board, cx| {
+            board.add(spec(20., 20.), cx);
+            board.add(spec(60., 40.), cx);
+        });
+        let mut other = cx.clone();
+        let (_, first) = cx.add_window_view(|window, cx| {
+            PinSurface::new(
+                board.clone(),
+                PinOutput {
+                    bounds: Bounds::new(point(px(0.), px(0.)), size(px(200.), px(200.))),
+                    display_id: None,
+                },
+                window,
+                cx,
+            )
+        });
+        let (_, second) = other.add_window_view(|window, cx| {
+            PinSurface::new(
+                board.clone(),
+                PinOutput {
+                    bounds: Bounds::new(point(px(200.), px(0.)), size(px(200.), px(200.))),
+                    display_id: None,
+                },
+                window,
+                cx,
+            )
+        });
+        let mut handles = Vec::new();
+        for vcx in [&mut *first, &mut *second] {
+            vcx.simulate_resize(size(px(200.), px(200.)));
+            handles.push(vcx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+                window.window_handle()
+            }));
+        }
+        board.update(first, |board, _| board.windows = handles.clone());
+
+        // clicking the overlapping pin hits the TOPMOST one (id 2,
+        // painted last); raising it keeps [1, 2] with 2 on top
+        first.simulate_click(point(px(80.), px(50.)), Default::default());
+        first.update(|_, cx| {
+            assert_eq!(
+                board
+                    .read(cx)
+                    .pins
+                    .iter()
+                    .map(|pin| pin.id)
+                    .collect::<Vec<_>>(),
+                vec![1, 2]
+            );
+        });
+        // one Esc: no menu open → only the topmost pin closes
+        first.simulate_keystrokes("escape");
+        first.run_until_parked();
+        first.update(|_, cx| {
+            let state = board.read(cx);
+            assert_eq!(
+                state.pins.iter().map(|pin| pin.id).collect::<Vec<_>>(),
+                vec![1]
+            );
+            assert!(state.drag.is_none());
+        });
+        assert_eq!(first.windows().len(), 2, "one pin remains — surfaces stay");
+        // second Esc: the last pin — every surface closes (assert via
+        // the app context: the windows themselves are gone)
+        first.simulate_keystrokes("escape");
+        first.run_until_parked();
+        other.update(|cx| assert!(board.read(cx).pins.is_empty()));
         for handle in handles {
             assert!(!first.windows().contains(&handle));
         }

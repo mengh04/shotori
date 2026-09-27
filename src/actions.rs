@@ -52,11 +52,15 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-o", OcrSelection, Some("ShotoriOverlay")),
         // pins are their own windows with their own context
         KeyBinding::new("shift-f10", crate::ui::pin::OpenPinMenu, Some("ShotoriPin")),
+        // Esc in the menu only dismisses it; with no menu it closes the
+        // topmost pin (the surface switches its key_context while a
+        // menu is open, which is how both bindings coexist)
         KeyBinding::new(
             "escape",
             crate::ui::pin::DismissPinMenu,
             Some("ShotoriPinMenu"),
         ),
+        KeyBinding::new("escape", crate::ui::pin::ClosePin, Some("ShotoriPin")),
         KeyBinding::new("enter", crate::ui::pin::ClosePin, Some("ShotoriPinMenu")),
     ]);
 }
