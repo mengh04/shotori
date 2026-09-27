@@ -165,6 +165,33 @@ pub(super) fn coverage(
                 })
         })
         .collect();
+    // Per-edge y-range, precomputed once: each scanline sample then tests
+    // only the few edges that actually cross it (a 34-gon capsule usually
+    // contributes ~4-8 of its 34 edges to one sample row, not all of them).
+    // (ymin, ymax, xa, ya, xb, yb); the crossing test `y >= ymin && y < ymax`
+    // is bit-identical to the original half-open `(ay<=y && y<by) || …`.
+    type Edge = (f32, f32, f32, f32, f32, f32); // (ymin, ymax, xa, ya, xb, yb)
+    let edges: Vec<Vec<Edge>> = polygons
+        .iter()
+        .map(|polygon| {
+            polygon
+                .iter()
+                .zip(polygon.iter().cycle().skip(1))
+                .map(|(a, b)| {
+                    let ay = f32::from(a.y);
+                    let by = f32::from(b.y);
+                    (
+                        ay.min(by),
+                        ay.max(by),
+                        f32::from(a.x),
+                        ay,
+                        f32::from(b.x),
+                        by,
+                    )
+                })
+                .collect()
+        })
+        .collect();
     // Sweep the polygons by their first covered row. A long freehand stroke
     // should not test every segment on every scanline of its bounding box.
     let mut starts: Vec<_> = vertical_bounds
@@ -188,18 +215,15 @@ pub(super) fn coverage(
             let y = row as f32 + (sample as f32 + 0.5) / 8.;
             intervals.clear();
             for &index in &active {
-                let polygon = &polygons[index];
                 let (top, bottom) = vertical_bounds[index];
                 if y < top || y >= bottom {
                     continue;
                 }
                 let mut lo = f32::INFINITY;
                 let mut hi = f32::NEG_INFINITY;
-                for (a, b) in polygon.iter().zip(polygon.iter().cycle().skip(1)) {
-                    let ay = f32::from(a.y);
-                    let by = f32::from(b.y);
-                    if (ay <= y && y < by) || (by <= y && y < ay) {
-                        let x = f32::from(a.x) + (y - ay) / (by - ay) * f32::from(b.x - a.x);
+                for &(ymin, ymax, xa, ya, xb, yb) in &edges[index] {
+                    if y >= ymin && y < ymax {
+                        let x = xa + (y - ya) / (yb - ya) * (xb - xa);
                         lo = lo.min(x);
                         hi = hi.max(x);
                     }
