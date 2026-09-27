@@ -233,14 +233,13 @@ fn full_capture(clipboard: bool, path: Option<std::path::PathBuf>, delay: f32) -
     let mut ok = true;
     // Clipboard: the default, and alongside --path when asked explicitly
     if clipboard || path.is_none() {
-        match shotori::model::export::encode_png(w, h, &rgba).and_then(clipboard::copy_image) {
-            Ok(()) => shotori::notify::send_with_preview(
-                "Screenshot copied",
-                "The image is ready to paste.",
-                w,
-                h,
-                &rgba,
-            ),
+        let copied = shotori::model::export::encode_png(w, h, &rgba).and_then(|png| {
+            clipboard::copy_image(png.clone())?;
+            shotori::notify::copied(&png, w, h, &rgba);
+            Ok(())
+        });
+        match copied {
+            Ok(()) => {}
             Err(e) => {
                 eprintln!("[shotori] clipboard: {e:#}");
                 ok = false;

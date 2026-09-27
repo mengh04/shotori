@@ -25,7 +25,7 @@ pub const NOTIFY_ARG: &str = "--notify";
 
 /// Max thumbnail edge (px) — enough for any daemon's rendering, tiny file
 const PREVIEW_MAX: u32 = 256;
-/// Previews older than this are removed on the next send
+/// Notification images older than this are removed on the next copy/save
 const PREVIEW_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 
 /// Queue a plain notification and return immediately.
@@ -33,14 +33,36 @@ pub fn send(summary: &str, body: &str) {
     spawn_child(summary, body, None, None);
 }
 
-/// Queue a notification with a thumbnail rendered from the screenshot's
-/// raw pixels. Falls back to a plain notification if the thumbnail cannot
-/// be written (never let preview plumbing break the feedback).
-pub fn send_with_preview(summary: &str, body: &str, w: u32, h: u32, rgba: &[u8]) {
-    match write_preview(w, h, rgba) {
-        Some(path) => spawn_child(summary, body, Some(&path), None),
-        None => spawn_child(summary, body, None, None),
-    }
+/// Retain the full-resolution clipboard PNG so the notification can open it.
+/// Cache failures must not turn a successful clipboard copy into an error.
+pub fn copied(png: &[u8], w: u32, h: u32, rgba: &[u8]) {
+    let preview = write_preview(w, h, rgba);
+    let path = cache_dir().and_then(|dir| match write_clipboard_image(&dir, png) {
+        Ok(path) => Some(path),
+        Err(error) => {
+            eprintln!("[shotori] could not cache copied screenshot: {error}");
+            None
+        }
+    });
+    spawn_child(
+        "Screenshot copied",
+        "The image is ready to paste.",
+        preview.as_deref(),
+        path.as_deref(),
+    );
+}
+
+fn write_clipboard_image(dir: &std::path::Path, png: &[u8]) -> std::io::Result<PathBuf> {
+    use std::io::Write;
+    cleanup_old_previews(dir);
+    // Exclusive creation also handles simultaneous screenshot sessions.
+    let mut file = tempfile::Builder::new()
+        .prefix("clipboard-")
+        .suffix(".png")
+        .tempfile_in(dir)?;
+    file.write_all(png)?;
+    let (_, path) = file.keep().map_err(|error| error.error)?;
+    Ok(path)
 }
 
 /// Saving has a separate action target: never open the temporary thumbnail.
@@ -248,7 +270,9 @@ fn cleanup_old_previews(dir: &std::path::Path) {
             .ok()
             .and_then(|t| t.elapsed().ok())
             .is_some_and(|age| age > PREVIEW_TTL);
-        let is_preview = entry.file_name().to_string_lossy().starts_with("preview-");
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let is_preview = name.starts_with("preview-") || name.starts_with("clipboard-");
         if stale && is_preview {
             let _ = std::fs::remove_file(&path);
         }
@@ -257,6 +281,37 @@ fn cleanup_old_previews(dir: &std::path::Path) {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
+    #[test]
+    fn cache_cleanup_removes_only_expired_notification_images() {
+        let dir = tempfile::tempdir().unwrap();
+        let old =
+            std::time::SystemTime::now() - super::PREVIEW_TTL - std::time::Duration::from_secs(60);
+        for name in ["clipboard-old.png", "preview-old.png", "saved.png"] {
+            let file = std::fs::File::create(dir.path().join(name)).unwrap();
+            file.set_times(std::fs::FileTimes::new().set_modified(old))
+                .unwrap();
+        }
+        let fresh = super::write_clipboard_image(dir.path(), b"new").unwrap();
+        assert!(fresh.exists());
+        assert!(dir.path().join("saved.png").exists());
+        assert!(!dir.path().join("clipboard-old.png").exists());
+        assert!(!dir.path().join("preview-old.png").exists());
+    }
+
+    #[test]
+    fn clipboard_cache_retains_full_png_and_uses_unique_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let rgba = [30, 90, 180, 255].repeat(640 * 360);
+        let png = crate::model::export::encode_png(640, 360, &rgba).unwrap();
+        let first = super::write_clipboard_image(dir.path(), &png).unwrap();
+        let second = super::write_clipboard_image(dir.path(), &png).unwrap();
+        assert_ne!(first, second);
+        let image = image::open(&first).unwrap().into_rgba8();
+        assert_eq!(image.dimensions(), (640, 360));
+        assert_eq!(image.into_raw(), rgba);
+        assert_eq!(std::fs::read(second).unwrap(), png);
+    }
+
     #[test]
     fn filenames_and_recognized_text_are_literal_notification_content() {
         assert_eq!(

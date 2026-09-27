@@ -22,7 +22,9 @@ out of it — all without leaving the keyboard.
 - Copy to clipboard (`Enter` / `Ctrl+C`)
 - Save to disk (`Ctrl+S`) via the system "save as" dialog
 - OCR (`Ctrl+O`) — on-device, works on mixed Chinese/English text
-- Desktop notifications with a thumbnail of the result; saved-image notifications on Linux include an **Open image** action (requires `xdg-open` and a notification server with action support)
+- Desktop notifications with a thumbnail of the result; copy/save notifications on Linux include an **Open image** action (requires `xdg-open` and a notification server with action support)
+
+Clipboard images opened from notifications retain their original resolution in the Shotori cache (`$XDG_CACHE_HOME/shotori` or `~/.cache/shotori` on Linux). Cached images older than 24 hours are removed on subsequent copy/save operations. Annotation previews reuse completed layers, avoiding repeated blur/mosaic processing while drawing the next stroke.
 
 ## Requirements
 

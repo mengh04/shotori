@@ -23,6 +23,7 @@ impl Screen {
 }
 
 struct RasterSelection {
+    scale: f32,
     width: u32,
     height: u32,
     rgba: Vec<u8>,
@@ -31,8 +32,10 @@ struct RasterSelection {
 
 struct FilterPreview {
     selection: Option<Bounds<Pixels>>,
-    shapes: Vec<crate::annotation::Shape>,
-    bounds: Bounds<Pixels>,
+    committed: Vec<crate::annotation::Shape>,
+    draft: Option<crate::annotation::Shape>,
+    original: RasterSelection,
+    pixels: Vec<u8>,
     image: Arc<RenderImage>,
 }
 
@@ -689,26 +692,65 @@ impl ScreenshotSession {
             *cache = None;
             return None;
         }
-        let shapes: Vec<_> = self.annotations.visible().cloned().collect();
         let selection = self.selection.bounds();
-        if !cache
-            .as_ref()
-            .is_some_and(|c| c.selection == selection && c.shapes == shapes)
-        {
-            let raster = self.crop_impl(output, true)?;
+        let committed = self.annotations.committed();
+        let draft = self.annotations.draft_shape();
+        if cache.as_ref().is_none_or(|c| c.selection != selection) {
+            let original = self.crop_impl(output, false)?;
+            let pixels = original.rgba.clone();
+            let image = crate::ui::image_util::rgba_to_render_image(
+                pixels.clone(),
+                original.width,
+                original.height,
+            );
             *cache = Some(FilterPreview {
                 selection,
-                shapes,
-                bounds: raster.bounds,
-                image: crate::ui::image_util::rgba_to_render_image(
-                    raster.rgba,
-                    raster.width,
-                    raster.height,
-                ),
+                committed: Vec::new(),
+                draft: None,
+                original,
+                pixels,
+                image,
             });
         }
-        let cached = cache.as_ref()?;
-        let mut bounds = cached.bounds;
+        let cached = cache.as_mut()?;
+        if cached.committed != committed || cached.draft.as_ref() != draft {
+            let original = &cached.original;
+            // Appending a finished stroke only replays the new suffix. Undo,
+            // replacement and edits rebuild from the immutable capture.
+            if !committed.starts_with(&cached.committed) {
+                cached.pixels.clone_from(&original.rgba);
+                cached.committed.clear();
+            }
+            crate::annotation::Annotations::rasterize_shapes(
+                committed[cached.committed.len()..].iter(),
+                &mut cached.pixels,
+                &original.rgba,
+                original.width,
+                original.height,
+                original.bounds.origin,
+                original.scale,
+            );
+            if cached.committed != committed {
+                cached.committed = committed.to_vec();
+            }
+            let mut pixels = cached.pixels.clone();
+            crate::annotation::Annotations::rasterize_shapes(
+                draft.into_iter(),
+                &mut pixels,
+                &original.rgba,
+                original.width,
+                original.height,
+                original.bounds.origin,
+                original.scale,
+            );
+            cached.image = crate::ui::image_util::rgba_to_render_image(
+                pixels,
+                original.width,
+                original.height,
+            );
+            cached.draft = draft.cloned();
+        }
+        let mut bounds = cached.original.bounds;
         bounds.origin -= self.screen(output).bounds().origin;
         Some((bounds, cached.image.clone()))
     }
@@ -747,6 +789,7 @@ impl ScreenshotSession {
                 self.annotations.rasterize(&mut rgba, w, h, origin, scale);
             }
             return Some(RasterSelection {
+                scale,
                 width: w,
                 height: h,
                 rgba,
@@ -800,6 +843,7 @@ impl ScreenshotSession {
                 .rasterize(&mut rgba, w, h, extent.origin, scale);
         }
         Some(RasterSelection {
+            scale,
             width: w,
             height: h,
             rgba,
@@ -1479,6 +1523,106 @@ mod tests {
         assert_eq!(s.crop("left").unwrap().2, original);
         s.edit_annotations(|a| a.redo());
         assert_eq!(s.crop("right").unwrap().2, pixels);
+    }
+
+    fn assert_preview_matches_export(s: &ScreenshotSession) {
+        let pixels = s.crop("left").unwrap().2;
+        let (_, preview) = s.filtered_preview("left").unwrap();
+        let expected: Vec<_> = pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| [p[2], p[1], p[0], p[3]])
+            .collect();
+        assert_eq!(preview.as_bytes(0).unwrap(), expected);
+        let (_, other) = s.filtered_preview("right").unwrap();
+        assert!(Arc::ptr_eq(&preview, &other));
+    }
+
+    #[test]
+    fn incremental_preview_preserves_filter_order_erasure_and_history() {
+        use crate::annotation::ShapeKind;
+        let mut s = session();
+        s.select_all();
+        // Mixed DPI, negative desktop coordinates and transparent gaps.
+        for kind in [
+            ShapeKind::Blur,
+            ShapeKind::Rectangle,
+            ShapeKind::Mosaic,
+            ShapeKind::Eraser,
+            ShapeKind::Pencil,
+            ShapeKind::EraserRect,
+            ShapeKind::Highlighter,
+        ] {
+            s.edit_annotations(|a| a.toggle(kind));
+            s.pointer_down("left", point(px(70.), px(25.)));
+            for x in [5., 15., 30.] {
+                s.pointer_move("right", point(px(x), px(60.)), false);
+                assert_preview_matches_export(&s);
+            }
+            s.pointer_up("right", point(px(35.), px(65.)), false);
+            assert_preview_matches_export(&s);
+        }
+        let completed = s.crop("left").unwrap().2;
+        s.pointer_down("left", point(px(75.), px(30.)));
+        s.pointer_move("right", point(px(45.), px(70.)), false);
+        assert_preview_matches_export(&s);
+        s.cancel_annotation();
+        assert_preview_matches_export(&s);
+        assert_eq!(s.crop("left").unwrap().2, completed);
+        for _ in 0..6 {
+            s.edit_annotations(|a| a.undo());
+            assert_preview_matches_export(&s);
+        }
+        for _ in 0..6 {
+            s.edit_annotations(|a| a.redo());
+            assert_preview_matches_export(&s);
+        }
+        assert_eq!(s.crop("left").unwrap().2, completed);
+        // Changing display geometry invalidates even an unchanged history.
+        s.set_size("left", size(px(80.), px(80.)));
+        assert_preview_matches_export(&s);
+    }
+
+    #[test]
+    #[ignore = "manual performance measurement; no timing assertion"]
+    fn benchmark_drawing_after_committed_blurs() {
+        use crate::annotation::ShapeKind;
+        let mut cap = Capture::for_test((0, 0), 1.);
+        cap.output_name = "left".into();
+        cap.width = 1280;
+        cap.height = 720;
+        cap.rgba = [60, 90, 120, 255].repeat(1280 * 720);
+        let mut s = ScreenshotSession::new(vec![Arc::new(cap)], Vec::new());
+        s.select_all();
+        s.edit_annotations(|a| a.toggle(ShapeKind::Blur));
+        for _ in 0..6 {
+            s.pointer_down("left", point(px(0.), px(0.)));
+            s.pointer_up("left", point(px(1280.), px(720.)), false);
+        }
+        s.filtered_preview("left").unwrap();
+        s.edit_annotations(|a| a.toggle(ShapeKind::Pencil));
+        s.pointer_down("left", point(px(100.), px(100.)));
+        let mut full = std::time::Duration::ZERO;
+        let mut cached = std::time::Duration::ZERO;
+        for i in 1..=30 {
+            s.pointer_move("left", point(px(100. + i as f32 * 8.), px(110.)), false);
+            let start = std::time::Instant::now();
+            let raster = s.crop_impl("left", true).unwrap();
+            let expected = crate::ui::image_util::rgba_to_render_image(
+                raster.rgba,
+                raster.width,
+                raster.height,
+            );
+            full += start.elapsed();
+            let start = std::time::Instant::now();
+            let (_, preview) = s.filtered_preview("left").unwrap();
+            cached += start.elapsed();
+            assert_eq!(preview.as_bytes(0).unwrap(), expected.as_bytes(0).unwrap());
+        }
+        eprintln!(
+            "30 updates at 1280x720 after six blurs: full replay {full:?}, cached {cached:?}"
+        );
     }
 
     #[test]
