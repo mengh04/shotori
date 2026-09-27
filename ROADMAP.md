@@ -986,6 +986,31 @@ Rule: pointer position is desktop-global truth shared by all windows;
 per-window copies go stale exactly when a state flip lands chrome
 under a window the pointer never moved over.
 
+### Addendum 3: the dropped press under stale pointer focus (same day)
+
+Even with the cursor fixed, the user could still not grab after a
+cross-screen release until the mouse moved — and only cross-screen,
+never same-screen. The missing piece was compositor-side: after the
+implicit grab ends, niri keeps the pointer's surface FOCUS on the
+press window until the next MOTION. A click while the pointer rests
+on the new screen is therefore delivered to the OLD window with
+OUT-OF-BOUNDS local coordinates — and the left-button down was the
+one pointer event still handled at ELEMENT level (`on_mouse_down` on
+the base div), where hit-testing drops out-of-bounds positions
+silently. Move/up had already moved to window-level listeners for
+exactly this reason; the down simply never followed.
+
+Fix: the left down is now registered in `pointer_event_sink` beside
+move/up. Element handlers that should own a press (toolbar root,
+grips, buttons) stop propagation during the element bubble phase,
+which also skips the root window listener — semantics unchanged, and
+the toolbar pipeline tests pin that. The session converts via the
+RECEIVING window's origin, so it doesn't matter which window
+delivered the event. The stale-focus press grabs; the cursor (pushed
+by whichever window holds focus, derived from the global pointer) is
+a hand even at rest.
+
+
 
 ## Annotation tools — incremental implementation
 

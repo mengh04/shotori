@@ -923,29 +923,10 @@ impl Render for Overlay {
                 cx.notify();
             }))
             // ── Selection interaction (events → state machine) ─────────
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, ev: &MouseDownEvent, window, cx| {
-                    if this.text_editing.is_some() {
-                        this.finish_text(true, window, cx);
-                        return;
-                    }
-                    if this.session.read(cx).blocked() {
-                        return; // modal dialog: no new selections
-                    }
-                    if this.session.read(cx).annotations().tool()
-                        == Some(crate::annotation::ShapeKind::Text)
-                    {
-                        this.start_text(ev.position, window, cx);
-                        return;
-                    }
-                    window.focus(&this.focus_handle, cx);
-                    this.session.update(cx, |s, cx| {
-                        s.pointer_down(&this.capture.output_name, ev.position);
-                        cx.notify(); // repaint re-derives the cursor in render
-                    });
-                }),
-            )
+            // (the LEFT down is handled window-level in `pointer_event_sink`:
+            // a stale pointer focus after a cross-screen release delivers
+            // it with out-of-bounds local coordinates, which element
+            // hit-testing would drop)
             .on_mouse_down(MouseButton::Right, cx.listener(|this, _, window, cx| {
                 if this.session.read(cx).blocked() { return; }
                 window.focus(&this.focus_handle, cx);
@@ -1088,6 +1069,43 @@ fn pointer_event_sink(input_view: WeakEntity<Overlay>) -> impl IntoElement {
     canvas(
         |_, _, _| (),
         move |_, (), window, _| {
+            let view = input_view.clone();
+            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                if phase != DispatchPhase::Bubble || event.button != MouseButton::Left {
+                    return;
+                }
+                let _ = view.update(cx, |this, cx| {
+                    // Why window-level and not an element handler: after a
+                    // cross-screen release the compositor may keep pointer
+                    // focus on the PRESS window while the pointer sits over
+                    // another output (niri re-focuses only on the next
+                    // motion). The down then arrives with OUT-OF-BOUNDS
+                    // local coordinates — element hit-testing drops it, and
+                    // the press silently vanished. The session converts via
+                    // the RECEIVING window's origin, so the position lands
+                    // correctly no matter which window delivered it.
+                    // Toolbar/buttons still own their presses: their element
+                    // handlers stop propagation before this root listener.
+                    if this.text_editing.is_some() {
+                        this.finish_text(true, window, cx);
+                        return;
+                    }
+                    if this.session.read(cx).blocked() {
+                        return; // modal dialog: no new selections
+                    }
+                    if this.session.read(cx).annotations().tool()
+                        == Some(crate::annotation::ShapeKind::Text)
+                    {
+                        this.start_text(event.position, window, cx);
+                        return;
+                    }
+                    window.focus(&this.focus_handle, cx);
+                    this.session.update(cx, |s, cx| {
+                        s.pointer_down(&this.capture.output_name, event.position);
+                        cx.notify(); // repaint re-derives the cursor in render
+                    });
+                });
+            });
             let view = input_view.clone();
             window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                 if phase != DispatchPhase::Bubble {
@@ -1349,6 +1367,43 @@ mod multi_output_tests {
         // until I slide the mouse" was a stale per-window position.
         left_cx.update(|_, cx| {
             assert_eq!(left_view.read(cx).cursor.get(), CursorStyle::OpenHand);
+        });
+
+        // And so must the CLICK. A stale pointer focus after the release
+        // (niri re-focuses only on the next motion) delivers the down to
+        // the PRESS window — right — with OUT-OF-BOUNDS local
+        // coordinates. Element hit-testing drops exactly that; the
+        // window-level down listener must still grab.
+        right_cx.simulate_mouse_down(
+            point(px(-300.), px(150.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        right_cx.run_until_parked();
+        right_cx.update(|_, cx| {
+            assert!(
+                session.read(cx).selection().is_editing(),
+                "stale-focus press still grabs"
+            );
+        });
+        right_cx.simulate_mouse_move(
+            point(px(-280.), px(150.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        right_cx.simulate_mouse_up(
+            point(px(-280.), px(150.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        right_cx.run_until_parked();
+        left_cx.run_until_parked();
+        right_cx.update(|_, cx| {
+            // press global (100,150) → grab (50,70); drag to (120,150)
+            // → origin (70,80), and the release re-hosts on left again
+            let b = session.read(cx).selection().bounds().unwrap();
+            assert_eq!(b.origin, point(px(70.), px(80.)));
+            assert!(session.read(cx).active_on("left"));
         });
     }
 
