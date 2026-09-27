@@ -1023,7 +1023,9 @@ time, with shared desktop coordinates, preview, history, and PNG export.
    IME protocol. Toolbar settings remain available during inline editing.
    Text boxes grow with content and wrap at the selection right edge.
    Existing-text editing, manual resizing, font selection, bold/italic, and rotation remain follow-ups.
-10. Eraser.
+10. Implemented: brush and rectangle eraser — three brush diameters, restoration of
+    original capture pixels (including filtered areas), ordered shared history and
+    cross-output preview/export. Wheel sizing, region editing and clear-all remain follow-ups.
 11. Spotlight.
 12. Watermark.
 13. Magnifier.

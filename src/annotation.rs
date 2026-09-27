@@ -1,4 +1,5 @@
 //! Geometry annotations in desktop logical coordinates, shared by all outputs.
+mod eraser;
 mod filter;
 mod highlighter;
 mod line;
@@ -11,6 +12,8 @@ use gpui_kit::{Bounds, Path, PathBuilder, Pixels, Point, point, px, size};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ShapeKind {
+    Eraser,
+    EraserRect,
     Text,
     Number,
     Pencil,
@@ -171,6 +174,7 @@ pub(crate) struct Annotations {
     number_size_ix: usize,
     text_size_ix: usize,
     filter_strength_ix: usize,
+    eraser_width_ix: usize,
     highlighter_width_ix: usize,
     highlighter_color_ix: usize,
     shapes: Vec<Shape>,
@@ -188,6 +192,7 @@ impl Default for Annotations {
             number_size_ix: 1,
             text_size_ix: 1,
             filter_strength_ix: 1,
+            eraser_width_ix: 1,
             highlighter_width_ix: 1,
             highlighter_color_ix: 2,
             shapes: Vec::new(),
@@ -216,6 +221,8 @@ impl Annotations {
     pub(crate) fn width(&self) -> f32 {
         if matches!(self.tool, Some(ShapeKind::Mosaic | ShapeKind::Blur)) {
             [8., 16., 24.][self.filter_strength_ix]
+        } else if matches!(self.tool, Some(ShapeKind::Eraser | ShapeKind::EraserRect)) {
+            [16., 32., 48.][self.eraser_width_ix]
         } else if self.tool == Some(ShapeKind::Highlighter) {
             [12., 20., 32.][self.highlighter_width_ix]
         } else {
@@ -314,6 +321,8 @@ impl Annotations {
         if ix < 3 {
             if matches!(self.tool, Some(ShapeKind::Mosaic | ShapeKind::Blur)) {
                 self.filter_strength_ix = ix;
+            } else if matches!(self.tool, Some(ShapeKind::Eraser | ShapeKind::EraserRect)) {
+                self.eraser_width_ix = ix;
             } else if self.tool == Some(ShapeKind::Highlighter) {
                 self.highlighter_width_ix = ix;
             } else {
@@ -364,7 +373,10 @@ impl Annotations {
                     Some(ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Polyline)
                 ) {
                     vec![p, p]
-                } else if matches!(self.tool, Some(ShapeKind::Pencil | ShapeKind::Highlighter)) {
+                } else if matches!(
+                    self.tool,
+                    Some(ShapeKind::Pencil | ShapeKind::Highlighter | ShapeKind::Eraser)
+                ) {
                     vec![p]
                 } else {
                     Vec::new()
@@ -382,7 +394,10 @@ impl Annotations {
         let Some(draft) = self.draft.as_mut() else {
             return false;
         };
-        if matches!(draft.shape.kind, ShapeKind::Pencil | ShapeKind::Highlighter) {
+        if matches!(
+            draft.shape.kind,
+            ShapeKind::Pencil | ShapeKind::Highlighter | ShapeKind::Eraser
+        ) {
             let end = line_endpoint(draft.start, p, selection, false);
             if draft.shape.points.last() == Some(&end) {
                 return false;
@@ -463,7 +478,10 @@ impl Annotations {
         if let Some(draft) = self.draft.take() {
             let valid = if matches!(draft.shape.kind, ShapeKind::Line | ShapeKind::Arrow) {
                 distance(draft.shape.points[0], draft.shape.points[1]) >= 2.
-            } else if matches!(draft.shape.kind, ShapeKind::Pencil | ShapeKind::Highlighter) {
+            } else if matches!(
+                draft.shape.kind,
+                ShapeKind::Pencil | ShapeKind::Highlighter | ShapeKind::Eraser
+            ) {
                 true
             } else {
                 draft.shape.bounds.size.width >= px(2.) && draft.shape.bounds.size.height >= px(2.)
@@ -541,7 +559,24 @@ impl Annotations {
         origin: Point<Pixels>,
         scale: f32,
     ) {
+        // Erasure restores the frozen capture, including pixels changed by filters.
+        let original = self
+            .visible()
+            .any(|s| matches!(s.kind, ShapeKind::Eraser | ShapeKind::EraserRect))
+            .then(|| rgba.to_vec());
         for shape in self.visible() {
+            if matches!(shape.kind, ShapeKind::Eraser | ShapeKind::EraserRect) {
+                eraser::rasterize(
+                    shape,
+                    rgba,
+                    original.as_deref().expect("eraser background"),
+                    w,
+                    h,
+                    origin,
+                    scale,
+                );
+                continue;
+            }
             if shape.kind == ShapeKind::Text {
                 text::rasterize(shape, rgba, w, h, origin, scale);
                 continue;
