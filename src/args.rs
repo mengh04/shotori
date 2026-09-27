@@ -17,7 +17,7 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "shotori",
     version,
-    about = "Screenshot tool — Wayland-first, Windows supported",
+    about = "Screenshot tool — Wayland-first",
     disable_help_subcommand = true
 )]
 pub struct Cli {
@@ -29,8 +29,7 @@ pub struct Cli {
     #[arg(long)]
     pub print_theme: bool,
 
-    /// Skip the config-file theme auto-pickup (~/.config/shotori/theme.toml
-    /// on Linux, %APPDATA%\shotori\theme.toml on Windows)
+    /// Skip the config-file theme auto-pickup (~/.config/shotori/theme.toml)
     #[arg(long)]
     pub no_config: bool,
 

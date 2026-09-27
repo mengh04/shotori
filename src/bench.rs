@@ -115,7 +115,7 @@ fn run(name: &str, mut workload: Workload) {
     }
     let mean: Duration = times.iter().sum::<Duration>() / times.len() as u32;
     let min = times.iter().copied().min().unwrap();
-    let size_note = if last.len() > 1024 && (name.starts_with("png") || name.starts_with("dib")) {
+    let size_note = if last.len() > 1024 && name.starts_with("png") {
         format!(" → {} KB", last.len() / 1024)
     } else {
         String::new()
@@ -297,18 +297,9 @@ pub fn bench_main() -> i32 {
         }
     }
 
-    // ── CF_DIB build (pure bytes in → DIB out; Windows clipboard) ─────
-    if matches!(requested.as_str(), "all" | "dib") {
-        let rgba = ui(3840, 2160);
-        let workload: Workload =
-            Box::new(move || crate::clipboard::dib_from_rgba(3840, 2160, &rgba));
-        run("dib4k", workload);
-        ran += 1;
-    }
-
     if ran == 0 {
         eprintln!(
-            "[bench] unknown benchmark '{requested}' (available: all png crop convert rotate filter dib)"
+            "[bench] unknown benchmark '{requested}' (available: all png crop convert rotate filter)"
         );
         return 1;
     }

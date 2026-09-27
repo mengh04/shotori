@@ -10,11 +10,7 @@ env:
 
 jobs:
   check:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -24,8 +20,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install native build deps (Linux)
-        if: runner.os == 'Linux'
+      - name: Install native build deps
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \

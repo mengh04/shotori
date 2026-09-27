@@ -7,7 +7,7 @@ members = ["tools/vptr"]
 name = "shotori"
 version = "0.11.0"
 edition = "2024"
-description = "Shotori — Wayland-first screenshot tool with optional OCR, Windows supported (gpui-kit)"
+description = "Shotori — Wayland-first screenshot tool with optional OCR (gpui-kit)"
 license = "MIT"
 repository = "https://github.com/mengh04/shotori"
 keywords = ["screenshot", "wayland", "gpui", "screencopy", "clipboard"]
@@ -18,13 +18,9 @@ gpui-kit = "0.6"
 anyhow = "1.0"
 png = "0.18"
 
-# Native window-handle access (overlay alignment fixup on Windows);
-# same 0.6 line the gpui tree already uses
-raw-window-handle = "0.6"
-
-# System tray (Windows Shell_NotifyIcon, Linux StatusNotifierItem over
-# zbus, macOS AppKit — one crate). The gpui-kit feature makes its types
-# interoperate with our gpui-pre 0.3.x directly.
+# System tray (Linux StatusNotifierItem over zbus, macOS AppKit — one
+# crate). The gpui-kit feature makes its types interoperate with our
+# gpui-pre 0.3.x directly.
 gpui-tray = { version = "0.1.4", default-features = false, features = [
     "gpui-kit",
     "menu-state",
@@ -49,11 +45,8 @@ cosmic-text = "0.19.0"
 # gpui dep tree — zero extra compile)
 chrono = "0.4"
 
-# Native "save as" dialog. The backend is picked per-platform: GTK-free
-# xdg-portal on Linux, Win32 on Windows (rfd's windows backend needs no
-# feature). Declared again under the linux target to add the feature
-# there only.
-rfd = { version = "0.17.2", default-features = false }
+# Native "save as" dialog: GTK-free xdg-portal on Linux
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 
 # Scratch files (OCR model download staging; wayland shm)
 tempfile = "3"
@@ -76,24 +69,6 @@ wayland-protocols = { version = "0.32.13", features = ["client", "unstable"] }
 memmap2 = "0.9"
 niri-ipc = "26.4.0"
 notify-rust = "4"
-rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
-
-# ── Windows: GDI capture, Win32 clipboard, WinRT toast notifications,
-#    EnumWindows snap backend ─────────────────────────────────────────
-[target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.62", features = [
-    "Win32_Foundation",
-    "Win32_Graphics_Gdi",
-    "Win32_Graphics_Dwm",
-    "Win32_UI_HiDpi",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_System_Console",
-    "Win32_System_DataExchange",
-    "Win32_System_Memory",
-    "Win32_System_Ole",
-    "Win32_System_Threading",
-] }
-tauri-winrt-notification = "0.8"
 
 [dependencies.rapidocr-core]
 version = "0.2"

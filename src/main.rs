@@ -1,11 +1,10 @@
 //! # Shotori entry point: assembly, keybindings, window creation
 //!
 //! Module layout (avoiding a god file):
-//! - `capture`: screen freeze (wlr-screencopy on Linux, GDI on Windows;
-//!   multi-output, dedicated wayland connection on Linux)
+//! - `capture`: screen freeze (wlr-screencopy; multi-output, dedicated
+//!   wayland connection)
 //! - `display`: capture ↔ gpui display matching and waiting
-//! - `clipboard`: clipboard copy (zwlr_data_control + resident daemon on
-//!   Linux; Win32 CF_DIB on Windows)
+//! - `clipboard`: clipboard copy (zwlr_data_control + resident daemon)
 //! - `overlay`: overlay assembly (one window per screen)
 //! - `hud` / `toolbar`: the overlay's visual pieces
 //! - `selection` / `export` / `image_util`: pure logic
@@ -24,12 +23,6 @@ use shotori::ui::overlay::Overlay;
 fn main() {
     let boot = std::time::Instant::now();
 
-    // Windows: everything downstream (monitor rects, GDI capture, gpui
-    // placement) assumes physical virtual-desktop coordinates, which only
-    // a per-monitor-v2 aware process sees
-    #[cfg(target_os = "windows")]
-    shotori::platform::capture::enable_per_monitor_dpi_awareness();
-
     // Notification child: `shotori --notify <summary> <body>` (see notify.rs)
     if std::env::args().nth(1).as_deref() == Some(shotori::notify::NOTIFY_ARG) {
         std::process::exit(shotori::notify::notify_main());
@@ -43,8 +36,7 @@ fn main() {
 
     // Clipboard daemon (Linux only): the background resident process
     // behind the copy action (see the resident-offer model in
-    // clipboard.rs). Windows owns clipboard data after SetClipboardData
-    // — no daemon exists there.
+    // clipboard.rs).
     #[cfg(target_os = "linux")]
     if std::env::args().nth(1).as_deref() == Some(clipboard::DAEMON_ARG) {
         if let Err(e) = clipboard::daemon_main() {
@@ -61,8 +53,7 @@ fn main() {
 
     // Tray mode: a resident launcher, not a screenshot session — bail
     // out before theme init / capture. Returns when the user quits the
-    // tray. (Windows: enable_per_monitor_dpi_awareness above already
-    // ran; each gui child sets it for itself too.)
+    // tray.
     if matches!(args.command, Some(shotori::args::Command::Tray)) {
         shotori::tray::run();
         return;
@@ -166,8 +157,7 @@ fn main() {
                             );
                         }
                         // True logical size (fractional scale + transform)
-                        // for the layer surface request / Win32 window
-                        // bounds; see window_options
+                        // for the layer surface request; see window_options
                         let (lw, lh) = cap.logical_size_f32();
                         let logical = size(px(lw), px(lh));
                         // The GLOBAL logical rect (the session's space):
@@ -179,17 +169,9 @@ fn main() {
                             ),
                             did,
                         );
-                        // Windows window bounds are absolute gpui-logical
-                        // coordinates = physical origin ÷ scale (Linux
-                        // ignores the origin — layer-shell anchors cover
-                        // the whole output)
-                        let origin = point(
-                            px(cap.logical_pos.0 as f32 / cap.scale),
-                            px(cap.logical_pos.1 as f32 / cap.scale),
-                        );
                         let handle = cx
                             .open_window(
-                                Overlay::window_options(did, logical, origin),
+                                Overlay::window_options(did, logical),
                                 |window, cx| {
                                     cx.new(|cx| {
                                         Overlay::new(cap, session.clone(), window, cx)

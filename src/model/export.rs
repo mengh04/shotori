@@ -41,18 +41,8 @@ pub fn crop(
 /// The conventional save directory `~/Pictures/Shotori` (dialog default /
 /// created on demand)
 pub(crate) fn save_dir() -> anyhow::Result<PathBuf> {
-    #[cfg(target_os = "linux")]
-    {
-        let home = std::env::var("HOME").context("HOME environment variable is not set")?;
-        Ok(PathBuf::from(home).join("Pictures/Shotori"))
-    }
-    #[cfg(target_os = "windows")]
-    {
-        // USERPROFILE always exists in practice; %USERPROFILE%\Pictures is
-        // where every Windows install points the Pictures known folder
-        let home = std::env::var("USERPROFILE").context("USERPROFILE is not set")?;
-        Ok(PathBuf::from(home).join("Pictures").join("Shotori"))
-    }
+    let home = std::env::var("HOME").context("HOME environment variable is not set")?;
+    Ok(PathBuf::from(home).join("Pictures/Shotori"))
 }
 
 /// Encode RGBA8 pixels as PNG with balanced compression (the png crate's

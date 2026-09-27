@@ -7,15 +7,11 @@
 //! delivers. Failures are silent by design — a missing notification daemon
 //! must never break a screenshot tool.
 //!
-//! Backends: freedesktop `org.freedesktop.Notifications` over D-Bus
-//! (Linux) or WinRT toast (Windows; the PowerShell AppUserModelID is the
-//! standard no-install trick — the toast then reports "Windows
-//! PowerShell" as its source).
+//! Backends: freedesktop `org.freedesktop.Notifications` over D-Bus.
 //!
-//! Image previews: the freedesktop `image-path` hint / the toast image
-//! with a `file://`-style local path (verified against noctalia).
-//! Thumbnails are written to the cache dir and must outlive the
-//! notification — cleaned up lazily (24h).
+//! Image previews: the freedesktop `image-path` hint with a `file://`-style
+//! local path (verified against noctalia). Thumbnails are written to the
+//! cache dir and must outlive the notification — cleaned up lazily (24h).
 //!
 //! Thumbnails render INSIDE the detached child, never in the parent:
 //! the parent hands over full-resolution PNG bytes (stdin for copies,
@@ -154,7 +150,7 @@ pub fn notify_main() -> i32 {
     ) {
         Ok(()) => 0,
         Err(e) => {
-            // No daemon on the bus, toast disabled, … — not fatal for
+            // No daemon on the bus, disabled, … — not fatal for
             // the caller (the action already succeeded), just report it.
             eprintln!("[shotori] notification not delivered: {e}");
             1
@@ -215,34 +211,6 @@ fn open_image(path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ── Windows: WinRT toast ─────────────────────────────────────────────
-
-#[cfg(target_os = "windows")]
-fn show(
-    summary: &str,
-    body: &str,
-    image: Option<&std::path::Path>,
-    open_path: Option<&std::path::Path>,
-) -> anyhow::Result<()> {
-    use tauri_winrt_notification::Toast;
-    // Windows retains the saved path in the toast body. Its action backend
-    // is separate from freedesktop actions and is not implemented yet.
-    let _ = open_path;
-
-    let mut toast = Toast::new(Toast::POWERSHELL_APP_ID)
-        .title(summary)
-        .text1(body)
-        .duration(tauri_winrt_notification::Duration::Short);
-    if let Some(path) = image {
-        // Local absolute paths are accepted as toast image sources
-        if path.is_absolute() {
-            toast = toast.image(path, "screenshot preview");
-        }
-    }
-    toast.show()?;
-    Ok(())
-}
-
 /// Notification daemons may parse body markup, including OCR text and filenames.
 #[cfg(target_os = "linux")]
 fn escape_markup(text: &str) -> String {
@@ -253,23 +221,12 @@ fn escape_markup(text: &str) -> String {
 
 // ── Preview thumbnails ────────────────────────────────────────────────
 
-#[cfg(target_os = "linux")]
 fn cache_dir() -> Option<PathBuf> {
     let base = match std::env::var("XDG_CACHE_HOME") {
         Ok(d) => PathBuf::from(d),
         Err(_) => PathBuf::from(std::env::var("HOME").ok()?).join(".cache"),
     };
     let dir = base.join("shotori");
-    std::fs::create_dir_all(&dir).ok()?;
-    Some(dir)
-}
-
-#[cfg(target_os = "windows")]
-fn cache_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    let dir = base.join("shotori").join("cache");
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir)
 }
