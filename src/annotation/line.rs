@@ -165,14 +165,31 @@ pub(super) fn coverage(
                 })
         })
         .collect();
+    // Sweep the polygons by their first covered row. A long freehand stroke
+    // should not test every segment on every scanline of its bounding box.
+    let mut starts: Vec<_> = vertical_bounds
+        .iter()
+        .enumerate()
+        .map(|(index, &(top, _))| (top.floor().max(0.) as usize, index))
+        .collect();
+    starts.sort_unstable_by_key(|&(row, _)| row);
+    let mut cursor = 0;
+    let mut active = Vec::new();
     let mut coverage = vec![0_f32; right - left];
     let mut intervals = Vec::with_capacity(polygons.len());
     for row in top..bottom {
+        while cursor < starts.len() && starts[cursor].0 <= row {
+            active.push(starts[cursor].1);
+            cursor += 1;
+        }
+        active.retain(|&index| vertical_bounds[index].1 > row as f32);
         coverage.fill(0.);
         for sample in 0..8 {
             let y = row as f32 + (sample as f32 + 0.5) / 8.;
             intervals.clear();
-            for (polygon, &(top, bottom)) in polygons.iter().zip(&vertical_bounds) {
+            for &index in &active {
+                let polygon = &polygons[index];
+                let (top, bottom) = vertical_bounds[index];
                 if y < top || y >= bottom {
                     continue;
                 }

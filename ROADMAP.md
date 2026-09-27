@@ -1264,3 +1264,39 @@ the accent, with contrast-aware foregrounds. Legacy JSON is not auto-loaded.
 - The cache uses additional selection-sized pixel buffers. Active large-area
   filters and uploading a changed preview still cost work; this does not eliminate
   every possible source of frame latency. Windows toast actions remain unsupported.
+
+
+## Sustained pencil drawing and preview image lifetime (2026-09-27)
+
+- Pencil previews now use the session composite cache even without filters.
+  Finished strokes are rasterized once instead of rebuilding one GPU path per
+  segment of every historical stroke on every frame.
+- Canvas paint_image bypasses the managed image element: dropping a RenderImage
+  alone does not evict its atlas entry. Each overlay now tracks its current
+  preview images and calls Window::drop_image for retired images during prepaint.
+  Eviction is per window so another output can finish displaying the shared image.
+  This includes filter, text, highlighter and number previews.
+- Stroke coverage uses a scanline sweep to skip segments outside the current row;
+  it retains the existing polygon geometry, antialiasing and union-before-blend
+  behavior at intersections.
+- Regression tests cover 250 actual GPUI test-window redraws with both a growing
+  pencil draft and repeated finished strokes, asserting old atlas entries are
+  absent, plus 2,000 image replacements. A manual benchmark exercises a
+  20,000-point stroke followed by 30 additional strokes. Long active strokes still
+  need to be rasterized; rendering cost is not independent of stroke complexity.
+
+
+### Audit across annotation tools
+
+- Extend composite caching to highlighter and polyline previews, avoiding growing
+  per-stroke textures and repeated tessellation as history accumulates.
+- Keep the small-scene vector path for simple geometry, but switch to the shared
+  composite at 64 committed marks, including rectangles, ellipses, lines, arrows
+  and numbers. Undo below that threshold returns to the small-scene path.
+- A GPUI test window exercises replacement of previews for highlighter, mosaic,
+  blur, both erasers, numbers, text and polyline. It verifies the currently used
+  atlas entries remain and retired entries are absent, including tool switches.
+- Dense-history tests verify preview/export equality and undo/redo across the
+  vector/composite threshold for all five remaining geometric/number tools.
+- These changes bound historical rendering and retired image storage; they do
+  not make active large blur regions, complex long strokes or text layout free.
