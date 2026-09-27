@@ -11,8 +11,8 @@ use crate::ui::theme;
 
 use crate::actions::{
     CopySelection, OcrSelection, QuitOverlay, SaveSelection, ToggleArrow, ToggleEllipse,
-    ToggleHighlighter, ToggleLine, ToggleMosaic, ToggleNumber, TogglePencil, TogglePolyline,
-    ToggleRectangle, ToggleText,
+    ToggleEraser, ToggleHighlighter, ToggleLine, ToggleMosaic, ToggleNumber, TogglePencil,
+    TogglePolyline, ToggleRectangle, ToggleText,
 };
 use crate::model::placement::{GRIP_W, ROW_H};
 
@@ -20,6 +20,7 @@ use crate::model::placement::{GRIP_W, ROW_H};
 gpui_kit::assets::icon_assets!(
     ToolbarAssets,
     [
+        Eraser,
         Type,
         MirrorRectangular,
         Highlighter,
@@ -91,6 +92,10 @@ pub(crate) fn selection_toolbar(
     let filter_tool = matches!(
         annotations.tool(),
         Some(crate::annotation::ShapeKind::Mosaic | crate::annotation::ShapeKind::Blur)
+    );
+    let eraser_tool = matches!(
+        annotations.tool(),
+        Some(crate::annotation::ShapeKind::Eraser | crate::annotation::ShapeKind::EraserRect)
     );
     let highlighter_tool = annotations.tool() == Some(crate::annotation::ShapeKind::Highlighter);
     let number_tool = annotations.tool() == Some(crate::annotation::ShapeKind::Number);
@@ -227,6 +232,18 @@ pub(crate) fn selection_toolbar(
                 )
                 .child(
                     icon_button(
+                        "tb-eraser",
+                        "Eraser · D",
+                        IconName::Eraser,
+                        focus.clone(),
+                        |window, cx| {
+                            window.dispatch_action(Box::new(ToggleEraser), cx);
+                        },
+                    )
+                    .selected(eraser_tool),
+                )
+                .child(
+                    icon_button(
                         "tb-text",
                         "Text · T",
                         IconName::Type,
@@ -347,7 +364,63 @@ pub(crate) fn selection_toolbar(
                 return options;
             }
 
-            let sizes = if text_tool {
+            if eraser_tool {
+                options = options.w(px(
+                    if annotations.tool() == Some(crate::annotation::ShapeKind::EraserRect) {
+                        78.
+                    } else {
+                        170.
+                    },
+                ));
+                for (id, label, kind, icon) in [
+                    (
+                        "tb-eraser-brush",
+                        "Brush eraser",
+                        crate::annotation::ShapeKind::Eraser,
+                        IconName::Eraser,
+                    ),
+                    (
+                        "tb-eraser-rect",
+                        "Rectangle eraser",
+                        crate::annotation::ShapeKind::EraserRect,
+                        IconName::Square,
+                    ),
+                ] {
+                    let session = session.clone();
+                    options = options.child(
+                        control(
+                            id.into(),
+                            label.into(),
+                            settings_focus.clone(),
+                            move |_, cx| {
+                                session.update(cx, |s, cx| {
+                                    s.edit_annotations(|a| {
+                                        if a.tool() != Some(kind) {
+                                            a.toggle(kind);
+                                        }
+                                    });
+                                    cx.notify();
+                                });
+                            },
+                        )
+                        .selected(annotations.tool() == Some(kind))
+                        .child(
+                            svg()
+                                .path(icon.path())
+                                .size(px(18.))
+                                .text_color(rgba(theme::c().toolbar_text)),
+                        ),
+                    );
+                }
+                if annotations.tool() == Some(crate::annotation::ShapeKind::EraserRect) {
+                    return options;
+                }
+                options = options.child(separator());
+            }
+
+            let sizes = if eraser_tool {
+                [16., 32., 48.]
+            } else if text_tool {
                 [16., 24., 32.]
             } else if number_tool {
                 [24., 32., 40.]
@@ -372,7 +445,14 @@ pub(crate) fn selection_toolbar(
                         } else if number_tool {
                             format!("Marker size: {width} px")
                         } else {
-                            format!("Line width: {width} px")
+                            format!(
+                                "{}: {width} px",
+                                if eraser_tool {
+                                    "Eraser diameter"
+                                } else {
+                                    "Line width"
+                                }
+                            )
                         },
                         settings_focus.clone(),
                         move |_, cx| {
@@ -404,7 +484,7 @@ pub(crate) fn selection_toolbar(
                             .into_any_element()
                     } else {
                         div()
-                            .size(px(if highlighter_tool {
+                            .size(px(if highlighter_tool || eraser_tool {
                                 4. + ix as f32 * 3.
                             } else {
                                 width + 2.
@@ -414,6 +494,9 @@ pub(crate) fn selection_toolbar(
                             .into_any_element()
                     }),
                 );
+            }
+            if eraser_tool {
+                return options;
             }
             options = options.child(separator()).child(div().flex_1());
             for (ix, color) in theme::c().annotation_colors.into_iter().enumerate() {

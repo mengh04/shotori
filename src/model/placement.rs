@@ -26,7 +26,7 @@ const INSET: f32 = 12.;
 /// Toolbar: [Copy][Save][OCR][Cancel] on row one; annotation tools,
 /// colors and widths on row two (only while a tool is active).
 /// Includes the two edge drag-grips (see [`GRIP_W`]).
-pub(crate) const TB_W: f32 = 512.;
+pub(crate) const TB_W: f32 = 544.;
 /// Width of one drag-grip strip at the toolbar's left/right edge.
 pub(crate) const GRIP_W: f32 = 12.;
 /// The bar rows' horizontal padding. The grip elements sit INSIDE that

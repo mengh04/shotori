@@ -679,7 +679,11 @@ impl ScreenshotSession {
         if !self.annotations.visible().any(|s| {
             matches!(
                 s.kind,
-                ShapeKind::Mosaic | ShapeKind::Blur | ShapeKind::Text
+                ShapeKind::Mosaic
+                    | ShapeKind::Blur
+                    | ShapeKind::Text
+                    | ShapeKind::Eraser
+                    | ShapeKind::EraserRect
             )
         }) {
             *cache = None;
@@ -1284,7 +1288,10 @@ mod tests {
         assert!(s.toolbar_drag_move("right", point(px(2000.), px(2000.))));
         assert_eq!(
             s.toolbar_bounds("right").unwrap().origin,
-            point(px(1200. - 512. - 8.), px(800. - 38. - 8.))
+            point(
+                px(1200. - crate::model::placement::TB_W - 8.),
+                px(800. - crate::model::placement::ROW_H - 8.),
+            )
         );
         assert!(s.toolbar_drag_move("right", point(px(-999.), px(-999.))));
         assert_eq!(
@@ -1472,6 +1479,40 @@ mod tests {
         assert_eq!(s.crop("left").unwrap().2, original);
         s.edit_annotations(|a| a.redo());
         assert_eq!(s.crop("right").unwrap().2, pixels);
+    }
+
+    #[test]
+    fn eraser_crosses_outputs_and_preview_matches_export() {
+        use crate::annotation::ShapeKind;
+        for kind in [ShapeKind::Eraser, ShapeKind::EraserRect] {
+            let mut s = session();
+            s.begin("left", point(px(80.), px(20.)));
+            s.end("right", point(px(40.), px(90.)));
+            s.edit_annotations(|a| a.toggle(ShapeKind::Rectangle));
+            s.pointer_down("left", point(px(82.), px(25.)));
+            s.pointer_up("right", point(px(38.), px(60.)), false);
+            let marked = s.crop("left").unwrap().2;
+            s.edit_annotations(|a| a.toggle(kind));
+            s.pointer_down("left", point(px(81.), px(22.)));
+            s.pointer_up("right", point(px(39.), px(70.)), false);
+            let pixels = s.crop("left").unwrap().2;
+            assert_ne!(pixels, marked);
+            let (_, left) = s.filtered_preview("left").unwrap();
+            let (_, right) = s.filtered_preview("right").unwrap();
+            assert!(Arc::ptr_eq(&left, &right));
+            let bgra: Vec<_> = pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|p| [p[2], p[1], p[0], p[3]])
+                .collect();
+            assert_eq!(left.as_bytes(0).unwrap(), bgra);
+            s.edit_annotations(|a| a.undo());
+            assert_eq!(s.crop("left").unwrap().2, marked);
+            assert!(s.filtered_preview("left").is_none());
+            s.edit_annotations(|a| a.redo());
+            assert_eq!(s.crop("right").unwrap().2, pixels);
+        }
     }
 
     #[test]

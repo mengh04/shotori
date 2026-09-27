@@ -17,9 +17,9 @@ use gpui_kit::*;
 
 use crate::actions::{
     CancelText, CopySelection, FinishPolyline, OcrSelection, QuitOverlay, RedoAnnotation,
-    SaveSelection, SelectScreen, ToggleArrow, ToggleEllipse, ToggleHighlighter, ToggleLine,
-    ToggleMosaic, ToggleNumber, TogglePencil, TogglePolyline, ToggleRectangle, ToggleText,
-    UndoAnnotation,
+    SaveSelection, SelectScreen, ToggleArrow, ToggleEllipse, ToggleEraser, ToggleHighlighter,
+    ToggleLine, ToggleMosaic, ToggleNumber, TogglePencil, TogglePolyline, ToggleRectangle,
+    ToggleText, UndoAnnotation,
 };
 use crate::model::placement::round_px;
 use crate::model::selection::{PressTarget, Selection};
@@ -786,6 +786,21 @@ impl Render for Overlay {
                     cx.notify();
                 });
             }))
+            .on_action(cx.listener(|this, _: &ToggleEraser, window, cx| {
+                this.finish_text(true, window, cx);
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| {
+                        let kind = if a.tool() == Some(crate::annotation::ShapeKind::EraserRect) {
+                            crate::annotation::ShapeKind::EraserRect
+                        } else {
+                            crate::annotation::ShapeKind::Eraser
+                        };
+                        a.toggle(kind);
+                    });
+                    cx.notify();
+                });
+            }))
             .on_action(cx.listener(|this, _: &ToggleMosaic, window, cx| {
                 this.finish_text(true, window, cx);
                 window.focus(&this.focus_handle, cx);
@@ -1540,7 +1555,7 @@ mod multi_output_tests {
         vcx.run_until_parked();
 
         // A selection reaching the bottom parks the toolbar INSIDE the box:
-        // anchor math puts its origin at (112, 514), 512 wide, one row tall.
+        // anchor math puts its origin at (112, 514), TB_W wide, one row tall.
         vcx.simulate_mouse_down(
             point(px(100.), px(200.)),
             MouseButton::Left,
@@ -1570,11 +1585,9 @@ mod multi_output_tests {
         );
         vcx.run_until_parked();
         vcx.update(|_, cx| assert_eq!(overlay.read(cx).cursor.get(), CursorStyle::OpenHand));
-        vcx.simulate_mouse_move(
-            point(px(618.), px(533.)),
-            MouseButton::Left,
-            Default::default(),
-        );
+        let right_grip =
+            vcx.update(|_, cx| session.read(cx).toolbar_grips("main").unwrap().1.center());
+        vcx.simulate_mouse_move(right_grip, MouseButton::Left, Default::default());
         vcx.run_until_parked();
         vcx.update(|_, cx| assert_eq!(overlay.read(cx).cursor.get(), CursorStyle::OpenHand));
 
@@ -1881,6 +1894,11 @@ mod multi_output_tests {
         });
     }
 
+    #[gpui_kit::test]
+    fn eraser_toolbar_modes_size_and_history(cx: &mut TestAppContext) {
+        stroke_and_polyline_workflows(cx, crate::annotation::ShapeKind::Eraser);
+    }
+
     fn stroke_and_polyline_workflows(cx: &mut TestAppContext, kind: crate::annotation::ShapeKind) {
         cx.update(|cx| {
             gpui_kit::base::init(cx);
@@ -1920,6 +1938,7 @@ mod multi_output_tests {
                 crate::annotation::ShapeKind::Pencil => "tb-pencil",
                 crate::annotation::ShapeKind::Highlighter => "tb-highlighter",
                 crate::annotation::ShapeKind::Mosaic => "tb-mosaic",
+                crate::annotation::ShapeKind::Eraser => "tb-eraser",
                 _ => "tb-line",
             })
             .unwrap();
@@ -1937,6 +1956,21 @@ mod multi_output_tests {
             });
         }
 
+        if kind == crate::annotation::ShapeKind::Eraser {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(cx.debug_bounds("tb-color-0").is_none());
+            let width = cx.debug_bounds("tb-width-2").unwrap();
+            cx.simulate_click(width.center(), Default::default());
+            cx.update(|_, cx| assert_eq!(session.read(cx).annotations().width(), 48.));
+            let rect = cx.debug_bounds("tb-eraser-rect").unwrap();
+            cx.simulate_click(rect.center(), Default::default());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(cx.debug_bounds("tb-width-2").is_none());
+            cx.simulate_keystrokes("d");
+            cx.update(|_, cx| assert!(!session.read(cx).annotations().enabled()));
+            cx.simulate_keystrokes("d");
+            cx.update(|_, cx| assert_eq!(session.read(cx).annotations().tool(), Some(kind)));
+        }
         if kind == crate::annotation::ShapeKind::Arrow {
             cx.update(|window, cx| window.draw(cx).clear(cx));
             cx.simulate_keystrokes("a");

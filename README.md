@@ -219,6 +219,12 @@ screens, while OCR continues to use the original image.
 
 Brush mode, editing existing filter regions and smart erasing remain follow-ups.
 
+### Eraser
+
+Click the eraser icon or press `D`. The second row switches between brush and rectangle erasing. Brush mode offers 16 / 32 / 48 logical-pixel diameters; click or drag to erase. Rectangle mode erases the dragged area (`Shift` constrains it to a square).
+
+Erasing restores the original capture, including areas covered by text, mosaic or blur. It only affects earlier annotations; new marks can be drawn over the restored area. Each gesture supports undo/redo and cancellation with `Esc`. Preview, copy and save share the same pixels across monitors. Wheel sizing, editable erase regions and clear-all remain follow-ups.
+
 ### Text annotations
 
 Click the text icon or press `T`, choose a font size (16 / 24 / 32) and color, then click inside the selection to edit directly in a transparent text box. Text previews live in its actual color and size, grows with the content without a preset width, and wraps only at the selection’s right edge. The box grows vertically within the selection. Both toolbar rows remain available while editing; color and size changes apply immediately. IME preedit text, its underline, the caret and candidate placement use the same layout as the annotation. Supports multilingual, multiline input: click outside the box or press `Enter` to confirm, `Shift+Enter` inserts a line break, and `Esc` cancels. Confirmed text supports undo/redo and is included in copied and saved images.

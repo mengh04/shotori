@@ -31,6 +31,7 @@ gpui_kit::actions!([
     TogglePencil,
     ToggleHighlighter,
     ToggleMosaic,
+    ToggleEraser,
     TogglePolyline,
     FinishPolyline,
     UndoAnnotation,
@@ -52,7 +53,7 @@ pub fn bind_keys(cx: &mut App) {
 
 /// Annotation keybindings ("r" rectangle, "e" ellipse, "l" line, "a"
 /// arrow, "m" mosaic, "h" highlighter, "b" pencil, "n" number, "p"
-/// polyline, "t" text; undo/redo; Enter finishes a polyline). Also scoped to
+/// polyline, "t" text, "d" eraser; undo/redo; Enter finishes a polyline). Also scoped to
 /// `ShotoriOverlay`, plus the PolylineDrawing sub-context.
 pub fn init_annotation_keybindings(cx: &mut App) {
     cx.bind_keys([
@@ -60,6 +61,7 @@ pub fn init_annotation_keybindings(cx: &mut App) {
         KeyBinding::new("e", ToggleEllipse, Some("ShotoriOverlay")),
         KeyBinding::new("l", ToggleLine, Some("ShotoriOverlay")),
         KeyBinding::new("a", ToggleArrow, Some("ShotoriOverlay")),
+        KeyBinding::new("d", ToggleEraser, Some("ShotoriOverlay")),
         KeyBinding::new("m", ToggleMosaic, Some("ShotoriOverlay")),
         KeyBinding::new("h", ToggleHighlighter, Some("ShotoriOverlay")),
         KeyBinding::new("b", TogglePencil, Some("ShotoriOverlay")),
