@@ -129,8 +129,19 @@ pub fn capture_all_outputs() -> anyhow::Result<Vec<Capture>> {
     }
     queue.roundtrip(&mut app)?; // buffer events → create shm buffers, request copy
 
+    // A stuck screencopy frame (compositor killed mid-capture, protocol
+    // violation) must not hang shotori forever: drain the queue
+    // non-blockingly against a 10 s deadline instead of blocking_dispatch.
+    const FRAME_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + FRAME_DEADLINE;
     while !app.all_frames_done() {
-        queue.blocking_dispatch(&mut app)?;
+        if std::time::Instant::now() >= deadline {
+            anyhow::bail!("screencopy frame timed out (compositor not responding)");
+        }
+        queue.dispatch_pending(&mut app)?;
+        if !app.all_frames_done() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     // Collect the successes (one output failing must not sink the others)
@@ -141,13 +152,33 @@ pub fn capture_all_outputs() -> anyhow::Result<Vec<Capture>> {
             eprintln!("[shotori] capture failed for {}, skipping", o.name);
             continue;
         }
-        let (format, w, h, stride, y_invert) = f
-            .take_frame_info()
-            .expect("a ready frame always has buffer info");
-        let mmap = f.mmap.take().expect("no mmap");
+        // A ready frame SHOULD have buffer info + a mapped buffer; a
+        // protocol-violating compositor can deliver ready without either,
+        // in which case this output is skipped instead of panicking.
+        let Some((format, w, h, stride, y_invert)) = f.take_frame_info() else {
+            eprintln!(
+                "[shotori] capture of {} ready without buffer info, skipping",
+                o.name
+            );
+            continue;
+        };
+        let Some(mmap) = f.mmap.take() else {
+            eprintln!(
+                "[shotori] capture of {} has no mapped buffer, skipping",
+                o.name
+            );
+            continue;
+        };
         // The physical buffer "lies flat"; rotate it per the output transform
         // into the orientation the screen shows
         let rgba = pixels::convert_to_rgba(&mmap[..], format, w, h, stride, y_invert);
+        if rgba.len() != (w as usize * h as usize * 4) {
+            eprintln!(
+                "[shotori] capture of {} returned malformed pixels, skipping",
+                o.name
+            );
+            continue;
+        }
         let rgba = pixels::rotate_rgba(rgba, w as u32, h as u32, o.transform);
         let (rw, rh) = pixels::rotated_size(w as u32, h as u32, o.transform);
         caps.push(Capture {

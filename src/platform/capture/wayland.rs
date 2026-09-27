@@ -130,13 +130,49 @@ impl App {
         if let Some(f) = self.frame_mut(idx) {
             f.info = Some((fmt, w, h, stride));
         }
+        // Event handlers must not panic: any failure here (tempfile, mmap,
+        // missing wl_shm, or a compositor that announces an impossible
+        // buffer geometry) marks THIS frame failed — the collection loop
+        // skips it, one broken output never crashes the process.
+        let mark_failed = |state: &mut Self, idx: usize| {
+            if let Some(f) = state.frame_mut(idx) {
+                f.failed = true;
+            }
+        };
         let size = (stride as i64 * h as i64) as u64;
+        if w <= 0 || h <= 0 || stride < w * 4 || size > i32::MAX as u64 {
+            eprintln!("[shotori] capture: impossible buffer geometry {w}x{h} stride {stride}");
+            mark_failed(self, idx);
+            return;
+        }
 
-        let file = tempfile::tempfile().expect("create temp file");
-        file.set_len(size).expect("set file length");
-        let mmap = unsafe { memmap2::MmapMut::map_mut(&file).expect("mmap") };
+        let file = match tempfile::tempfile() {
+            Ok(file) => file,
+            Err(e) => {
+                eprintln!("[shotori] capture: temp file failed: {e}");
+                mark_failed(self, idx);
+                return;
+            }
+        };
+        if let Err(e) = file.set_len(size) {
+            eprintln!("[shotori] capture: setting file length failed: {e}");
+            mark_failed(self, idx);
+            return;
+        }
+        let mmap = match unsafe { memmap2::MmapMut::map_mut(&file) } {
+            Ok(mmap) => mmap,
+            Err(e) => {
+                eprintln!("[shotori] capture: mmap failed: {e}");
+                mark_failed(self, idx);
+                return;
+            }
+        };
 
-        let shm = self.shm.as_ref().expect("no wl_shm?");
+        let Some(shm) = self.shm.as_ref() else {
+            eprintln!("[shotori] capture: no wl_shm global");
+            mark_failed(self, idx);
+            return;
+        };
         let pool = shm.create_pool(file.as_fd(), size as i32, qh, ());
         let buffer = pool.create_buffer(0, w, h, stride, fmt, qh, ());
         frame.copy(&buffer);
