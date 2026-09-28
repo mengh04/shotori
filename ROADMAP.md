@@ -707,6 +707,13 @@ Placement, re-edit and body movement share the same 2px inset selection area.
 An empty editor needs room for a whole line at the current font size. A layout
 clamp is still a defensive painting boundary, never proof that content fits.
 
+The overlay workflow test also needs the bundled-font fixture (2026-09-29):
+host fonts made a long paragraph fit at 40px locally but overflow on CI, where
+the correct rollback to 32px failed the test's unconditional resize assertion.
+Run the whole workflow under `with_test_font`, assert rejection for the long
+paragraph, then use shorter text to assert a successful resize separately.
+Do not weaken the bottom-boundary check to satisfy a font-dependent test.
+
 ### Annotation previews: caching, thresholds, background jobs (2026-09-27)
 
 - **The composite cache**: filter/text/eraser previews retain the frozen
