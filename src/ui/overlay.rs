@@ -2042,6 +2042,25 @@ mod multi_output_tests {
             "color row overflows the toolbar: {} > {bar_right}",
             f32::from(swatch.right())
         );
+
+        // The mode+slider settings rows (mosaic, eraser): the readout must
+        // sit INSIDE the row's own painted border. These rows once carried
+        // fixed widths tuned for the old S/M/L buttons; the wider slider
+        // bundle spilled past the border (user-reported, visible on HiDPI).
+        for key in ["m", "d"] {
+            vcx.simulate_keystrokes(key);
+            vcx.run_until_parked();
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            let readout = vcx.debug_bounds("tb-size-readout").unwrap();
+            let options = vcx.debug_bounds("tb-options").unwrap();
+            assert!(
+                f32::from(readout.right())
+                    <= f32::from(options.right()) - crate::model::placement::BAR_PAD + 0.5,
+                "{key} settings row clips the size readout: readout right {} vs row right {}",
+                f32::from(readout.right()),
+                f32::from(options.right())
+            );
+        }
     }
 
     #[gpui_kit::test]

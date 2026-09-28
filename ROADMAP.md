@@ -366,6 +366,20 @@ One spec per tool family (`annotation::size_spec`) is the single
 source of range + detents; the wheel (±1 clamped), the slider and the
 detent buttons all read it.
 
+**Update (2026-09-28, post-detent-drop): the settings-row width trap.**
+The filter/eraser settings rows carried fixed `.w()` values tuned for
+their OLD content — two mode buttons plus the three S/M/L preset
+buttons (~178px). When the slider bundle (track 108 + gap 8 + readout
+26 = 142px, wider than the three buttons) replaced the presets, nobody
+re-derived the constants: the row overflowed its own painted border by
+~50px, readout hanging outside the panel. It survived testing because
+the spill is near-black-on-near-black in the dark theme — a HiDPI
+screenshot read by a vision model made it obvious. Fix: settings rows
+hug their content like every other row (no fixed widths), with
+`toolbar_hugs_its_content` asserting the readout sits inside the row's
+border via `debug_selector` probes. General rule: a row whose children
+can change must not carry a hand-tuned width.
+
 ### Module layout & dependency direction (2026-09-26)
 
 `ui → model`, `model → platform`, never back up; `actions.rs` is the
