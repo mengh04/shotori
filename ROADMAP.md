@@ -545,6 +545,20 @@ gpui resolves None-hitbox (window) requests with immediate precedence
 and nothing in this UI sets an element cursor. The text editor and the
 OCR setup dialog opt out (their inputs own IBeam/default via hitboxes).
 
+**Update (2026-09-28): freehand chrome is the centerline, not capsule
+rims.** The annotation selection chrome (`Shape::hilite_paths`) traced
+`line::geometry`'s polygons — correct for a Line's single capsule, but a
+freehand stroke is one capsule PER SEGMENT, and rim-tracing every one
+rendered the selection as a chain of overlapping rings (with a dense
+pile where pointer events cluster at the release point). It hid in
+testing because only vector tools were eyeballed; select-on-place
+(6251f71) made it fire on EVERY fresh pencil/highlighter stroke — the
+"user-reported ring chain". Fix: Pencil/Highlighter/Polyline chrome
+traces the recorded centerline (one open path); a single-point tap
+keeps its circle rim; Line/Arrow keep the capsule rim that doubles as
+the width cue. Rule: a chrome path must be O(1) per selected shape,
+not O(segments).
+
 ### Window snapping: what the compositor will and won't tell you (2026-09-26)
 
 Clients are isolated; no standard protocol exposes other clients'

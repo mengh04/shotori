@@ -10,10 +10,26 @@ use super::{Shape, ShapeKind};
 impl Shape {
     /// Selection highlight: a thin stroke tracing the shape's own
     /// visual outline — capsule rim, ellipse ring, arrowhead, badge
-    /// circle; never a filled blob over the content. Corner handles
-    /// come from [`Shape::handle_points`] on the overlay side.
+    /// circle, or the freehand centerline; never a filled blob over
+    /// the content. Corner handles come from [`Shape::handle_points`]
+    /// on the overlay side.
     pub(crate) fn hilite_paths(&self, offset: Point<Pixels>) -> Vec<Path<Pixels>> {
         match self.kind {
+            // Freehand strokes (and multi-vertex polylines) are unions of
+            // many overlapping capsules — rim-tracing every capsule
+            // renders the selection as a chain of rings, glaring once
+            // select-on-place auto-selected each fresh stroke. The
+            // centerline is the one path that says "this stroke is
+            // selected" at any point count; a single-point tap has no
+            // centerline, so it keeps its circle rim.
+            ShapeKind::Pencil | ShapeKind::Highlighter | ShapeKind::Polyline
+                if self.points.len() >= 2 =>
+            {
+                let pts: Vec<Point<Pixels>> = self.points.iter().map(|p| *p + offset).collect();
+                let mut builder = PathBuilder::stroke(px(1.));
+                builder.add_polygon(&pts, false);
+                builder.build().ok().into_iter().collect()
+            }
             ShapeKind::Line
             | ShapeKind::Arrow
             | ShapeKind::Polyline
@@ -165,4 +181,51 @@ fn ellipse_stroke(b: Bounds<gpui_kit::Pixels>, offset: Point<Pixels>) -> Option<
         1.,
     );
     builder.build().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shape(kind: ShapeKind, points: &[(f32, f32)]) -> Shape {
+        Shape {
+            kind,
+            number: None,
+            text: None,
+            bounds: Bounds::default(),
+            color: 0xffd43b60,
+            width: 20.,
+            points: points.iter().map(|&(x, y)| point(px(x), px(y))).collect(),
+        }
+    }
+
+    #[test]
+    fn freehand_chrome_traces_one_centerline_not_every_capsule() {
+        // Four points → three capsules; rim-tracing each rendered the
+        // selection as a chain of rings (user-reported after
+        // select-on-place made every fresh stroke selected).
+        for kind in [ShapeKind::Pencil, ShapeKind::Highlighter] {
+            let shape = shape(kind, &[(10., 30.), (40., 10.), (70., 30.), (90., 50.)]);
+            assert_eq!(
+                shape.hilite_paths(point(px(0.), px(0.))).len(),
+                1,
+                "{kind:?} chrome must be one centerline path"
+            );
+        }
+    }
+
+    #[test]
+    fn single_point_tap_keeps_its_circle_rim() {
+        // A dot has no centerline — the geometry's circle outline is
+        // the only chrome that makes sense.
+        let shape = shape(ShapeKind::Pencil, &[(30., 30.)]);
+        assert_eq!(shape.hilite_paths(point(px(0.), px(0.))).len(), 1);
+    }
+
+    #[test]
+    fn line_keeps_its_capsule_rim() {
+        // A single segment's rim doubles as the width cue — unchanged.
+        let shape = shape(ShapeKind::Line, &[(10., 30.), (70., 30.)]);
+        assert_eq!(shape.hilite_paths(point(px(0.), px(0.))).len(), 1);
+    }
 }
