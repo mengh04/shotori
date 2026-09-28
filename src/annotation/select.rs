@@ -71,6 +71,9 @@ impl Annotations {
     /// when one is live, else the active tool's preset — one truth for
     /// the slider's position, its readout and the write paths.
     pub(crate) fn current_edit_size(&self) -> f32 {
+        if let Some(shape) = self.editing_text() {
+            return shape.width;
+        }
         match self.selected() {
             Some(shape) if shape.kind == ShapeKind::Number => f32::from(shape.bounds.size.width),
             Some(shape) => shape.width,
@@ -81,13 +84,24 @@ impl Annotations {
     /// The kind whose spec governs the current edit target (selected
     /// shape first, else the active tool).
     pub(crate) fn edit_kind(&self) -> Option<ShapeKind> {
-        self.selected().map(|shape| shape.kind).or(self.tool)
+        self.editing_text()
+            .map(|shape| shape.kind)
+            .or_else(|| self.selected().map(|shape| shape.kind))
+            .or(self.tool)
     }
 
     /// The slider's write path: apply `v` to the selected shape (one
     /// merged history entry per drag — a whole drag undoes as one
     /// step) or to the tool preset when nothing is selected.
     pub(crate) fn apply_size(&mut self, v: f32) {
+        if self.editing_text().is_some() {
+            self.set_size_of(ShapeKind::Text, v);
+        }
+        if let Some(shape) = self.editing_text_mut() {
+            let spec = super::size_spec(ShapeKind::Text);
+            shape.width = v.clamp(spec.min, spec.max);
+            return;
+        }
         let Some(ix) = self.selected_index() else {
             self.set_tool_size(v);
             return;
@@ -229,7 +243,7 @@ impl Annotations {
 /// Whether a point lands on a selectable shape. Every kind's region is
 /// its visible stroke or body; see [`line::geometry`] for the shared
 /// visual outline.
-fn shape_hit(shape: &Shape, p: Point<Pixels>) -> bool {
+pub(super) fn shape_hit(shape: &Shape, p: Point<Pixels>) -> bool {
     let (x, y) = (f32::from(p.x), f32::from(p.y));
     match shape.kind {
         // stroke band: any of the four edge rectangles, inflated by the

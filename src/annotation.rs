@@ -243,6 +243,7 @@ pub(crate) struct Annotations {
     /// Index into `shapes` of the currently selected annotation, if any.
     /// Editing actions (wheel size stepping, later drags) target it.
     selected: Option<usize>,
+    text_original: Option<(usize, Shape)>,
     /// A slider size-drag is in flight: consecutive `apply_size` calls
     /// merge into one history entry (see `apply_size`).
     size_drag_active: bool,
@@ -276,6 +277,7 @@ impl Default for Annotations {
             draft_generation: 0,
             pressed: false,
             selected: None,
+            text_original: None,
             size_drag_active: false,
         }
     }
@@ -296,6 +298,9 @@ impl Annotations {
         self.tool.is_some()
     }
     pub(crate) fn color(&self) -> (u32, &'static str) {
+        if let Some(shape) = self.editing_text() {
+            return (shape.color, "Text");
+        }
         let ix = if self.tool == Some(ShapeKind::Highlighter) {
             self.highlighter_color_ix
         } else {
@@ -351,7 +356,8 @@ impl Annotations {
         self.tool.map_or(3., |t| self.size_of(t))
     }
     pub(crate) fn text_size(&self) -> f32 {
-        self.preset.text
+        self.editing_text()
+            .map_or(self.preset.text, |shape| shape.width)
     }
     /// The active tool's current size — whatever that means for the
     /// tool; one continuous value the slider shows.
@@ -368,6 +374,19 @@ impl Annotations {
     }
 
     pub(crate) fn preview_text(&mut self, bounds: Bounds<Pixels>, value: String) {
+        if let Some((ix, _)) = &self.text_original {
+            if let Some(shape) = self.shapes.get_mut(*ix) {
+                shape.bounds = bounds;
+                shape.text = Some(value);
+            }
+            return;
+        }
+        let color = self.color().0;
+        let width = self.text_size();
+        self.preview_text_with(bounds, value, color, width);
+    }
+
+    fn preview_text_with(&mut self, bounds: Bounds<Pixels>, value: String, color: u32, width: f32) {
         if !self.has_text_preview() {
             self.draft_generation += 1;
         }
@@ -378,8 +397,8 @@ impl Annotations {
                 number: None,
                 text: Some(value),
                 bounds,
-                color: self.color().0,
-                width: self.text_size(),
+                color,
+                width,
                 points: Vec::new(),
             },
         });
@@ -389,15 +408,7 @@ impl Annotations {
             .as_ref()
             .is_some_and(|d| d.shape.kind == ShapeKind::Text)
     }
-    pub(crate) fn clear_text_preview(&mut self) {
-        if self
-            .draft
-            .as_ref()
-            .is_some_and(|d| d.shape.kind == ShapeKind::Text)
-        {
-            self.draft = None;
-        }
-    }
+    #[cfg(test)]
     pub(crate) fn add_text(&mut self, bounds: Bounds<Pixels>, value: String) {
         if value.trim().is_empty() {
             return;
@@ -439,6 +450,13 @@ impl Annotations {
 
     pub(crate) fn set_color(&mut self, ix: usize) {
         if ix >= crate::ui::theme::c().annotation_colors.len() {
+            return;
+        }
+        if self.editing_text().is_some() {
+            self.color_ix = ix;
+        }
+        if let Some(shape) = self.editing_text_mut() {
+            shape.color = crate::ui::theme::c().annotation_colors[ix];
             return;
         }
         if let Some(selected_ix) = self.selected_index() {
@@ -505,6 +523,7 @@ impl Annotations {
 
     pub(crate) fn reset(&mut self) {
         self.shapes.clear();
+        self.text_original = None;
         self.history.clear();
         self.redo.clear();
         self.draft = None;
@@ -770,6 +789,114 @@ impl Annotations {
             .chain(self.draft.as_ref().map(|draft| &draft.shape))
     }
 
+    /// The live replacement stays at its original layer index, so raster caches,
+    /// exports and later erasers all see the same image while typing.
+    pub(crate) fn begin_text_edit(&mut self, ix: usize) -> bool {
+        if self.text_original.is_some() {
+            return false;
+        }
+        let Some(shape) = self.shapes.get(ix).filter(|s| s.kind == ShapeKind::Text) else {
+            return false;
+        };
+        self.text_original = Some((ix, shape.clone()));
+        self.end_size_drag();
+        self.selected = Some(ix);
+        true
+    }
+
+    pub(crate) fn editing_text(&self) -> Option<&Shape> {
+        if let Some((ix, _)) = &self.text_original {
+            return self.shapes.get(*ix);
+        }
+        self.draft
+            .as_ref()
+            .map(|d| &d.shape)
+            .filter(|s| s.kind == ShapeKind::Text)
+    }
+
+    fn editing_text_mut(&mut self) -> Option<&mut Shape> {
+        if let Some((ix, _)) = &self.text_original {
+            return self.shapes.get_mut(*ix);
+        }
+        self.draft
+            .as_mut()
+            .map(|d| &mut d.shape)
+            .filter(|s| s.kind == ShapeKind::Text)
+    }
+
+    pub(crate) fn finish_text_edit(&mut self, commit: bool) {
+        if let Some((ix, original)) = self.text_original.take() {
+            let Some(slot) = self.shapes.get_mut(ix) else {
+                return;
+            };
+            let edited = std::mem::replace(slot, original);
+            if commit {
+                if edited.text.as_deref().is_none_or(|s| s.trim().is_empty()) {
+                    self.delete_shape(ix);
+                } else {
+                    self.update_text(
+                        ix,
+                        edited.bounds,
+                        edited.text.unwrap_or_default(),
+                        edited.width,
+                        edited.color,
+                    );
+                }
+            }
+        } else if self.has_text_preview() {
+            let draft = self.draft.take();
+            if let Some(draft) = draft.filter(|d| {
+                commit
+                    && d.shape
+                        .text
+                        .as_deref()
+                        .is_some_and(|s| !s.trim().is_empty())
+            }) {
+                self.record_add(draft.shape);
+            }
+        }
+    }
+
+    pub(crate) fn shape(&self, ix: usize) -> Option<&Shape> {
+        self.shapes.get(ix)
+    }
+
+    pub(crate) fn shape_kind(&self, ix: usize) -> Option<ShapeKind> {
+        self.shapes.get(ix).map(|s| s.kind)
+    }
+
+    pub(crate) fn update_text(
+        &mut self,
+        ix: usize,
+        bounds: Bounds<Pixels>,
+        text: String,
+        font_size: f32,
+        color: u32,
+    ) {
+        if let Some(shape) = self.shapes.get_mut(ix) {
+            let before = shape.clone();
+            shape.text = Some(text);
+            shape.bounds = bounds;
+            shape.width = font_size;
+            shape.color = color;
+            let after = shape.clone();
+            if after != before {
+                self.history.push(HistoryEntry::Edit { ix, before, after });
+                self.redo.clear();
+            }
+            self.selected = Some(ix);
+        }
+    }
+
+    pub(crate) fn delete_shape(&mut self, ix: usize) {
+        if ix < self.shapes.len() {
+            let shape = self.shapes.remove(ix);
+            self.history.push(HistoryEntry::Remove { ix, shape });
+            self.redo.clear();
+            self.selected = None;
+        }
+    }
+
     pub(crate) fn committed(&self) -> &[Shape] {
         &self.shapes
     }
@@ -959,6 +1086,53 @@ mod tests {
         a.begin(point(px(10.), px(10.)), selection());
         a.drag_to(point(px(30.), px(40.)), selection(), false);
         a.end();
+    }
+
+    #[test]
+    fn text_edit_transaction_preserves_layers_cancel_and_history() {
+        let mut a = super::Annotations::default();
+        a.toggle(super::ShapeKind::Text);
+        let bounds = gpui_kit::Bounds::new(point(px(10.), px(10.)), size(px(200.), px(80.)));
+        a.add_text(bounds, "original".into());
+        let original = a.committed()[0].clone();
+        a.add_text(bounds, "later layer".into());
+        let later = a.committed()[1].clone();
+        let history_len = a.history.len();
+        assert!(a.begin_text_edit(0));
+        a.preview_text(bounds, "replacement".into());
+        a.apply_size(40.);
+        a.set_color(2);
+        assert_eq!(
+            a.visible().next().unwrap().text.as_deref(),
+            Some("replacement")
+        );
+        assert_eq!(a.committed()[1], later);
+        assert_eq!(a.history.len(), history_len);
+        a.finish_text_edit(false);
+        assert_eq!(a.committed()[0], original);
+        assert_eq!(a.history.len(), history_len);
+        assert!(a.begin_text_edit(0));
+        a.preview_text(bounds, "committed".into());
+        a.apply_size(36.);
+        a.set_color(3);
+        let edited = a.committed()[0].clone();
+        a.finish_text_edit(true);
+        assert_eq!(a.history.len(), history_len + 1);
+        a.undo();
+        assert_eq!(a.committed()[0], original);
+        // A canceled edit must not consume the redo branch.
+        assert!(a.begin_text_edit(0));
+        a.preview_text(bounds, "canceled".into());
+        a.finish_text_edit(false);
+        a.redo();
+        assert_eq!(a.committed()[0], edited);
+        assert_eq!(a.committed()[1], later);
+        assert!(a.begin_text_edit(0));
+        a.preview_text(bounds, "  ".into());
+        a.finish_text_edit(true);
+        assert_eq!(a.committed(), std::slice::from_ref(&later));
+        a.undo();
+        assert_eq!(a.committed(), &[edited, later]);
     }
 
     #[test]
@@ -1355,6 +1529,7 @@ mod tests {
         a.toggle(super::ShapeKind::Rectangle);
         rectangle(&mut a);
         let first_color = a.visible().next().unwrap().color;
+        a.deselect(); // Set the next stroke preset, not the selected rectangle.
         a.set_color(1);
         a.set_tool_size(5.);
         rectangle(&mut a);

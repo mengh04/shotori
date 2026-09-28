@@ -9,6 +9,15 @@ use crate::{model::selection::Selection, platform::capture::Capture};
 /// being a click (select) and turns into a draw stroke instead.
 const CLICK_SLOP: f32 = 4.;
 
+// One inset for placement, editing and movement; the outline is painted inside
+// the text bounds, so no separate border outset may consume this breathing room.
+const TEXT_INSET: f32 = 2.;
+fn text_area(selection: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+    let inset = point(px(TEXT_INSET), px(TEXT_INSET));
+    (selection.size.width > px(TEXT_INSET * 2.) && selection.size.height > px(TEXT_INSET * 2.))
+        .then(|| Bounds::from_corners(selection.origin + inset, selection.bottom_right() - inset))
+}
+
 struct Screen {
     capture: Arc<Capture>,
     logical_size: Size<Pixels>,
@@ -360,6 +369,10 @@ impl ScreenshotSession {
         local + self.screen(name).bounds().origin
     }
 
+    pub(crate) fn screen_origin(&self, name: &str) -> Point<Pixels> {
+        self.screen(name).bounds().origin
+    }
+
     /// The pointer's last known global position — see the field docs.
     pub(crate) fn pointer_global(&self) -> Option<Point<Pixels>> {
         self.pointer_global
@@ -596,7 +609,7 @@ impl ScreenshotSession {
         &mut self,
         edit: impl FnOnce(&mut crate::annotation::Annotations),
     ) {
-        if self.annotations.has_text_preview() {
+        if self.annotations.editing_text().is_some() {
             edit(&mut self.annotations);
         } else {
             self.edit_annotations(edit);
@@ -606,11 +619,25 @@ impl ScreenshotSession {
     pub(crate) fn preview_text(&mut self, bounds: Bounds<Pixels>, value: String) {
         self.annotations.preview_text(bounds, value);
     }
-    pub(crate) fn clear_text_preview(&mut self) {
-        self.annotations.clear_text_preview();
+    pub(crate) fn begin_text_edit(&mut self, ix: usize) -> bool {
+        if self.blocked || !self.selection.is_selected() || !self.annotations.begin_text_edit(ix) {
+            return false;
+        }
+        self.blocked = true;
+        true
     }
 
-    pub(crate) fn text_bounds(&self, output: &str, local: Point<Pixels>) -> Option<Bounds<Pixels>> {
+    pub(crate) fn finish_text_edit(&mut self, commit: bool) {
+        self.annotations.finish_text_edit(commit);
+        self.blocked = false;
+    }
+
+    pub(crate) fn text_bounds(
+        &self,
+        output: &str,
+        local: Point<Pixels>,
+        font_size: f32,
+    ) -> Option<Bounds<Pixels>> {
         if self.blocked || !self.selection.is_selected() {
             return None;
         }
@@ -619,8 +646,14 @@ impl ScreenshotSession {
         if !bounds.contains(&origin) {
             return None;
         }
-        let available = Bounds::from_corners(origin, bounds.bottom_right());
-        (available.size.width >= px(16.) && available.size.height >= px(16.)).then_some(available)
+        let area = text_area(bounds)?;
+        let origin = point(origin.x.max(area.left()), origin.y.max(area.top()));
+        let available = Bounds::from_corners(origin, area.bottom_right());
+        (origin.x <= area.right()
+            && origin.y <= area.bottom()
+            && available.size.width >= px(16.)
+            && available.size.height >= px(font_size * 1.35))
+        .then_some(available)
     }
 
     pub(crate) fn pointer_down(&mut self, name: &str, local: Point<Pixels>) {
@@ -687,8 +720,12 @@ impl ScreenshotSession {
                 // for the selected shape, and catching one must not
                 // fall through to selecting/drawing on the body
                 if let Some(drag) = &self.handle_drag {
+                    let clamped_p = point(
+                        p.x.clamp(selection.left(), selection.right()),
+                        p.y.clamp(selection.top(), selection.bottom()),
+                    );
                     self.annotations
-                        .place_handle(drag.ix, drag.anchor, &drag.before, p);
+                        .place_handle(drag.ix, drag.anchor, &drag.before, clamped_p);
                     return true;
                 }
                 if let Some((ix, press)) = self.pending_click {
@@ -705,8 +742,36 @@ impl ScreenshotSession {
                     }
                 }
                 if let Some(drag) = &self.moving {
+                    let selection = if drag.before.kind == crate::annotation::ShapeKind::Text {
+                        text_area(selection).unwrap_or(selection)
+                    } else {
+                        selection
+                    };
+                    let b = drag.before.bounds;
+                    let requested_delta = p - drag.press;
+                    let (min_dx, max_dx) = if b.size.width <= selection.size.width {
+                        (
+                            f32::from(selection.left() - b.left()),
+                            f32::from(selection.right() - b.right()),
+                        )
+                    } else {
+                        let d = f32::from(selection.left() - b.left());
+                        (d, d)
+                    };
+                    let (min_dy, max_dy) = if b.size.height <= selection.size.height {
+                        (
+                            f32::from(selection.top() - b.top()),
+                            f32::from(selection.bottom() - b.bottom()),
+                        )
+                    } else {
+                        let d = f32::from(selection.top() - b.top());
+                        (d, d)
+                    };
+                    let dx = f32::from(requested_delta.x).clamp(min_dx, max_dx);
+                    let dy = f32::from(requested_delta.y).clamp(min_dy, max_dy);
+                    let clamped_delta = point(px(dx), px(dy));
                     self.annotations
-                        .place_shape(drag.ix, &drag.before, p - drag.press);
+                        .place_shape(drag.ix, &drag.before, clamped_delta);
                     return true;
                 }
                 if self.annotations.enabled() {
@@ -1267,7 +1332,10 @@ mod tests {
         session.update(cx, |s, cx| {
             s.select_all();
             s.edit_annotations(|a| a.toggle(ShapeKind::Blur));
-            s.pointer_down("left", point(px(0.), px(0.)));
+            // Exercise raster jobs directly: pressing on an existing blur
+            // now selects/moves it instead of starting another stroke.
+            let selection = s.selection.bounds().unwrap();
+            s.edit_annotations(|a| a.begin(point(px(0.), px(0.)), selection));
             s.pointer_move("left", point(px(580.), px(580.)), false);
             s.filtered_preview("left").unwrap();
             s.pointer_move("left", point(px(600.), px(600.)), false);
@@ -1282,7 +1350,10 @@ mod tests {
             // the committed blur auto-selected (select-on-place); this
             // second gesture must DRAW again, not move it
             s.edit_annotations(|a| a.deselect());
-            s.pointer_down("left", point(px(0.), px(0.)));
+            // Exercise raster jobs directly: pressing on an existing blur
+            // now selects/moves it instead of starting another stroke.
+            let selection = s.selection.bounds().unwrap();
+            s.edit_annotations(|a| a.begin(point(px(0.), px(0.)), selection));
             s.pointer_move("left", point(px(580.), px(580.)), false);
             s.filtered_preview("left").unwrap();
             s.pointer_move("left", point(px(600.), px(600.)), false);
@@ -1292,7 +1363,10 @@ mod tests {
             // first commit is still live — drop it so this is a DRAW
             s.edit_annotations(|a| a.deselect());
             // Same tool and same start position, but a distinct gesture.
-            s.pointer_down("left", point(px(0.), px(0.)));
+            // Exercise raster jobs directly: pressing on an existing blur
+            // now selects/moves it instead of starting another stroke.
+            let selection = s.selection.bounds().unwrap();
+            s.edit_annotations(|a| a.begin(point(px(0.), px(0.)), selection));
             s.pointer_move("left", point(px(550.), px(550.)), false);
             assert!(s.request_filtered_preview("left", cx).is_none());
         });
@@ -1324,7 +1398,10 @@ mod tests {
         session.update(cx, |s, cx| {
             s.select_all();
             s.edit_annotations(|a| a.toggle(ShapeKind::Blur));
-            s.pointer_down("left", point(px(0.), px(0.)));
+            // Exercise raster jobs directly: pressing on an existing blur
+            // now selects/moves it instead of starting another stroke.
+            let selection = s.selection.bounds().unwrap();
+            s.edit_annotations(|a| a.begin(point(px(0.), px(0.)), selection));
             s.pointer_move("left", point(px(512.), px(512.)), false);
             assert!(s.request_filtered_preview("left", cx).is_none());
             assert!(s.preview_busy);
@@ -1352,7 +1429,10 @@ mod tests {
             // the first blur auto-selected on commit (select-on-place);
             // this second gesture must DRAW again, not move it
             s.edit_annotations(|a| a.deselect());
-            s.pointer_down("left", point(px(0.), px(0.)));
+            // Exercise raster jobs directly: pressing on an existing blur
+            // now selects/moves it instead of starting another stroke.
+            let selection = s.selection.bounds().unwrap();
+            s.edit_annotations(|a| a.begin(point(px(0.), px(0.)), selection));
             s.pointer_move("left", point(px(512.), px(512.)), false);
             s.request_filtered_preview("left", cx);
             assert!(s.preview_busy);
@@ -1365,7 +1445,10 @@ mod tests {
             assert!(!s.preview_busy);
             assert!(s.request_filtered_preview("left", cx).is_none());
             assert!(s.filter_preview.borrow().is_none());
-            s.pointer_down("left", point(px(0.), px(0.)));
+            // Exercise raster jobs directly: pressing on an existing blur
+            // now selects/moves it instead of starting another stroke.
+            let selection = s.selection.bounds().unwrap();
+            s.edit_annotations(|a| a.begin(point(px(0.), px(0.)), selection));
             s.pointer_move("left", point(px(512.), px(512.)), false);
             s.request_filtered_preview("left", cx);
             assert!(s.preview_busy);
@@ -2046,7 +2129,7 @@ mod tests {
         let mut s = session();
         s.begin("left", point(px(80.), px(20.)));
         s.end("right", point(px(40.), px(90.)));
-        let bounds = s.text_bounds("left", point(px(85.), px(25.))).unwrap();
+        let bounds = s.text_bounds("left", point(px(85.), px(25.)), 24.).unwrap();
         s.edit_annotations(|a| {
             a.set_tool_size(16.);
             a.set_color(4);
@@ -2091,7 +2174,7 @@ mod tests {
     }
 
     #[test]
-    fn click_selects_shapes_and_drag_through_still_draws() {
+    fn click_selects_shapes_and_drag_moves_the_hit_shape() {
         use crate::annotation::ShapeKind;
         let mut s = session();
         s.select_all();
@@ -2113,22 +2196,24 @@ mod tests {
         s.pointer_up("left", point(px(300.), px(300.)), false);
         assert!(s.annotations().selected().is_none());
 
-        // press ON the (deselected) shape and DRAG: a draw stroke starts
-        // at the press point (draw-through) — and the freshly drawn
-        // mark selects itself on commit (select-on-place)
+        // Dragging a hit shape selects and moves it even if it was deselected.
+        let before = s.annotations().committed()[0].clone();
         s.pointer_down("left", point(px(101.), px(5.)));
         s.pointer_move("left", point(px(160.), px(60.)), false);
-        assert!(s.annotations().draft_shape().is_some());
+        assert!(s.annotations().draft_shape().is_none());
         s.pointer_up("left", point(px(160.), px(60.)), false);
-        assert!(s.annotations().selected().is_some()); // the new mark
-        assert_eq!(s.annotations().committed().len(), 2);
+        assert!(s.annotations().selected().is_some());
+        assert_eq!(s.annotations().committed().len(), 1);
+        assert_ne!(s.annotations().committed()[0].bounds, before.bounds);
+        s.edit_annotations(|a| a.undo());
+        assert_eq!(s.annotations().committed()[0], before);
 
         // a press that only wiggles within the slop still click-selects
         s.pointer_down("left", point(px(101.), px(5.)));
         s.pointer_move("left", point(px(103.), px(7.)), false); // < CLICK_SLOP
         s.pointer_up("left", point(px(103.), px(7.)), false);
         assert!(s.annotations().selected().is_some());
-        assert_eq!(s.annotations().committed().len(), 2);
+        assert_eq!(s.annotations().committed().len(), 1);
     }
 
     #[test]
@@ -2244,7 +2329,7 @@ mod tests {
         let after = s.annotations().selected().unwrap().bounds;
         assert_eq!(
             after,
-            Bounds::new(point(px(-20.), px(-10.)), size(px(20.), px(20.)))
+            Bounds::from_corners(point(px(-20.), sel.top()), point(px(0.), px(10.)))
         );
 
         // Escape mid-handle-drag restores the press-time snapshot
@@ -2658,5 +2743,68 @@ mod tests {
         let moved_pos = s.annotations().visible().next().unwrap().bounds.origin;
         assert_ne!(moved_pos, orig_pos);
         assert_eq!(s.annotations().visible().count(), 1);
+    }
+
+    #[test]
+    fn moving_text_keeps_the_same_inset_on_all_four_edges() {
+        let mut s = session();
+        s.select_all();
+        let selection = s.selection.bounds().unwrap();
+        let bounds = Bounds::new(
+            selection.origin + point(px(30.), px(30.)),
+            size(px(40.), px(35.)),
+        );
+        s.edit_annotations(|a| {
+            a.toggle(crate::annotation::ShapeKind::Text);
+            a.add_text(bounds, "text".into());
+        });
+        let origin = s.screen_origin("left");
+        for target in [
+            selection.origin - point(px(100.), px(100.)),
+            selection.bottom_right() + point(px(100.), px(100.)),
+        ] {
+            let before = s.annotations().committed()[0].bounds;
+            s.pointer_down("left", before.center() - origin);
+            s.pointer_move("left", target - origin, false);
+            s.pointer_up("left", target - origin, false);
+            let after = s.annotations().committed()[0].bounds;
+            assert_eq!(after.size, before.size);
+            assert!(after.left() >= selection.left() + px(2.));
+            assert!(after.top() >= selection.top() + px(2.));
+            assert!(after.right() <= selection.right() - px(2.));
+            assert!(after.bottom() <= selection.bottom() - px(2.));
+            if target.x < selection.left() {
+                assert_eq!(after.origin, selection.origin + point(px(2.), px(2.)));
+            } else {
+                assert_eq!(
+                    after.bottom_right(),
+                    selection.bottom_right() - point(px(2.), px(2.))
+                );
+            }
+            s.edit_annotations(|a| a.undo());
+            assert_eq!(s.annotations().committed()[0].bounds, before);
+        }
+    }
+
+    #[test]
+    fn text_bounds_stop_at_selection_edges_and_reject_insufficient_space() {
+        let mut s = session();
+        s.begin("left", point(px(10.), px(10.)));
+        s.end("left", point(px(200.), px(200.)));
+        let bounds = s.text_bounds("left", point(px(50.), px(50.)), 24.).unwrap();
+        let selection = s.selection().bounds().unwrap();
+        assert_eq!(
+            bounds.bottom_right(),
+            selection.bottom_right() - point(px(2.), px(2.))
+        );
+        let local_origin = selection.origin - s.screen_origin("left");
+        let at_corner = s.text_bounds("left", local_origin, 24.).unwrap();
+        assert_eq!(at_corner.origin, selection.origin + point(px(2.), px(2.)));
+        let half_line =
+            selection.bottom_right() - s.screen_origin("left") - point(px(50.), px(20.));
+        assert!(s.text_bounds("left", half_line, 24.).is_none());
+        assert!(s.text_bounds("left", half_line, 12.).is_some());
+        let near_edge = selection.bottom_right() - s.screen_origin("left") - point(px(3.), px(3.));
+        assert!(s.text_bounds("left", near_edge, 24.).is_none());
     }
 }

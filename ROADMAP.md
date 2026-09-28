@@ -660,6 +660,37 @@ the UI runs unmodified on both.
   toplevel is enumerable (no tiled-window blind spot), rect converted
   physical → hybrid by the containing monitor's scale.
 
+### Existing text must share the annotation raster path (2026-09-29)
+
+The input widget draws caret, selection and IME marks; annotation rasterization
+owns glyphs. Hiding the original only from `visible()` and removing the draft
+left committed raster caches holding stale text. Re-edit now replaces the shape
+at its original layer index during a model-owned transaction. Cancel restores
+the snapshot; commit records one Edit (or Remove for empty text), including style
+changes. This also preserves ordering relative to later erasers and filters.
+
+Editing style comes from the active text, not toolbar presets. The blocked
+session allows text settings but still rejects document gestures. Occupied text
+bounds remain the hit-test region; reopening uses the available selection area
+so short text can grow and wrap. Keep the editor outline inside that area:
+adding an outset or forcing a minimum width after clipping leaks beyond the
+selection, especially at fractional scales. Tests exercise the real editor as
+well as the standalone border painter and compare live/committed crop pixels.
+
+### Text limits must constrain edits, not just painting (2026-09-29)
+
+Clamping `TextInput::height()` only clipped the widget while Cosmic kept accepting
+rows below the selection. Validate the full shaped height before accepting text,
+newlines, paste, IME preedit/commit, history restoration or a font-size change.
+An overflowing operation restores the previous editor without consuming history;
+a rejected IME commit restores the pre-composition text, not raw phonetic input.
+Reject a whole paste rather than silently truncating it. The editor and model
+must both retain the accepted font size when a slider request cannot fit.
+
+Placement, re-edit and body movement share the same 2px inset selection area.
+An empty editor needs room for a whole line at the current font size. A layout
+clamp is still a defensive painting boundary, never proof that content fits.
+
 ### Annotation previews: caching, thresholds, background jobs (2026-09-27)
 
 - **The composite cache**: filter/text/eraser previews retain the frozen
@@ -807,8 +838,7 @@ overlay's main thread.
   live display-layout changes for pins.
 - **Annotation follow-ups** (condensed): endpoint/vertex editing,
   alternate arrow styles and leader arrows, brush-mode mosaic, region
-  editing, smart erase (needs its own feasibility review), existing-text
-  editing, manual text-box resize, font selection, bold/italic,
+  editing, smart erase (needs its own feasibility review), manual text-box resize, font selection, bold/italic,
   rotation, fill, dashed/dotted line styles, sectors/arcs,
   select/move/resize existing annotations.
 - **Deferred at the user's request** (2026-09-27): spotlight, watermark,
