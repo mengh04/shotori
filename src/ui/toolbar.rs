@@ -107,17 +107,21 @@ pub(crate) fn selection_toolbar(
     focus: FocusHandle,
     size_slider: Option<SizeSlider>,
 ) -> impl IntoElement {
-    let selected_color = annotations.color().0;
+    let edit_kind = annotations.edit_kind();
+    let selected_color = annotations
+        .selected()
+        .map(|s| s.color)
+        .unwrap_or_else(|| annotations.color().0);
     let filter_tool = matches!(
-        annotations.tool(),
+        edit_kind,
         Some(crate::annotation::ShapeKind::Mosaic | crate::annotation::ShapeKind::Blur)
     );
     let eraser_tool = matches!(
-        annotations.tool(),
+        edit_kind,
         Some(crate::annotation::ShapeKind::Eraser | crate::annotation::ShapeKind::EraserRect)
     );
-    let number_tool = annotations.tool() == Some(crate::annotation::ShapeKind::Number);
-    let text_tool = annotations.tool() == Some(crate::annotation::ShapeKind::Text);
+    let number_tool = edit_kind == Some(crate::annotation::ShapeKind::Number);
+    let text_tool = edit_kind == Some(crate::annotation::ShapeKind::Text);
     let settings_focus = focus.clone();
 
     div()
@@ -325,7 +329,7 @@ pub(crate) fn selection_toolbar(
                 ))
                 .child(grip("tb-grip-right", output, session.clone())),
         )
-        .children(annotations.enabled().then(|| {
+        .children(edit_kind.is_some().then(|| {
             // Settings rows hug their content like every other row — no
             // fixed widths. The filter/eraser rows once carried `.w()`
             // tuned for the old S/M/L preset buttons; when the slider
@@ -359,7 +363,7 @@ pub(crate) fn selection_toolbar(
                                 });
                             },
                         )
-                        .selected(annotations.tool() == Some(kind))
+                        .selected(edit_kind == Some(kind))
                         .child(
                             if kind == crate::annotation::ShapeKind::Mosaic {
                                 own_icon("icons/mosaic.svg")
@@ -410,7 +414,7 @@ pub(crate) fn selection_toolbar(
                                 });
                             },
                         )
-                        .selected(annotations.tool() == Some(kind))
+                        .selected(edit_kind == Some(kind))
                         .child(
                             svg()
                                 .path(icon.path())
@@ -419,7 +423,7 @@ pub(crate) fn selection_toolbar(
                         ),
                     );
                 }
-                if annotations.tool() == Some(crate::annotation::ShapeKind::EraserRect) {
+                if edit_kind == Some(crate::annotation::ShapeKind::EraserRect) {
                     return options;
                 }
                 options = options.child(separator());
