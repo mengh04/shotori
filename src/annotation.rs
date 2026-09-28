@@ -139,26 +139,50 @@ impl Shape {
     }
 
     /// Inward strokes keep both preview and export within the rectangle.
-    /// Bounds for the selection chrome outline. Line-like shapes carry
-    /// their geometry in `points` (their `bounds` stays at the zero-size
-    /// placeholder from `begin`), so derive it from there. Inflated by
-    /// half the stroke plus a margin so the outline clears the mark.
-    pub(crate) fn chrome_bounds(&self) -> Bounds<Pixels> {
-        let base =
-            if matches!(self.kind, ShapeKind::Line | ShapeKind::Arrow) && self.points.len() >= 2 {
-                let mut min = self.points[0];
-                let mut max = self.points[0];
-                for p in &self.points[1..] {
-                    min.x = min.x.min(p.x);
-                    min.y = min.y.min(p.y);
-                    max.x = max.x.max(p.x);
-                    max.y = max.y.max(p.y);
+    /// Selection highlight: the shape's own visual geometry as fill
+    /// paths — the chrome paints exactly what the eye sees, so a
+    /// diagonal line gets its capsule, an arrow its head, an ellipse
+    /// its ring; never a bounding rectangle.
+    pub(crate) fn hilite_paths(&self, offset: Point<Pixels>) -> Vec<Path<Pixels>> {
+        match self.kind {
+            ShapeKind::Line
+            | ShapeKind::Arrow
+            | ShapeKind::Polyline
+            | ShapeKind::Pencil
+            | ShapeKind::Highlighter => {
+                line::geometry(&self.points, self.width, self.kind == ShapeKind::Arrow)
+                    .into_iter()
+                    .filter_map(|poly| {
+                        let mut builder = PathBuilder::fill();
+                        builder.move_to(poly[0] + offset);
+                        for p in &poly[1..] {
+                            builder.line_to(*p + offset);
+                        }
+                        builder.close();
+                        builder.build().ok()
+                    })
+                    .collect()
+            }
+            ShapeKind::Rectangle => {
+                let mut builder = PathBuilder::fill();
+                for stroke in self.strokes() {
+                    let corners = [
+                        point(stroke.left(), stroke.top()),
+                        point(stroke.right(), stroke.top()),
+                        point(stroke.right(), stroke.bottom()),
+                        point(stroke.left(), stroke.bottom()),
+                    ];
+                    builder.move_to(corners[0] + offset);
+                    for c in &corners[1..] {
+                        builder.line_to(*c + offset);
+                    }
+                    builder.close();
                 }
-                Bounds::new(min, size(max.x - min.x, max.y - min.y))
-            } else {
-                self.bounds
-            };
-        inflate(&base, px(self.width / 2. + 3.))
+                builder.build().ok().into_iter().collect()
+            }
+            ShapeKind::Ellipse => self.ellipse_path(offset).into_iter().collect(),
+            _ => Vec::new(),
+        }
     }
 
     pub(crate) fn strokes(&self) -> [Bounds<Pixels>; 4] {
@@ -204,9 +228,10 @@ enum HistoryEntry {
     },
 }
 
-/// Logical-pixel forgiveness for pointing at thin strokes — pure
-/// geometry hit bands would be unreachable for 1 px lines.
-const HIT_TOLERANCE: f32 = 8.;
+/// Pointing forgiveness for hairline geometry — the hit region is the
+/// visible stroke itself; this only covers the antialiased fringe so
+/// an edge-pointing click still lands.
+const HIT_TOLERANCE: f32 = 0.5;
 
 pub(crate) struct Annotations {
     tool: Option<ShapeKind>,
@@ -375,20 +400,25 @@ impl Annotations {
         };
     }
 
-    /// Hit-priority selection: the topmost committed shape under the
-    /// point wins (later shapes paint above earlier ones). Returns
-    /// whether a shape was selected — callers then skip starting a new
-    /// draft stroke.
-    pub(crate) fn select_at(&mut self, p: Point<Pixels>) -> bool {
-        let hit = self.shapes.iter().rposition(|s| shape_hit(s, p));
-        self.selected = hit;
-        hit.is_some()
+    /// Hit probe without side effects: the topmost shape index under
+    /// the point, if any.
+    pub(crate) fn hit_test(&self, p: Point<Pixels>) -> Option<usize> {
+        self.shapes.iter().rposition(|s| shape_hit(s, p))
     }
 
-    /// Whether a point sits on a selectable shape — the hover probe for
-    /// the pointer affordance (no state change).
-    pub(crate) fn hits_shape(&self, p: Point<Pixels>) -> bool {
-        self.shapes.iter().rev().any(|s| shape_hit(s, p))
+    /// Select a shape by index (the click-select path); no-op when the
+    /// index no longer exists.
+    pub(crate) fn select_index(&mut self, ix: usize) -> bool {
+        if self.shapes.get(ix).is_some() {
+            self.selected = Some(ix);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn deselect(&mut self) {
+        self.selected = None;
     }
 
     pub(crate) fn selected(&self) -> Option<&Shape> {
@@ -867,28 +897,30 @@ fn shape_hit(shape: &Shape, p: Point<Pixels>) -> bool {
             outer <= 1. && inner_clear
         }
         ShapeKind::Line | ShapeKind::Arrow => {
-            let (Some(a), Some(b)) = (shape.points.first(), shape.points.get(1)) else {
-                return false;
-            };
-            point_segment_distance(p, *a, *b) <= shape.width / 2. + HIT_TOLERANCE
+            // the exact visual geometry (capsule / arrowhead polygon):
+            // what you see is what you can click
+            line::geometry(&shape.points, shape.width, shape.kind == ShapeKind::Arrow)
+                .iter()
+                .any(|poly| point_in_polygon(p, poly))
         }
         _ => false,
     }
 }
 
-/// Euclidean point-to-segment distance with clamped projection.
-fn point_segment_distance(p: Point<Pixels>, a: Point<Pixels>, b: Point<Pixels>) -> f32 {
+/// Even-odd ray casting: is the point inside the polygon?
+fn point_in_polygon(p: Point<Pixels>, poly: &[Point<Pixels>]) -> bool {
     let (x, y) = (f32::from(p.x), f32::from(p.y));
-    let (ax, ay) = (f32::from(a.x), f32::from(a.y));
-    let (dx, dy) = (f32::from(b.x) - ax, f32::from(b.y) - ay);
-    let len2 = dx * dx + dy * dy;
-    let t = if len2 <= f32::EPSILON {
-        0.
-    } else {
-        (((x - ax) * dx + (y - ay) * dy) / len2).clamp(0., 1.)
-    };
-    let (cx, cy) = (ax + t * dx, ay + t * dy);
-    (x - cx).hypot(y - cy)
+    let mut inside = false;
+    let mut j = poly.len() - 1;
+    for i in 0..poly.len() {
+        let (xi, yi) = (f32::from(poly[i].x), f32::from(poly[i].y));
+        let (xj, yj) = (f32::from(poly[j].x), f32::from(poly[j].y));
+        if (yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
 }
 
 fn inflate(b: &Bounds<Pixels>, by: Pixels) -> Bounds<Pixels> {
@@ -978,6 +1010,11 @@ mod tests {
     fn selection() -> Bounds<gpui_kit::Pixels> {
         Bounds::new(point(px(-20.), px(0.)), size(px(100.), px(100.)))
     }
+    /// The click-select path: probe + select, as pointer_up drives it.
+    fn click(a: &mut Annotations, p: gpui_kit::Point<gpui_kit::Pixels>) -> bool {
+        let hit = a.hit_test(p);
+        hit.is_some_and(|ix| a.select_index(ix))
+    }
     fn rectangle(a: &mut Annotations) {
         a.begin(point(px(10.), px(10.)), selection());
         a.drag_to(point(px(30.), px(40.)), selection(), false);
@@ -1004,26 +1041,28 @@ mod tests {
         a.end();
 
         // rectangle: edge band hits, interior is click-transparent
-        assert!(a.select_at(point(px(0.), px(30.))));
+        assert!(click(&mut a, point(px(0.), px(30.))));
         assert_eq!(
             a.selected().map(|s| s.kind),
             Some(super::ShapeKind::Rectangle)
         );
-        assert!(!a.hits_shape(point(px(20.), px(30.))));
+        assert!(a.hit_test(point(px(20.), px(30.))).is_none());
 
-        // line: on-segment hits, far off-segment misses
-        assert!(a.select_at(point(px(70.), px(30.))));
+        // line: on-segment hits (drag_to snapped the end to (80,50) —
+        // 45° snapping; probe a point ON the actual segment), far
+        // off-segment misses
+        assert!(click(&mut a, point(px(56.), px(18.))));
         assert_eq!(a.selected().map(|s| s.kind), Some(super::ShapeKind::Line));
-        assert!(!a.hits_shape(point(px(75.), px(5.))));
+        assert!(a.hit_test(point(px(75.), px(5.))).is_none());
 
         // ellipse (center 64,80, rx 14, ry 15): ring band hits, the
         // empty middle does not
-        assert!(a.select_at(point(px(78.), px(80.))));
+        assert!(click(&mut a, point(px(78.), px(80.))));
         assert_eq!(
             a.selected().map(|s| s.kind),
             Some(super::ShapeKind::Ellipse)
         );
-        assert!(!a.hits_shape(point(px(64.), px(80.))));
+        assert!(a.hit_test(point(px(64.), px(80.))).is_none());
     }
 
     #[test]
@@ -1031,7 +1070,7 @@ mod tests {
         let mut a = Annotations::default();
         a.toggle(super::ShapeKind::Rectangle);
         rectangle(&mut a); // committed at width 3 (M)
-        assert!(a.select_at(point(px(10.), px(25.))));
+        assert!(click(&mut a, point(px(10.), px(25.))));
 
         assert!(a.step_size(true)); // 3 → 5 on the SHAPE
         assert_eq!(a.selected().map(|s| s.width), Some(5.));
@@ -1050,7 +1089,7 @@ mod tests {
         let mut a = Annotations::default();
         a.toggle(super::ShapeKind::Rectangle);
         rectangle(&mut a); // committed at width 3 (M)
-        assert!(a.select_at(point(px(10.), px(25.))));
+        assert!(click(&mut a, point(px(10.), px(25.))));
         assert!(a.step_size(true)); // 3 → 5
         assert_eq!(a.visible().next().unwrap().width, 5.);
 
@@ -1070,16 +1109,16 @@ mod tests {
         a.toggle(super::ShapeKind::Rectangle);
         rectangle(&mut a);
 
-        assert!(a.select_at(point(px(10.), px(25.))));
+        assert!(click(&mut a, point(px(10.), px(25.))));
         a.begin(point(px(50.), px(50.)), selection()); // new stroke wins
         assert_eq!(a.selected(), None);
         a.end();
 
-        assert!(a.select_at(point(px(10.), px(25.))));
+        assert!(click(&mut a, point(px(10.), px(25.))));
         a.toggle(super::ShapeKind::Arrow); // tool switch wins
         assert_eq!(a.selected(), None);
 
-        assert!(a.select_at(point(px(10.), px(25.))));
+        assert!(click(&mut a, point(px(10.), px(25.))));
         assert!(a.cancel()); // Escape consumed by the deselection
         assert!(a.enabled()); // tool still active…
         assert!(a.cancel()); // …the next Escape leaves it

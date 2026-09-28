@@ -787,9 +787,7 @@ impl Render for Overlay {
             .backdrop_bounds(&self.capture.output_name)
             .map(round_px);
         let hover = shared.hover_bounds(&self.capture.output_name).map(round_px);
-        let selected_chrome = shared
-            .selected_chrome(&self.capture.output_name)
-            .map(round_px);
+        let selected_shape = shared.selected_shape_local(&self.capture.output_name);
         let shapes = if shared.uses_raster_preview() {
             Vec::new()
         } else {
@@ -1140,21 +1138,18 @@ impl Render for Overlay {
                 .left_0()
                 .size_full(),
             )
-            // ①½ Annotation selection chrome: an independent layer that
-            // reads shape data directly — it must not depend on which
-            // render path (vector canvas vs rasterized preview) the
-            // marks happen to use.
+            // ①½ Annotation selection highlight: an independent layer
+            // painting the shape's OWN visual geometry (capsule, ring,
+            // arrowhead — never a bounding rectangle) with translucent
+            // chrome, identical over both preview paths.
             .child(
                 canvas(
                     |_, _, _| (),
                     move |viewport, (), window, _| {
-                        if let Some(mut chrome) = selected_chrome {
-                            chrome.origin += viewport.origin;
-                            window.paint_quad(outline(
-                                chrome,
-                                rgba(crate::ui::theme::c().accent),
-                                BorderStyle::default(),
-                            ));
+                        if let Some(shape) = &selected_shape {
+                            for path in shape.hilite_paths(viewport.origin) {
+                                window.paint_path(path, rgba(0x3b82f666));
+                            }
                         }
                     },
                 )
