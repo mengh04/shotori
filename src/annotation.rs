@@ -227,6 +227,9 @@ pub(crate) struct Annotations {
     /// Index into `shapes` of the currently selected annotation, if any.
     /// Editing actions (wheel size stepping, later drags) target it.
     selected: Option<usize>,
+    /// A slider size-drag is in flight: consecutive `apply_size` calls
+    /// merge into one history entry (see `apply_size`).
+    size_drag_active: bool,
 }
 
 impl Default for Annotations {
@@ -248,6 +251,7 @@ impl Default for Annotations {
             draft_generation: 0,
             pressed: false,
             selected: None,
+            size_drag_active: false,
         }
     }
 }
@@ -1094,6 +1098,32 @@ mod tests {
 
         // deleting with no selection is a no-op
         assert!(!a.delete_selected());
+    }
+
+    #[test]
+    fn slider_drag_edits_the_selection_as_one_history_entry() {
+        let mut a = Annotations::default();
+        a.toggle(super::ShapeKind::Rectangle);
+        rectangle(&mut a); // width 3, auto-selected on commit
+        assert!(a.selected().is_some());
+
+        // a whole drag: many Change values, one merged Edit
+        for v in [4., 6., 9., 12.] {
+            a.apply_size(v);
+        }
+        assert_eq!(a.selected().map(|s| s.width), Some(12.));
+        a.end_size_drag();
+        a.undo(); // ONE undo restores the pre-drag width
+        assert_eq!(a.committed()[0].width, 3.);
+
+        // without a selection, the same write targets the tool preset
+        let _ = a.cancel();
+        let _ = a.cancel(); // deselect, then leave the tool
+        a.toggle(super::ShapeKind::Rectangle);
+        a.apply_size(7.);
+        a.end_size_drag();
+        assert_eq!(a.width(), 7.);
+        assert_eq!(a.committed()[0].width, 3.); // shape untouched
     }
 
     #[test]

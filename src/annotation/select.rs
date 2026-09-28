@@ -67,6 +67,76 @@ impl Annotations {
         self.selected.filter(|ix| self.shapes.get(*ix).is_some())
     }
 
+    /// The size the wheel/slider edit right now: the selected shape's
+    /// when one is live, else the active tool's preset — one truth for
+    /// the slider's position, its readout and the write paths.
+    pub(crate) fn current_edit_size(&self) -> f32 {
+        match self.selected() {
+            Some(shape) if shape.kind == ShapeKind::Number => f32::from(shape.bounds.size.width),
+            Some(shape) => shape.width,
+            None => self.tool_size(),
+        }
+    }
+
+    /// The kind whose spec governs the current edit target (selected
+    /// shape first, else the active tool).
+    pub(crate) fn edit_kind(&self) -> Option<ShapeKind> {
+        self.selected().map(|shape| shape.kind).or(self.tool)
+    }
+
+    /// The slider's write path: apply `v` to the selected shape (one
+    /// merged history entry per drag — a whole drag undoes as one
+    /// step) or to the tool preset when nothing is selected.
+    pub(crate) fn apply_size(&mut self, v: f32) {
+        let Some(ix) = self.selected_index() else {
+            self.set_tool_size(v);
+            return;
+        };
+        let kind = self.shapes[ix].kind;
+        let spec = super::size_spec(kind);
+        let v = v.clamp(spec.min, spec.max);
+        let write = |shapes: &mut Vec<Shape>| {
+            if let Some(shape) = shapes.get_mut(ix) {
+                if kind == ShapeKind::Number {
+                    let b = shape.bounds;
+                    let c = point(b.left() + b.size.width / 2., b.top() + b.size.height / 2.);
+                    shape.bounds = Bounds::new(
+                        point(c.x - px(v / 2.), c.y - px(v / 2.)),
+                        size(px(v), px(v)),
+                    );
+                } else {
+                    shape.width = v;
+                }
+            }
+        };
+        // merge into the previous entry while the same drag continues
+        // (same shape); any interruption — selection change, undo, a
+        // new stroke — breaks the chain check and starts a fresh entry
+        let mergeable = self.size_drag_active
+            && matches!(self.history.last(), Some(HistoryEntry::Edit { ix: e, .. }) if *e == ix);
+        if mergeable {
+            write(&mut self.shapes);
+            if let Some(HistoryEntry::Edit { after, .. }) = self.history.last_mut() {
+                *after = self.shapes[ix].clone();
+            }
+        } else {
+            let before = self.shapes[ix].clone();
+            write(&mut self.shapes);
+            let after = self.shapes[ix].clone();
+            if after != before {
+                self.history.push(HistoryEntry::Edit { ix, before, after });
+                self.redo.clear();
+            }
+            self.size_drag_active = true;
+        }
+    }
+
+    /// Close the slider drag: the next `apply_size` starts a new
+    /// history entry. Called on `SliderEvent::Release`.
+    pub(crate) fn end_size_drag(&mut self) {
+        self.size_drag_active = false;
+    }
+
     /// Re-place shape `ix` as the press-time snapshot translated by
     /// `delta`. Snapshot re-derivation means move events cannot
     /// accumulate float error, and a zero delta restores the snapshot
