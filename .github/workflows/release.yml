@@ -33,7 +33,11 @@ jobs:
           strip target/release/shotori
           mkdir dist
           cp target/release/shotori LICENSE dist/
-          tar -C dist -czf "shotori-${GITHUB_REF_NAME}-x86_64.tar.gz" shotori LICENSE
+          mkdir -p dist/assets dist/tools
+          cp -r assets/app dist/assets/
+          cp assets/shotori.desktop dist/assets/
+          cp tools/install-desktop.sh tools/generate-icons.py dist/tools/
+          tar -C dist -czf "shotori-${GITHUB_REF_NAME}-x86_64.tar.gz" shotori LICENSE assets tools
 
       - uses: actions/upload-artifact@v4
         with:
@@ -101,6 +105,18 @@ jobs:
           sed -i "s/^pkgver=.*/pkgver=${GITHUB_REF_NAME#v}/" PKGBUILD
           sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
           sed -i "s/^sha256sums=.*/sha256sums=('${SHA}')/" PKGBUILD
+          # Preserve the existing binary/license packaging and install the
+          # desktop assets carried in the same flat release tarball.
+          if ! grep -q '^# shotori-desktop-assets$' PKGBUILD; then
+            cat >> PKGBUILD <<'EOF'
+          # shotori-desktop-assets
+          eval "$(declare -f package | sed '1s/package/package_without_desktop/')"
+          package() {
+              package_without_desktop
+              DESTDIR="$pkgdir" sh "$srcdir/tools/install-desktop.sh" /usr
+          }
+          EOF
+          fi
           # makepkg refuses to run as root (exit 10); printsrcinfo only
           # prints, but the guard fires regardless — run it as a mortal
           useradd -m builder

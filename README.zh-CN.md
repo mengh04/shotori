@@ -1,5 +1,9 @@
 # Shotori
 
+<p align="center">
+  <img src="assets/app/shotori-256.png" width="128" height="128" alt="Shotori">
+</p>
+
 [![Crates.io](https://img.shields.io/crates/v/shotori.svg)](https://crates.io/crates/shotori)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Linux-8892bf)
@@ -47,6 +51,16 @@ paru -S shotori              # AUR（预编译二进制）
 
 也可以从 [GitHub Releases](https://github.com/mengh04/shotori/releases)
 直接下载二进制。
+
+需要应用启动器入口和桌面图标时，先确保桌面环境的 PATH 中能找到 `shotori`，
+再在源码目录或解压后的发行包目录执行：
+
+```bash
+sh tools/install-desktop.sh   # 安装到 ~/.local/share，无需 root
+```
+
+打包者可用 `DESTDIR="$pkgdir" sh tools/install-desktop.sh /usr`。
+托盘和通知图标已内嵌，不依赖这一步安装；AUR 包会自动安装桌面资源。
 
 绑到键位上，比如 niri：
 
@@ -99,6 +113,8 @@ cargo test    # 单元测试，无需合成器
 CI 强制 `cargo fmt --all --check` 和
 `cargo clippy --all-targets -- -D warnings`，推送前请先本地跑一遍。
 
+- 应用图标：[SVG 和多尺寸 PNG/ICO 资源](assets/app/README.md)；修改后运行
+  `python3 tools/generate-icons.py` 重新生成（需要 `rsvg-convert`）
 - 模块结构：[`src/lib.rs`](src/lib.rs) 文件头
 - 决策与踩坑记录：[ROADMAP.md](ROADMAP.md)
 

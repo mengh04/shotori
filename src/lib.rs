@@ -41,6 +41,9 @@
 //! on the vendored set_layer_margin patch; can't ship on crates.io until
 //! upstream merges it).
 
+/// Matches the desktop file basename and the installed hicolor icon name.
+pub const APP_ID: &str = "shotori";
+
 pub mod actions;
 
 pub mod args;

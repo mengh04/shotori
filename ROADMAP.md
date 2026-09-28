@@ -398,6 +398,22 @@ so image and text offers share the framework; text offers
 `text/plain;charset=utf-8` with UTF8_STRING/STRING fallbacks for old
 xwayland apps, the Send handler writing on any offered-MIME hit.
 
+### Application icon identity and delivery (2026-09-29)
+
+`assets/app/shotori.svg` is the vector master; PNGs are rendered independently
+at each size rather than enlarged from a small bitmap. `shotori.desktop`, the
+hicolor icon name, GPUI window app IDs and the notification desktop-entry hint
+must all agree on `shotori`. Layer-shell namespaces remain separate: they are
+compositor rules, not desktop icon lookup keys.
+
+Tray pixels come from an embedded PNG. Notifications atomically cache a separate
+embedded app icon so cargo-installed binaries need no adjacent asset directory;
+never use the app logo as `image-path`, which is reserved for the screenshot
+preview. Desktop launchers still need installed hicolor/desktop files; the
+release archive includes the same installer and assets as the source tree.
+The AUR release hook preserves its existing package function and additionally
+stages these assets through the installer (DESTDIR prevents host cache updates).
+
 ### Notifications: the detached child (2026-09-25 → 2026-09-27)
 
 `shotori --notify <summary> <body> [image]`: the parent spawns it and

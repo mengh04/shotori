@@ -1,5 +1,9 @@
 # Shotori
 
+<p align="center">
+  <img src="assets/app/shotori-256.png" width="128" height="128" alt="Shotori">
+</p>
+
 [![Crates.io](https://img.shields.io/crates/v/shotori.svg)](https://crates.io/crates/shotori)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Linux-8892bf)
@@ -57,6 +61,17 @@ paru -S shotori              # AUR (prebuilt binary)
 Or grab a binary from
 [GitHub Releases](https://github.com/mengh04/shotori/releases).
 
+For a launcher entry and desktop icon, run the following from the source tree
+or an extracted release archive, after putting `shotori` on your desktop's PATH:
+
+```bash
+sh tools/install-desktop.sh   # installs to ~/.local/share; no root needed
+```
+
+Packagers can use `DESTDIR="$pkgdir" sh tools/install-desktop.sh /usr`.
+Tray and notification icons are embedded and work without this installation.
+AUR packages install the desktop resources automatically.
+
 Bind it to a key, e.g. in niri:
 
 ```kdl
@@ -109,6 +124,8 @@ cargo test    # unit tests, no compositor needed
 CI enforces `cargo fmt --all --check` and
 `cargo clippy --all-targets -- -D warnings` — run both before pushing.
 
+- App icon: [SVG and multi-size PNG/ICO assets](assets/app/README.md); regenerate with
+  `python3 tools/generate-icons.py` (requires `rsvg-convert`)
 - Module map: the header of [`src/lib.rs`](src/lib.rs)
 - Decisions & pitfall archive: [ROADMAP.md](ROADMAP.md)
 

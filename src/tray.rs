@@ -41,6 +41,7 @@ pub fn run() {
 }
 
 fn setup(cx: &mut App) -> gpui_tray::Result<()> {
+    cx.set_app_identity(crate::APP_ID, "Shotori");
     cx.on_action(take_screenshot).on_action(quit_tray);
 
     let tray = Tray::builder()
@@ -90,46 +91,15 @@ fn quit_tray(_: &QuitTray, cx: &mut App) {
     cx.quit();
 }
 
-/// A viewfinder frame with a center dot — drawn in code so no asset
-/// shipping is needed (white on transparent; the shell recolors nothing,
-/// so it stays legible on both light and dark trays).
+/// Decode the checked-in raster asset; tray hosts scale its RGBA pixels to
+/// their own panel size, without relying on installed desktop icon themes.
 fn icon() -> gpui_tray::Result<Icon> {
-    const SIZE: i32 = 32;
-    let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
-    let put = |x: i32, y: i32, rgba: &mut Vec<u8>| {
-        if (0..SIZE).contains(&x) && (0..SIZE).contains(&y) {
-            let o = ((y * SIZE + x) * 4) as usize;
-            rgba[o..o + 4].copy_from_slice(&[235, 240, 245, 255]);
-        }
-    };
-
-    // Four L-shaped corners (a viewfinder frame)
-    let (lo, hi) = (5, 26);
-    let t = 3; // stroke thickness
-    let arm = 9; // corner arm length
-    for i in 0..arm {
-        for k in 0..t {
-            put(lo + i, lo + k, &mut rgba); // top-left horizontal
-            put(lo + k, lo + i, &mut rgba); // top-left vertical
-            put(hi - i, lo + k, &mut rgba); // top-right
-            put(hi - k, lo + i, &mut rgba);
-            put(lo + i, hi - k, &mut rgba); // bottom-left
-            put(lo + k, hi - i, &mut rgba);
-            put(hi - i, hi - k, &mut rgba); // bottom-right
-            put(hi - k, hi - i, &mut rgba);
-        }
-    }
-
-    // Center dot (radius 4)
-    let (cx, cy, r) = ((lo + hi) / 2, (lo + hi) / 2, 4);
-    for y in cy - r..=cy + r {
-        for x in cx - r..=cx + r {
-            let (dx, dy) = (x - cx, y - cy);
-            if dx * dx + dy * dy <= r * r {
-                put(x, y, &mut rgba);
-            }
-        }
-    }
-
-    Icon::from_rgba(rgba, SIZE as u32, SIZE as u32)
+    let image = image::load_from_memory_with_format(
+        include_bytes!("../assets/app/shotori-64.png"),
+        image::ImageFormat::Png,
+    )
+    .map_err(|error| gpui_tray::Error::InvalidIcon(error.to_string()))?
+    .into_rgba8();
+    let (width, height) = image.dimensions();
+    Icon::from_rgba(image.into_raw(), width, height)
 }

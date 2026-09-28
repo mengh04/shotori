@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Name=Shotori
+GenericName=Screenshot Tool
+GenericName[zh_CN]=截图工具
+Comment=Capture, annotate, and pin screenshots
+Comment[zh_CN]=截图、标注和贴图
+Exec=shotori gui
+TryExec=shotori
+Icon=shotori
+Terminal=false
+Categories=Graphics;
+Keywords=screenshot;capture;OCR;annotation;
+StartupNotify=false
+StartupWMClass=shotori
+Actions=Tray;
+
+[Desktop Action Tray]
+Name=Start in tray
+Name[zh_CN]=启动托盘
+Exec=shotori tray

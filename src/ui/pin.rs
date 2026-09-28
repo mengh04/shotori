@@ -634,6 +634,7 @@ fn open_board(spec: PinSpec, cx: &mut App) -> anyhow::Result<Entity<PinBoard>> {
         let st = board.clone();
         let handle = cx.open_window(
             WindowOptions {
+                app_id: Some(crate::APP_ID.into()),
                 titlebar: None,
                 window_background: WindowBackgroundAppearance::Transparent,
                 focus: false,
