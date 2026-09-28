@@ -33,5 +33,10 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      # The perf harness is feature-gated; lint it too or it never gets
+      # checked (it's still fmt/test-visible, but clippy needs the cfg)
+      - name: Clippy (perf feature)
+        run: cargo clippy --all-targets --features perf -- -D warnings
+
       - name: Test
         run: cargo test

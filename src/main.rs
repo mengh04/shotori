@@ -216,7 +216,7 @@ fn main() {
                     cx.background_executor()
                         .timer(std::time::Duration::from_millis(400))
                         .await;
-                    let _ = cx.update(|cx| {
+                    cx.update(|cx| {
                         shotori::boot_mark("warm reopen requested");
                         let handle = cx
                             .open_window(

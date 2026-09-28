@@ -63,7 +63,9 @@ fn stats(mut v: Vec<f64>) -> (f64, f64, f64, f64) {
     (
         v[0],
         v[n / 2],
-        v[((n as f64 * 0.95).ceil() as usize).saturating_sub(1).min(n - 1)],
+        v[((n as f64 * 0.95).ceil() as usize)
+            .saturating_sub(1)
+            .min(n - 1)],
         v[n - 1],
     )
 }
@@ -155,10 +157,13 @@ fn milestone<'a>(marks: &'a [(f64, String)], sub: &str) -> Option<&'a (f64, Stri
     marks.iter().rev().find(|(_, l)| l.contains(sub))
 }
 
+/// A finished GUI child: cumulative boot marks + peak-RSS kB
+type ChildReport = (Vec<(f64, String)>, Option<f64>);
+
 /// Spawn a real GUI child driven by the e2e backdoor (injects nothing;
 /// `SHOTORI_DEBUG_ACTION=quit` ends it 1.5 s after the overlay maps) and
 /// collect (boot marks, peak-RSS kB).
-fn run_gui_child(extra_env: &[(&str, &str)]) -> anyhow::Result<(Vec<(f64, String)>, Option<f64>)> {
+fn run_gui_child(extra_env: &[(&str, &str)]) -> anyhow::Result<ChildReport> {
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(&exe);
     cmd.env("SHOTORI_BOOT", "1")
@@ -207,7 +212,10 @@ fn run_gui_child(extra_env: &[(&str, &str)]) -> anyhow::Result<(Vec<(f64, String
 
 /// Cold start: N fresh GUI processes, the real user path end to end
 fn suite_startup(runs: usize, json: bool) -> anyhow::Result<serde_json::Value> {
-    info(json, &format!("[perf] startup: {runs} cold starts (exec → selectable overlay)…"));
+    info(
+        json,
+        &format!("[perf] startup: {runs} cold starts (exec → selectable overlay)…"),
+    );
     let mut rows = [
         Row::new("exec → capture done", "ms"),
         Row::new("exec → gpui run entered", "ms"),
@@ -241,7 +249,10 @@ fn suite_startup(runs: usize, json: bool) -> anyhow::Result<serde_json::Value> {
 /// Steady-state screencopy: each run opens its own wayland connection,
 /// freezes every output and reads the frames back
 fn suite_capture(runs: usize, json: bool) -> anyhow::Result<serde_json::Value> {
-    info(json, &format!("[perf] capture: {runs} runs (steady state, first connect excluded)…"));
+    info(
+        json,
+        &format!("[perf] capture: {runs} runs (steady state, first connect excluded)…"),
+    );
     let caps = crate::platform::capture::capture_all_outputs()?;
     let screens = caps.len();
     drop(caps);
@@ -269,7 +280,10 @@ fn suite_capture(runs: usize, json: bool) -> anyhow::Result<serde_json::Value> {
 
 /// Export pipeline on live screen content: crop + encode tiers + write
 fn suite_export(runs: usize, json: bool) -> anyhow::Result<serde_json::Value> {
-    info(json, &format!("[perf] export: {runs} runs on a live capture…"));
+    info(
+        json,
+        &format!("[perf] export: {runs} runs on a live capture…"),
+    );
     let caps = crate::platform::capture::capture_all_outputs()?;
     let cap = &caps[0];
     let (w, h) = (cap.width, cap.height);
@@ -324,14 +338,7 @@ fn suite_export(runs: usize, json: bool) -> anyhow::Result<serde_json::Value> {
         }
     }
     let rows = [
-        full_bal,
-        full_fast,
-        size_bal,
-        size_fast,
-        crop_row,
-        crop_bal,
-        write_row,
-        rss,
+        full_bal, full_fast, size_bal, size_fast, crop_row, crop_bal, write_row, rss,
     ];
     if !json {
         print_rows(&rows);
@@ -342,7 +349,10 @@ fn suite_export(runs: usize, json: bool) -> anyhow::Result<serde_json::Value> {
 /// One GUI process, two overlays: the 2nd skips the wgpu renderer init —
 /// exactly what a resident process would pay per shot
 fn suite_warm_window(json: bool) -> anyhow::Result<serde_json::Value> {
-    info(json, "[perf] warm-window: 1st (cold) vs 2nd overlay in one process…");
+    info(
+        json,
+        "[perf] warm-window: 1st (cold) vs 2nd overlay in one process…",
+    );
     let (marks, rss_kb) = run_gui_child(&[("SHOTORI_PERF_WARM", "1")])?;
 
     let grab_after = |sub: &str, after: &str| -> Option<f64> {
@@ -410,9 +420,7 @@ fn suite_resident(json: bool) -> anyhow::Result<serde_json::Value> {
     // let the icon register and allocations settle
     std::thread::sleep(Duration::from_millis(3000));
     if let Some(status) = child.try_wait()? {
-        anyhow::bail!(
-            "tray exited early ({status}) — is a StatusNotifierItem host running?"
-        );
+        anyhow::bail!("tray exited early ({status}) — is a StatusNotifierItem host running?");
     }
     let status = std::fs::read_to_string(format!("/proc/{}/status", child.id()))?;
     let get = |field: &str| {
