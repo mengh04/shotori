@@ -48,11 +48,11 @@ pub mod args;
 /// In-binary microbenchmarks (`shotori --bench`); see bench.rs
 pub mod bench;
 
+pub mod model;
 /// Developer-only E2E perf suites (`shotori --perf`); behind the
 /// `perf` feature — see perf.rs
 #[cfg(feature = "perf")]
 pub mod perf;
-pub mod model;
 pub mod platform;
 pub mod ui;
 
@@ -78,5 +78,9 @@ pub fn boot_mark(label: &str) {
         return;
     }
     let epoch = *EPOCH.get_or_init(Instant::now);
-    eprintln!("[boot] {:>8.1} ms  {}", epoch.elapsed().as_secs_f64() * 1e3, label);
+    eprintln!(
+        "[boot] {:>8.1} ms  {}",
+        epoch.elapsed().as_secs_f64() * 1e3,
+        label
+    );
 }

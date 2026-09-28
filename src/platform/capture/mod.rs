@@ -155,7 +155,10 @@ pub fn capture_all_outputs() -> anyhow::Result<Vec<Capture>> {
             tv_nsec: remaining.subsec_nanos() as _,
         };
         let fd = conn.as_fd();
-        let mut fds = [rustix::event::PollFd::new(&fd, rustix::event::PollFlags::IN)];
+        let mut fds = [rustix::event::PollFd::new(
+            &fd,
+            rustix::event::PollFlags::IN,
+        )];
         match rustix::event::poll(&mut fds, Some(&ts)) {
             Err(rustix::io::Errno::INTR) => continue,
             Err(e) => return Err(e.into()),
