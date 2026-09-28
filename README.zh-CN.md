@@ -3,6 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/shotori.svg)](https://crates.io/crates/shotori)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Linux-8892bf)
+![Status](https://img.shields.io/badge/status-early%20development-orange)
 
 Wayland 原生的截图工具，内置本地 OCR——整套 UI 用
 [gpui-kit](https://crates.io/crates/gpui-kit) 手绘。
@@ -11,6 +12,14 @@ Wayland 原生的截图工具，内置本地 OCR——整套 UI 用
 全程不用碰鼠标。
 
 **[English](README.md)**
+
+## 状态
+
+Shotori 处于**早期开发阶段**（pre-1.0）。截图、标注、复制、保存、OCR、
+贴图这些核心流程已可日常使用，但仍会有毛边：功能可能在版本之间无预警地
+调整或移除，命令行参数、键位与主题格式尚未稳定。已在 niri、sway、
+Hyprland 上测试，其他 Wayland 合成器表现可能不同。欢迎到
+[issue 区](https://github.com/mengh04/shotori/issues)报告问题与反馈。
 
 ## 功能
 
