@@ -191,25 +191,19 @@ impl Overlay {
                     }
                 }
                 if session.annotations().enabled() {
-                    // mid-edit-drag: grabbed; a handle under the pointer
-                    // promises its directional resize; a shape body
-                    // selects on press (grab cursor); blank canvas keeps
-                    // the crosshair (new stroke)
-                    if session.is_moving() {
+                    // body move: grabbed; handle drag keeps its own
+                    // affordance (plain arrow for point handles, the
+                    // diagonal for corners); a handle under the pointer
+                    // promises the same; a shape body selects on press
+                    // (grab cursor); blank canvas keeps the crosshair
+                    if session.is_body_moving() {
                         return CursorStyle::ClosedHand;
                     }
+                    if let Some((kind, anchor)) = session.handle_drag_anchor() {
+                        return annotation_handle_cursor(kind, anchor);
+                    }
                     if let Some((kind, anchor)) = session.annotation_handle_hover() {
-                        // corner handles resize along their diagonal;
-                        // endpoint/vertex handles reposition — the plain
-                        // arrow until the drag closes the hand
-                        return if kind.is_region() {
-                            match anchor {
-                                0 | 2 => CursorStyle::ResizeUpLeftDownRight,
-                                _ => CursorStyle::ResizeUpRightDownLeft,
-                            }
-                        } else {
-                            CursorStyle::Arrow
-                        };
+                        return annotation_handle_cursor(kind, anchor);
                     }
                     if session.pointer_on_annotation() {
                         return CursorStyle::OpenHand;
@@ -1231,6 +1225,21 @@ impl Render for Overlay {
 /// implicit grab a drag's events keep arriving at the PRESS window
 /// even outside its bounds, and element hit-testing would drop exactly
 /// those events.
+/// The cursor affordance of an annotation handle, shared by its hover
+/// and drag states: corner handles resize along their diagonal, point
+/// handles (line endpoints, polyline vertices) reposition — plain
+/// arrow, grabbing feedback would add nothing there.
+fn annotation_handle_cursor(kind: crate::annotation::ShapeKind, anchor: usize) -> CursorStyle {
+    if kind.is_region() {
+        match anchor {
+            0 | 2 => CursorStyle::ResizeUpLeftDownRight,
+            _ => CursorStyle::ResizeUpRightDownLeft,
+        }
+    } else {
+        CursorStyle::Arrow
+    }
+}
+
 fn pointer_event_sink(input_view: WeakEntity<Overlay>) -> impl IntoElement {
     canvas(
         |_, _, _| (),
