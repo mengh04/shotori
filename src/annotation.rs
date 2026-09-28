@@ -139,10 +139,10 @@ impl Shape {
     }
 
     /// Inward strokes keep both preview and export within the rectangle.
-    /// Selection highlight: the shape's own visual geometry as fill
-    /// paths — the chrome paints exactly what the eye sees, so a
-    /// diagonal line gets its capsule, an arrow its head, an ellipse
-    /// its ring; never a bounding rectangle.
+    /// Selection highlight: a thin stroke tracing the shape's own
+    /// visual outline — capsule rim, ellipse ring, arrowhead, badge
+    /// circle; never a filled blob over the content. Corner handles
+    /// come from [`Shape::visual_bounds`] on the overlay side.
     pub(crate) fn hilite_paths(&self, offset: Point<Pixels>) -> Vec<Path<Pixels>> {
         match self.kind {
             ShapeKind::Line
@@ -151,14 +151,11 @@ impl Shape {
             | ShapeKind::Pencil
             | ShapeKind::Highlighter => {
                 line::geometry(&self.points, self.width, self.kind == ShapeKind::Arrow)
-                    .into_iter()
+                    .iter()
                     .filter_map(|poly| {
-                        let mut builder = PathBuilder::fill();
-                        builder.move_to(poly[0] + offset);
-                        for p in &poly[1..] {
-                            builder.line_to(*p + offset);
-                        }
-                        builder.close();
+                        let pts: Vec<Point<Pixels>> = poly.iter().map(|p| *p + offset).collect();
+                        let mut builder = PathBuilder::stroke(px(1.));
+                        builder.add_polygon(&pts, true);
                         builder.build().ok()
                     })
                     .collect()
@@ -166,24 +163,44 @@ impl Shape {
             ShapeKind::Rectangle => self
                 .strokes()
                 .iter()
-                .filter_map(|s| rect_path(*s, offset))
+                .filter_map(|s| rect_stroke(*s, offset))
                 .collect(),
-            ShapeKind::Ellipse => self.ellipse_path(offset).into_iter().collect(),
-            ShapeKind::Number => circle_path(
-                point(
-                    self.bounds.left() + self.bounds.size.width / 2. + offset.x,
-                    self.bounds.top() + self.bounds.size.height / 2. + offset.y,
-                ),
-                f32::from(self.bounds.size.width) / 2.,
-            )
-            .into_iter()
-            .collect(),
-            // solid regions highlight as their bounds rectangle
+            ShapeKind::Ellipse => ellipse_stroke(self.bounds, offset).into_iter().collect(),
+            ShapeKind::Number => ellipse_stroke(self.bounds, offset).into_iter().collect(),
+            // solid regions trace their bounds rectangle
             ShapeKind::Text | ShapeKind::Mosaic | ShapeKind::Blur => {
-                rect_path(self.bounds, offset).into_iter().collect()
+                rect_stroke(self.bounds, offset).into_iter().collect()
             }
             _ => Vec::new(),
         }
+    }
+
+    /// The shape's on-screen footprint for corner-handle placement:
+    /// point clouds derive from points, region kinds from bounds,
+    /// inflated past the stroke width.
+    pub(crate) fn visual_bounds(&self) -> Bounds<Pixels> {
+        let base = if matches!(
+            self.kind,
+            ShapeKind::Line
+                | ShapeKind::Arrow
+                | ShapeKind::Polyline
+                | ShapeKind::Pencil
+                | ShapeKind::Highlighter
+        ) && !self.points.is_empty()
+        {
+            let mut min = self.points[0];
+            let mut max = self.points[0];
+            for p in &self.points[1..] {
+                min.x = min.x.min(p.x);
+                min.y = min.y.min(p.y);
+                max.x = max.x.max(p.x);
+                max.y = max.y.max(p.y);
+            }
+            Bounds::new(min, size(max.x - min.x, max.y - min.y))
+        } else {
+            self.bounds
+        };
+        inflate(&base, px(self.width / 2. + 2.))
     }
 
     pub(crate) fn strokes(&self) -> [Bounds<Pixels>; 4] {
@@ -972,33 +989,35 @@ fn inflate(b: &Bounds<Pixels>, by: Pixels) -> Bounds<Pixels> {
     )
 }
 
-/// A filled rectangle path (selection highlight for solid regions).
-fn rect_path(b: Bounds<Pixels>, offset: Point<Pixels>) -> Option<Path<Pixels>> {
-    let mut builder = PathBuilder::fill();
-    let corners = [
-        point(b.left(), b.top()),
-        point(b.right(), b.top()),
-        point(b.right(), b.bottom()),
-        point(b.left(), b.bottom()),
-    ];
-    builder.move_to(corners[0] + offset);
-    for c in &corners[1..] {
-        builder.line_to(*c + offset);
-    }
-    builder.close();
+/// A 1 px stroke tracing a rectangle's perimeter.
+fn rect_stroke(b: Bounds<Pixels>, offset: Point<Pixels>) -> Option<Path<Pixels>> {
+    let mut builder = PathBuilder::stroke(px(1.));
+    builder.add_polygon(
+        &[
+            point(b.left(), b.top()) + offset,
+            point(b.right(), b.top()) + offset,
+            point(b.right(), b.bottom()) + offset,
+            point(b.left(), b.bottom()) + offset,
+        ],
+        true,
+    );
     builder.build().ok()
 }
 
-/// A filled circle path (the number badge highlight), eight cubic
-/// arcs with the same approximation ellipse_path uses.
-fn circle_path(c: Point<Pixels>, r: f32) -> Option<Path<Pixels>> {
-    if r <= 0. {
+/// A 1 px stroke tracing an ellipse's perimeter (the bounds box; a
+/// circle is the square-bounds case). Eight cubic arcs, the same
+/// approximation ellipse_path uses.
+fn ellipse_stroke(b: Bounds<Pixels>, offset: Point<Pixels>) -> Option<Path<Pixels>> {
+    let rx = f32::from(b.size.width) / 2.;
+    let ry = f32::from(b.size.height) / 2.;
+    if rx <= 0. || ry <= 0. {
         return None;
     }
-    let mut builder = PathBuilder::fill();
+    let c = b.origin + offset + point(px(rx), px(ry));
+    let mut builder = PathBuilder::stroke(px(1.));
     let step = std::f32::consts::TAU / 8.;
     let k = 4. / 3. * (step / 4.).tan();
-    let at = |x: f32, y: f32| c + point(px(r * x), px(r * y));
+    let at = |x: f32, y: f32| c + point(px(rx * x), px(ry * y));
     builder.move_to(at(1., 0.));
     for i in 0..8 {
         let (s0, c0) = (i as f32 * step).sin_cos();
