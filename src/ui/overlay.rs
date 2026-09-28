@@ -190,6 +190,12 @@ impl Overlay {
                     }
                 }
                 if session.annotations().enabled() {
+                    // A shape under the pointer selects on press — promise
+                    // it with the grab cursor; blank canvas keeps the
+                    // crosshair (new stroke)
+                    if session.pointer_on_annotation() {
+                        return CursorStyle::OpenHand;
+                    }
                     return CursorStyle::Crosshair;
                 }
                 if let (Some(bounds), Some(global)) = (selection.bounds(), session.pointer_global())
@@ -781,6 +787,9 @@ impl Render for Overlay {
             .backdrop_bounds(&self.capture.output_name)
             .map(round_px);
         let hover = shared.hover_bounds(&self.capture.output_name).map(round_px);
+        let selected_chrome = shared
+            .selected_chrome(&self.capture.output_name)
+            .map(round_px);
         let shapes = if shared.uses_raster_preview() {
             Vec::new()
         } else {
@@ -1123,6 +1132,29 @@ impl Render for Overlay {
                                     }
                                 },
                             );
+                        }
+                    },
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
+            // ①½ Annotation selection chrome: an independent layer that
+            // reads shape data directly — it must not depend on which
+            // render path (vector canvas vs rasterized preview) the
+            // marks happen to use.
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |viewport, (), window, _| {
+                        if let Some(mut chrome) = selected_chrome {
+                            chrome.origin += viewport.origin;
+                            window.paint_quad(outline(
+                                chrome,
+                                rgba(crate::ui::theme::c().accent),
+                                BorderStyle::default(),
+                            ));
                         }
                     },
                 )
