@@ -35,6 +35,13 @@ fn main() {
         std::process::exit(shotori::bench::bench_main());
     }
 
+    // E2E perf suites: `shotori --perf [suite...]` (see perf.rs) —
+    // developer-only, compiled behind the `perf` cargo feature
+    #[cfg(feature = "perf")]
+    if std::env::args().nth(1).as_deref() == Some(shotori::perf::PERF_ARG) {
+        std::process::exit(shotori::perf::perf_main());
+    }
+
     // Clipboard daemon (Linux only): the background resident process
     // behind the copy action (see the resident-offer model in
     // clipboard.rs).
@@ -144,6 +151,10 @@ fn main() {
             cx.spawn(async move |cx| {
                 let targets = display::await_display_ids(caps, cx).await;
                 shotori::boot_mark("displays matched");
+                #[cfg(feature = "perf")]
+                let perf_warm = std::env::var_os("SHOTORI_PERF_WARM").is_some();
+                #[cfg(feature = "perf")]
+                let mut warm_reopen = None;
                 cx.update(|cx| {
                     let targets: Vec<_> = targets.into_iter()
                         .map(|(cap, did)| (std::sync::Arc::new(cap), did))
@@ -174,6 +185,12 @@ fn main() {
                             ),
                             did,
                         );
+                        // perf warm-window suite: remember the first
+                        // target so a second overlay can be opened later
+                        #[cfg(feature = "perf")]
+                        if perf_warm && warm_reopen.is_none() {
+                            warm_reopen = Some((cap.clone(), did, session.clone(), logical));
+                        }
                         let handle = cx
                             .open_window(
                                 Overlay::window_options(did, logical),
@@ -190,6 +207,28 @@ fn main() {
                     }
                     shotori::boot_mark("windows opened (layer-shell requested)");
                 });
+
+                // perf warm-window suite: open a second overlay once the
+                // first has rendered — its construct+render time shows
+                // what a resident process would pay per shot (no wgpu init)
+                #[cfg(feature = "perf")]
+                if let Some((cap, did, session, logical)) = warm_reopen {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(400))
+                        .await;
+                    let _ = cx.update(|cx| {
+                        shotori::boot_mark("warm reopen requested");
+                        let handle = cx
+                            .open_window(
+                                Overlay::window_options(did, logical),
+                                |window, cx| {
+                                    cx.new(|cx| Overlay::new(cap, session, window, cx))
+                                },
+                            )
+                            .expect("failed to open warm layer-shell window");
+                        shotori::save_dialog::register_overlay(handle.into());
+                    });
+                }
             })
             .detach();
         });
@@ -199,6 +238,10 @@ fn main() {
     // native save dialog can take over the screen. No-op on every other
     // exit path.
     shotori::save_dialog::complete_pending();
+
+    // Startup-suite children report their peak RSS on the way out
+    #[cfg(feature = "perf")]
+    shotori::perf::report_child_rss();
 }
 
 /// `shotori full`: capture every screen with no overlay. The session

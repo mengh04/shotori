@@ -52,6 +52,9 @@ pub struct Overlay {
     /// (crosshair / open hand / resize), refreshed by the pointer-move
     /// path and pushed during paint by the handles canvas.
     cursor: std::rc::Rc<std::cell::Cell<CursorStyle>>,
+    /// boot trace: this instance's first render not yet reported
+    /// (per-instance — the warm-window suite opens several overlays)
+    perf_first_render_pending: bool,
 }
 
 impl Overlay {
@@ -98,6 +101,7 @@ impl Overlay {
             text_editing: None,
             text_subscription: None,
             cursor: std::rc::Rc::new(std::cell::Cell::new(CursorStyle::Crosshair)),
+            perf_first_render_pending: true,
         };
         overlay.attach_observers(window, cx);
         overlay
@@ -749,8 +753,11 @@ impl Render for Overlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Closest observable proxy for "layer mapped & selectable": the
         // first scene paint commits right after this returns (~1 frame).
-        static FIRST: std::sync::Once = std::sync::Once::new();
-        FIRST.call_once(|| crate::boot_mark("overlay first render"));
+        // Per instance so the perf warm-window suite sees every overlay.
+        if self.perf_first_render_pending {
+            self.perf_first_render_pending = false;
+            crate::boot_mark("overlay first render");
+        }
         // THE cursor derivation point: every repaint stores the style the
         // handles canvas pushes during paint. Deriving here — instead of
         // at every event and action site — means any state flip lands
