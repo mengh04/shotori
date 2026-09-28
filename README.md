@@ -3,6 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/shotori.svg)](https://crates.io/crates/shotori)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Linux-8892bf)
+![Status](https://img.shields.io/badge/status-early%20development-orange)
 
 A Wayland-native screenshot tool with built-in, on-device OCR — the entire UI
 hand-drawn with [gpui-kit](https://crates.io/crates/gpui-kit).
@@ -11,6 +12,16 @@ Freeze the screen, drag a selection, then copy, save, annotate, or OCR it —
 without leaving the keyboard.
 
 **[简体中文](README.zh-CN.md)**
+
+## Status
+
+Shotori is in **early development** (pre-1.0). The core flows — capture,
+annotate, copy, save, OCR, pin — are in daily use, but expect rough edges:
+features may change or be removed between releases without notice, and the
+CLI, keybindings, and theme format are not stable yet. Tested on niri, sway
+and Hyprland; other Wayland compositors may behave differently. Bug reports
+and feedback are welcome in the
+[issue tracker](https://github.com/mengh04/shotori/issues).
 
 ## Features
 
