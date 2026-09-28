@@ -51,7 +51,11 @@ impl Shape {
                 .filter_map(|s| rect_stroke(*s, offset))
                 .collect(),
             ShapeKind::Ellipse => ellipse_stroke(self.bounds, offset).into_iter().collect(),
-            ShapeKind::Number => ellipse_stroke(self.bounds, offset).into_iter().collect(),
+            ShapeKind::Number => {
+                ellipse_stroke(super::select::inflate(&self.bounds, px(2.)), offset)
+                    .into_iter()
+                    .collect()
+            }
             // solid regions trace their bounds rectangle
             ShapeKind::Text | ShapeKind::Mosaic | ShapeKind::Blur => {
                 rect_stroke(self.bounds, offset).into_iter().collect()

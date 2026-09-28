@@ -59,10 +59,13 @@ impl TextInput {
     }
     pub(crate) fn height(&self) -> f32 {
         self.editor.with_buffer(|b| {
-            b.layout_runs()
+            let single_line_h = self.font_size * 1.35;
+            let run_height = b
+                .layout_runs()
                 .map(|r| r.line_top + r.line_height)
-                .fold(self.font_size * 1.35, f32::max)
-                .min(self.limit)
+                .fold(single_line_h, f32::max);
+            let min_lines_h = b.lines.len() as f32 * single_line_h;
+            run_height.max(min_lines_h).min(self.limit)
         })
     }
     pub(crate) fn set_font_size(&mut self, font_size: f32, cx: &mut Context<Self>) {
@@ -140,6 +143,7 @@ impl TextInput {
     }
     fn caret(&self, cursor: Cursor) -> Bounds<Pixels> {
         self.editor.with_buffer(|b| {
+            let single_line_h = self.font_size * 1.35;
             b.layout_runs()
                 .find_map(|r| {
                     r.cursor_position(&cursor).map(|x| {
@@ -149,10 +153,10 @@ impl TextInput {
                         )
                     })
                 })
-                .unwrap_or(Bounds::new(
-                    point(px(0.), px(0.)),
-                    size(px(1.), px(self.font_size * 1.35)),
-                ))
+                .unwrap_or_else(|| {
+                    let top = cursor.line as f32 * single_line_h;
+                    Bounds::new(point(px(0.), px(top)), size(px(1.), px(single_line_h)))
+                })
         })
     }
     fn highlights(&self, range: Range<usize>) -> Vec<Bounds<Pixels>> {
@@ -624,6 +628,23 @@ mod tests {
                     }
                 }
             })
+        });
+    }
+
+    #[gpui_kit::test]
+    fn trailing_newline_expands_height_and_positions_caret(cx: &mut TestAppContext) {
+        let (input, cx) = cx.add_window_view(|_, cx| TextInput::new(300., 600., 24., cx));
+        cx.update(|window, cx| {
+            input.update(cx, |s, cx| {
+                let single_h = 24. * 1.35;
+                s.replace_text_in_range(None, "hello", window, cx);
+                assert!((s.height() - single_h).abs() < 1e-3);
+                s.action(cosmic_text::Action::Enter);
+                assert!((s.height() - single_h * 2.).abs() < 1e-3);
+                let caret = s.caret(s.editor.cursor());
+                assert_eq!(caret.origin.x, px(0.));
+                assert!((f32::from(caret.origin.y) - single_h).abs() < 1e-3);
+            });
         });
     }
 }

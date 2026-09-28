@@ -200,7 +200,12 @@ impl Overlay {
                         return CursorStyle::Arrow;
                     }
                 }
-                if session.annotations().enabled() {
+                if session.annotations().enabled()
+                    || session.is_body_moving()
+                    || session.handle_drag_anchor().is_some()
+                    || session.annotation_handle_hover().is_some()
+                    || session.pointer_on_annotation()
+                {
                     // body move: grabbed; handle drag keeps its own
                     // affordance (plain arrow for point handles, the
                     // diagonal for corners); a handle under the pointer
@@ -218,7 +223,9 @@ impl Overlay {
                     if session.pointer_on_annotation() {
                         return CursorStyle::OpenHand;
                     }
-                    return CursorStyle::Crosshair;
+                    if session.annotations().enabled() {
+                        return CursorStyle::Crosshair;
+                    }
                 }
                 if let (Some(bounds), Some(global)) = (selection.bounds(), session.pointer_global())
                 {
@@ -318,7 +325,7 @@ impl Overlay {
             s.clear_text_preview();
             s.set_blocked(false);
             if commit {
-                s.edit_annotations(|a| a.add_text(editor.bounds(), value));
+                s.edit_annotations(|a| a.add_text(editor.actual_bounds(), value));
             }
             cx.notify();
         });
@@ -1134,7 +1141,7 @@ impl Render for Overlay {
             // editor owns the pointer; otherwise the event bubbles.
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
                 let usable = this.text_editing.is_none()
-                    && this.session.read(cx).annotations().tool().is_some();
+                    && this.session.read(cx).annotations().edit_kind().is_some();
                 if !usable {
                     cx.propagate();
                     return;

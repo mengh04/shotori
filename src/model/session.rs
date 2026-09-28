@@ -628,45 +628,47 @@ impl ScreenshotSession {
             return;
         }
         self.pointer_global = Some(self.to_global(name, local));
-        if self.annotations.enabled() {
-            if let Some(selection) = self.selection.bounds() {
-                let p = local + self.screen(name).bounds().origin;
-                // a handle of the SELECTED shape grabs first (phase C);
-                // the handles sit on the shape's body, so this must run
-                // before the shape hit-test parks a click
-                if let Some(anchor) = self.annotations.selected().and_then(|s| s.handle_at(p)) {
-                    let ix = self.annotations.selected_index().expect("selected");
-                    let before = self.annotations.selected().expect("selected").clone();
-                    self.handle_drag = Some(HandleDrag { ix, anchor, before });
-                    return;
-                }
-                // press on a shape: click-or-drag resolves on the
-                // following move/up events (polyline never parks — its
-                // clicks place vertices)
-                if self.annotations.parks_click_select()
-                    && let Some(ix) = self.annotations.hit_test(p)
-                {
-                    self.pending_click = Some((ix, p));
-                    return;
-                }
-                self.annotations.deselect(); // click on blank canvas
-                self.annotations.begin(p, selection);
-            }
-        } else {
-            // A finalized selection is editable in place: an edge/corner
-            // band grabs a resize handle, the interior starts a move. Only
-            // a press OUTSIDE starts a fresh selection (which also clears
-            // the annotations — an edit must not).
-            if self
-                .selection
-                .begin_edit(local + self.screen(name).bounds().origin)
-            {
-                self.hovered = None;
-                self.set_active_output(name);
+        if let Some(selection) = self.selection.bounds() {
+            let p = local + self.screen(name).bounds().origin;
+            // a handle of the SELECTED shape grabs first (phase C);
+            // the handles sit on the shape's body, so this must run
+            // before the shape hit-test parks a click
+            if let Some(anchor) = self.annotations.selected().and_then(|s| s.handle_at(p)) {
+                let ix = self.annotations.selected_index().expect("selected");
+                let before = self.annotations.selected().expect("selected").clone();
+                self.handle_drag = Some(HandleDrag { ix, anchor, before });
                 return;
             }
-            self.begin(name, local);
+            // press on a shape: click-or-drag resolves on the
+            // following move/up events (polyline never parks — its
+            // clicks place vertices)
+            if selection.contains(&p)
+                && self.annotations.parks_click_select()
+                && let Some(ix) = self.annotations.hit_test(p)
+            {
+                self.pending_click = Some((ix, p));
+                return;
+            }
+            if self.annotations.enabled() {
+                self.annotations.deselect(); // click on blank canvas
+                self.annotations.begin(p, selection);
+                return;
+            }
         }
+        self.annotations.deselect();
+        // A finalized selection is editable in place: an edge/corner
+        // band grabs a resize handle, the interior starts a move. Only
+        // a press OUTSIDE starts a fresh selection (which also clears
+        // the annotations — an edit must not).
+        if self
+            .selection
+            .begin_edit(local + self.screen(name).bounds().origin)
+        {
+            self.hovered = None;
+            self.set_active_output(name);
+            return;
+        }
+        self.begin(name, local);
     }
 
     pub(crate) fn pointer_move(&mut self, name: &str, local: Point<Pixels>, square: bool) -> bool {
@@ -674,7 +676,11 @@ impl ScreenshotSession {
             return false;
         }
         self.pointer_global = Some(self.to_global(name, local));
-        if self.annotations.enabled() {
+        if self.annotations.enabled()
+            || self.moving.is_some()
+            || self.handle_drag.is_some()
+            || self.pending_click.is_some()
+        {
             if let Some(selection) = self.selection.bounds() {
                 let p = local + self.screen(name).bounds().origin;
                 // handle grab wins over everything: handles only exist
@@ -692,14 +698,10 @@ impl ScreenshotSession {
                         return false; // still within click slop
                     }
                     self.pending_click = None;
-                    // dragging the SELECTED shape moves it (phase B);
-                    // any other press-through draws a new stroke
-                    if self.annotations.selected_index() == Some(ix)
-                        && let Some(before) = self.annotations.selected().cloned()
-                    {
+                    // dragging an existing shape moves it
+                    self.annotations.select_index(ix);
+                    if let Some(before) = self.annotations.selected().cloned() {
                         self.moving = Some(MoveDrag { ix, before, press });
-                    } else {
-                        self.annotations.begin(press, selection);
                     }
                 }
                 if let Some(drag) = &self.moving {
@@ -707,7 +709,9 @@ impl ScreenshotSession {
                         .place_shape(drag.ix, &drag.before, p - drag.press);
                     return true;
                 }
-                return self.annotations.drag_to(p, selection, square);
+                if self.annotations.enabled() {
+                    return self.annotations.drag_to(p, selection, square);
+                }
             }
             false
         } else if self.selection.is_editing() {
@@ -726,7 +730,11 @@ impl ScreenshotSession {
             return;
         }
         self.pointer_global = Some(self.to_global(name, local));
-        if self.annotations.enabled() {
+        if self.annotations.enabled()
+            || self.moving.is_some()
+            || self.handle_drag.is_some()
+            || self.pending_click.is_some()
+        {
             // a press-release without drag = click-select
             if let Some((ix, _)) = self.pending_click.take() {
                 self.annotations.select_index(ix);
@@ -742,9 +750,13 @@ impl ScreenshotSession {
                 self.annotations.commit_move(drag.ix, drag.before);
                 return;
             }
-            self.pointer_move(name, local, square);
-            self.annotations.end();
-        } else if self.selection.is_editing() {
+            if self.annotations.enabled() {
+                self.pointer_move(name, local, square);
+                self.annotations.end();
+                return;
+            }
+        }
+        if self.selection.is_editing() {
             self.selection.end_edit();
             self.follow_selection_host();
             self.press = None;
@@ -2610,5 +2622,41 @@ mod tests {
         assert_ne!(s.crop_original("left").unwrap().2, pixels);
         s.edit_annotations(|a| a.undo());
         assert_eq!(s.annotations().next_number(), 2);
+    }
+
+    #[test]
+    fn placed_number_badge_can_be_selected_dragged_and_recolored() {
+        let mut s = session();
+        s.begin("left", point(px(0.), px(0.)));
+        s.end("left", point(px(100.), px(100.)));
+        s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Number));
+        s.pointer_down("left", point(px(50.), px(50.)));
+        s.pointer_up("left", point(px(50.), px(50.)), false);
+        assert_eq!(s.annotations().visible().count(), 1);
+        let orig_pos = s.annotations().visible().next().unwrap().bounds.origin;
+
+        s.edit_annotations(|a| {
+            a.deselect();
+            a.toggle(crate::annotation::ShapeKind::Number);
+        });
+        assert!(!s.annotations().enabled());
+        assert!(s.annotations().selected().is_none());
+
+        s.pointer_down("left", point(px(50.), px(50.)));
+        s.pointer_up("left", point(px(50.), px(50.)), false);
+        assert_eq!(s.annotations().selected_index(), Some(0));
+
+        s.edit_annotation_settings(|a| a.set_color(1));
+        assert_eq!(
+            s.annotations().selected().unwrap().color,
+            crate::ui::theme::c().annotation_colors[1]
+        );
+
+        s.pointer_down("left", point(px(50.), px(50.)));
+        s.pointer_move("left", point(px(60.), px(65.)), false);
+        s.pointer_up("left", point(px(60.), px(65.)), false);
+        let moved_pos = s.annotations().visible().next().unwrap().bounds.origin;
+        assert_ne!(moved_pos, orig_pos);
+        assert_eq!(s.annotations().visible().count(), 1);
     }
 }
