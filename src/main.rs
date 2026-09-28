@@ -22,6 +22,7 @@ use shotori::ui::overlay::Overlay;
 
 fn main() {
     let boot = std::time::Instant::now();
+    shotori::boot_mark("main entry");
 
     // Notification child: `shotori --notify <summary> <body>` (see notify.rs)
     if std::env::args().nth(1).as_deref() == Some(shotori::notify::NOTIFY_ARG) {
@@ -96,6 +97,7 @@ fn main() {
             .join(" · "),
         boot.elapsed().as_millis()
     );
+    shotori::boot_mark("capture done (screencopy frozen)");
 
     // Warm the shared OCR engine once per screenshot session.
     std::thread::Builder::new()
@@ -115,11 +117,13 @@ fn main() {
             None => "unavailable on this compositor".to_owned(),
         }
     );
+    shotori::boot_mark("windowsnap done");
 
     // ② Overlays (one per screen)
     gpui_kit::application()
         .with_assets(shotori::ui::toolbar::ToolbarSource)
         .run(move |cx| {
+            shotori::boot_mark("gpui run entered");
             gpui_kit::base::init(cx);
             shotori::ui::ocr_setup::init(cx);
             shotori::actions::init_annotation_keybindings(cx);
@@ -139,6 +143,7 @@ fn main() {
             // capture to a display_id and open windows here
             cx.spawn(async move |cx| {
                 let targets = display::await_display_ids(caps, cx).await;
+                shotori::boot_mark("displays matched");
                 cx.update(|cx| {
                     let targets: Vec<_> = targets.into_iter()
                         .map(|(cap, did)| (std::sync::Arc::new(cap), did))
@@ -183,6 +188,7 @@ fn main() {
                         // before the file dialog takes over the screen
                         shotori::save_dialog::register_overlay(handle.into());
                     }
+                    shotori::boot_mark("windows opened (layer-shell requested)");
                 });
             })
             .detach();

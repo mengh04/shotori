@@ -60,3 +60,18 @@ pub mod notify;
 pub mod ocr;
 pub mod save_dialog;
 pub mod tray;
+
+/// Boot timing trace for startup profiling, gated on `SHOTORI_BOOT=1`.
+/// The epoch is the first call (main entry); every `boot_mark` prints
+/// cumulative milliseconds since then, so consecutive labels read as a
+/// phase breakdown of "exec to selectable layer".
+pub fn boot_mark(label: &str) {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    if std::env::var_os("SHOTORI_BOOT").is_none() {
+        return;
+    }
+    let epoch = *EPOCH.get_or_init(Instant::now);
+    eprintln!("[boot] {:>8.1} ms  {}", epoch.elapsed().as_secs_f64() * 1e3, label);
+}
