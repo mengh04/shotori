@@ -41,7 +41,14 @@ fn polygons(points: &[Point<Pixels>], width: f32) -> Vec<Vec<Point<Pixels>>> {
 
 /// Keep the tip exactly at the release position; shorten both head and shaft
 /// proportionally for small arrows instead of letting the head point backwards.
-fn geometry(points: &[Point<Pixels>], width: f32, arrow: bool) -> Vec<Vec<Point<Pixels>>> {
+///
+/// `pub(super)`: the visual outline polygons are also the hit region and
+/// the selection-highlight geometry ("what you see is what you click").
+pub(super) fn geometry(
+    points: &[Point<Pixels>],
+    width: f32,
+    arrow: bool,
+) -> Vec<Vec<Point<Pixels>>> {
     if !arrow {
         return polygons(points, width);
     }
