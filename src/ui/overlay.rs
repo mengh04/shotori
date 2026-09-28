@@ -2376,6 +2376,12 @@ mod multi_output_tests {
 
     #[gpui_kit::test]
     fn text_input_commit_cancel_and_history(cx: &mut TestAppContext) {
+        // Host font fallback changes wrapping and can turn a valid resize
+        // into a correctly rejected overflow on CI.
+        crate::annotation::text::with_test_font(|| text_input_workflow(cx));
+    }
+
+    fn text_input_workflow(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_kit::base::init(cx);
             crate::actions::init_annotation_keybindings(cx);
@@ -2559,6 +2565,28 @@ mod multi_output_tests {
         cx.simulate_input("a long replacement which must grow beyond the old text width");
         cx.simulate_keystrokes("shift-enter");
         cx.simulate_input("another line");
+        cx.update(|_, cx| {
+            session.update(cx, |s, cx| {
+                s.edit_annotation_settings(|a| a.apply_size(40.));
+                cx.notify();
+            })
+        });
+        cx.run_until_parked();
+        // This long paragraph wraps into too many rows at 40px with the
+        // bundled font. Rejection must keep editor and model in sync.
+        cx.update(|_, cx| {
+            let editor = view.read(cx).text_editing.as_ref().unwrap();
+            assert_eq!(editor.font_size, 32.);
+            assert_eq!(session.read(cx).annotations().text_size(), 32.);
+            assert_eq!(
+                editor.value(cx),
+                "a long replacement which must grow beyond the old text width\nanother line"
+            );
+        });
+        // Separately prove that a resize which fits is applied, rather than
+        // weakening the assertion to accept either font size.
+        cx.simulate_keystrokes("ctrl-a");
+        cx.simulate_input("replacement text\nanother line");
         cx.update(|_, cx| {
             session.update(cx, |s, cx| {
                 s.edit_annotation_settings(|a| a.apply_size(40.));
