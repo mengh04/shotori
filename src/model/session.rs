@@ -14,6 +14,15 @@ struct Screen {
     logical_size: Size<Pixels>,
 }
 
+/// An in-flight move of the selected shape (issue #5 phase B): the
+/// press-time snapshot plus the press point — every move re-derives
+/// the shape from the snapshot, and commit records one Edit.
+struct MoveDrag {
+    ix: usize,
+    before: crate::annotation::Shape,
+    press: Point<Pixels>,
+}
+
 impl Screen {
     fn bounds(&self) -> Bounds<Pixels> {
         Bounds {
@@ -83,6 +92,10 @@ pub struct ScreenshotSession {
     /// press point (draw-through — pressing on a shape never blocks
     /// drawing, issue #5).
     pending_click: Option<(usize, Point<Pixels>)>,
+    /// Drag-move of the selected annotation in flight (phase B). Set
+    /// when a press on the ALREADY-SELECTED shape moves past the click
+    /// slop; the shape follows the pointer until release.
+    moving: Option<MoveDrag>,
     blocked: bool,
     /// The user-dragged toolbar position (window-local to the ACTIVE
     /// output); None → the placement anchor decides. Reset by a NEW
@@ -126,6 +139,7 @@ impl ScreenshotSession {
             active_output: None,
             pointer_global: None,
             pending_click: None,
+            moving: None,
             blocked: false,
             toolbar_pos: None,
             toolbar_drag: None,
@@ -640,16 +654,27 @@ impl ScreenshotSession {
         if self.annotations.enabled() {
             if let Some(selection) = self.selection.bounds() {
                 let p = local + self.screen(name).bounds().origin;
-                if let Some((_, press)) = self.pending_click {
+                if let Some((ix, press)) = self.pending_click {
                     let dx = f32::from(p.x - press.x);
                     let dy = f32::from(p.y - press.y);
                     if dx * dx + dy * dy <= CLICK_SLOP * CLICK_SLOP {
                         return false; // still within click slop
                     }
-                    // dragged off a shape → it was a draw stroke after
-                    // all; start it at the original press point
                     self.pending_click = None;
-                    self.annotations.begin(press, selection);
+                    // dragging the SELECTED shape moves it (phase B);
+                    // any other press-through draws a new stroke
+                    if self.annotations.selected_index() == Some(ix)
+                        && let Some(before) = self.annotations.selected().cloned()
+                    {
+                        self.moving = Some(MoveDrag { ix, before, press });
+                    } else {
+                        self.annotations.begin(press, selection);
+                    }
+                }
+                if let Some(drag) = &self.moving {
+                    self.annotations
+                        .place_shape(drag.ix, &drag.before, p - drag.press);
+                    return true;
                 }
                 return self.annotations.drag_to(p, selection, square);
             }
@@ -676,6 +701,11 @@ impl ScreenshotSession {
                 self.annotations.select_index(ix);
                 return;
             }
+            // release of a move drag: one Edit entry when it moved
+            if let Some(drag) = self.moving.take() {
+                self.annotations.commit_move(drag.ix, drag.before);
+                return;
+            }
             self.pointer_move(name, local, square);
             self.annotations.end();
         } else if self.selection.is_editing() {
@@ -688,7 +718,18 @@ impl ScreenshotSession {
     }
 
     pub(crate) fn cancel_annotation(&mut self) -> bool {
+        // Escape interrupts an in-flight move: restore the snapshot
+        if let Some(drag) = self.moving.take() {
+            self.annotations
+                .place_shape(drag.ix, &drag.before, point(px(0.), px(0.)));
+            return true;
+        }
         !self.blocked && self.annotations.cancel()
+    }
+
+    /// Whether a drag-move of the selected annotation is in flight.
+    pub(crate) fn is_moving(&self) -> bool {
+        self.moving.is_some()
     }
 
     pub(crate) fn local_annotations(&self, name: &str) -> Vec<crate::annotation::Shape> {
@@ -2010,6 +2051,62 @@ mod tests {
         s.pointer_up("left", point(px(103.), px(7.)), false);
         assert!(s.annotations().selected().is_some());
         assert_eq!(s.annotations().committed().len(), 2);
+    }
+
+    #[test]
+    fn dragging_the_selection_moves_it_and_undo_restores() {
+        use crate::annotation::ShapeKind;
+        let mut s = session();
+        s.select_all();
+        let sel = s.selection.bounds().unwrap();
+        let rect = Bounds::new(point(px(0.), px(10.)), size(px(40.), px(40.)));
+        s.edit_annotations(|a| {
+            a.toggle(ShapeKind::Rectangle);
+            a.begin(rect.origin, sel);
+            a.drag_to(rect.bottom_right(), sel, false);
+            a.end();
+        });
+        // global → "left"-window local: left's origin is (-100, 20)
+        let local = |p: gpui_kit::Point<gpui_kit::Pixels>| p - point(px(-100.), px(20.));
+        // a point on the rectangle's left edge band (width 3)
+        let edge = |b: Bounds<gpui_kit::Pixels>| point(b.left() + px(2.), b.top() + px(15.));
+
+        // click-select
+        s.pointer_down("left", local(edge(rect)));
+        s.pointer_up("left", local(edge(rect)), false);
+        assert!(s.annotations().selected().is_some());
+
+        // press again and DRAG: the selected shape moves
+        let delta = point(px(30.), px(10.));
+        let moved_origin = rect.origin + delta;
+        s.pointer_down("left", local(edge(rect)));
+        s.pointer_move("left", local(edge(rect) + delta), false);
+        s.pointer_up("left", local(edge(rect) + delta), false);
+        let now = s.annotations().selected().unwrap().bounds;
+        assert_eq!(now.origin, moved_origin);
+        assert_eq!(now.size, rect.size);
+
+        // one Edit entry: undo restores the pre-move position
+        s.edit_annotations(|a| a.undo());
+        assert_eq!(s.annotations().committed()[0].bounds.origin, rect.origin);
+        s.edit_annotations(|a| a.redo());
+        assert_eq!(s.annotations().committed()[0].bounds.origin, moved_origin);
+
+        // Escape mid-move restores the press-time snapshot. Undo/redo
+        // dropped the selection — click to reselect first.
+        s.pointer_down("left", local(edge(rect) + delta));
+        s.pointer_up("left", local(edge(rect) + delta), false);
+        assert!(s.annotations().selected().is_some());
+        s.pointer_down("left", local(edge(rect) + delta));
+        s.pointer_move(
+            "left",
+            local(edge(rect) + delta + point(px(50.), px(0.))),
+            false,
+        );
+        assert!(s.is_moving());
+        s.cancel_annotation();
+        assert!(!s.is_moving());
+        assert_eq!(s.annotations().committed()[0].bounds.origin, moved_origin);
     }
 
     #[test]
