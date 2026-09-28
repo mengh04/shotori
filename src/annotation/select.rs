@@ -124,39 +124,28 @@ impl Annotations {
     /// their diameter (bounds re-centered); every other kind steps its
     /// width field. One reversible Edit entry per notch.
     pub(crate) fn step_selected_size(&mut self, ix: usize, up: bool) -> bool {
-        let ladder: &[f32] = match self.shapes[ix].kind {
-            ShapeKind::Text => &[16., 24., 32.],
-            ShapeKind::Number => &[24., 32., 40.],
-            ShapeKind::Mosaic | ShapeKind::Blur => &[8., 16., 24.],
-            ShapeKind::Highlighter => &[12., 20., 32.],
-            _ => &[1., 3., 5.],
+        let kind = self.shapes[ix].kind;
+        let spec = super::size_spec(kind);
+        let current = if kind == ShapeKind::Number {
+            f32::from(self.shapes[ix].bounds.size.width)
+        } else {
+            self.shapes[ix].width
         };
-        let current = match self.shapes[ix].kind {
-            ShapeKind::Number => f32::from(self.shapes[ix].bounds.size.width),
-            _ => self.shapes[ix].width,
-        };
-        let cur = ladder
-            .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| (**a - current).abs().total_cmp(&(**b - current).abs()))
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        let next = if up { cur + 1 } else { cur.saturating_sub(1) };
-        if next == cur || next >= ladder.len() {
+        let next = if up { current + 1. } else { current - 1. };
+        if next == current || next < spec.min || next > spec.max {
             return false;
         }
         let before = self.shapes[ix].clone();
-        if self.shapes[ix].kind == ShapeKind::Number {
+        if kind == ShapeKind::Number {
             // grow the badge around its center
-            let d = ladder[next];
             let b = self.shapes[ix].bounds;
             let c = point(b.left() + b.size.width / 2., b.top() + b.size.height / 2.);
             self.shapes[ix].bounds = Bounds::new(
-                point(c.x - px(d / 2.), c.y - px(d / 2.)),
-                size(px(d), px(d)),
+                point(c.x - px(next / 2.), c.y - px(next / 2.)),
+                size(px(next), px(next)),
             );
         } else {
-            self.shapes[ix].width = ladder[next];
+            self.shapes[ix].width = next;
         }
         let after = self.shapes[ix].clone();
         self.history.push(HistoryEntry::Edit { ix, before, after });
