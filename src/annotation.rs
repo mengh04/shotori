@@ -1,4 +1,5 @@
 //! Geometry annotations in desktop logical coordinates, shared by all outputs.
+mod chrome;
 mod eraser;
 mod filter;
 mod highlighter;
@@ -7,8 +8,10 @@ pub(crate) use line::StrokePreview;
 pub(crate) mod text;
 pub(crate) use highlighter::HighlighterCache;
 mod number;
+mod select;
 pub(crate) use number::NumberCache;
 
+use chrome::ellipse_contour;
 use gpui_kit::{Bounds, Path, PathBuilder, Pixels, Point, point, px, size};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,62 +126,6 @@ impl Shape {
     }
 
     /// Inward strokes keep both preview and export within the rectangle.
-    /// Selection highlight: a thin stroke tracing the shape's own
-    /// visual outline — capsule rim, ellipse ring, arrowhead, badge
-    /// circle; never a filled blob over the content. Corner handles
-    /// come from [`Shape::handle_points`] on the overlay side.
-    pub(crate) fn hilite_paths(&self, offset: Point<Pixels>) -> Vec<Path<Pixels>> {
-        match self.kind {
-            ShapeKind::Line
-            | ShapeKind::Arrow
-            | ShapeKind::Polyline
-            | ShapeKind::Pencil
-            | ShapeKind::Highlighter => {
-                line::geometry(&self.points, self.width, self.kind == ShapeKind::Arrow)
-                    .iter()
-                    .filter_map(|poly| {
-                        let pts: Vec<Point<Pixels>> = poly.iter().map(|p| *p + offset).collect();
-                        let mut builder = PathBuilder::stroke(px(1.));
-                        builder.add_polygon(&pts, true);
-                        builder.build().ok()
-                    })
-                    .collect()
-            }
-            ShapeKind::Rectangle => self
-                .strokes()
-                .iter()
-                .filter_map(|s| rect_stroke(*s, offset))
-                .collect(),
-            ShapeKind::Ellipse => ellipse_stroke(self.bounds, offset).into_iter().collect(),
-            ShapeKind::Number => ellipse_stroke(self.bounds, offset).into_iter().collect(),
-            // solid regions trace their bounds rectangle
-            ShapeKind::Text | ShapeKind::Mosaic | ShapeKind::Blur => {
-                rect_stroke(self.bounds, offset).into_iter().collect()
-            }
-            _ => Vec::new(),
-        }
-    }
-
-    /// Handle anchors for the selection chrome — the points where a
-    /// grab makes sense for geometry editing: the two endpoints of a
-    /// line/arrow, every vertex of a polyline, the four corners of
-    /// rectangles/ellipses. Freehand strokes and content shapes
-    /// (badges, text, filters) have no per-point editing semantics and
-    /// get the outline alone.
-    pub(crate) fn handle_points(&self) -> Vec<Point<Pixels>> {
-        match self.kind {
-            ShapeKind::Line | ShapeKind::Arrow => self.points.iter().take(2).cloned().collect(),
-            ShapeKind::Polyline => self.points.clone(),
-            ShapeKind::Rectangle | ShapeKind::Ellipse => vec![
-                point(self.bounds.left(), self.bounds.top()),
-                point(self.bounds.right(), self.bounds.top()),
-                point(self.bounds.right(), self.bounds.bottom()),
-                point(self.bounds.left(), self.bounds.bottom()),
-            ],
-            _ => Vec::new(),
-        }
-    }
-
     pub(crate) fn strokes(&self) -> [Bounds<Pixels>; 4] {
         let b = self.bounds;
         let width = px(self.width)
@@ -221,11 +168,6 @@ enum HistoryEntry {
         after: Shape,
     },
 }
-
-/// Pointing forgiveness for hairline geometry — the hit region is the
-/// visible stroke itself; this only covers the antialiased fringe so
-/// an edge-pointing click still lands.
-const HIT_TOLERANCE: f32 = 0.5;
 
 pub(crate) struct Annotations {
     tool: Option<ShapeKind>,
@@ -394,30 +336,6 @@ impl Annotations {
         };
     }
 
-    /// Hit probe without side effects: the topmost shape index under
-    /// the point, if any.
-    pub(crate) fn hit_test(&self, p: Point<Pixels>) -> Option<usize> {
-        self.shapes.iter().rposition(|s| shape_hit(s, p))
-    }
-
-    /// Select a shape by index (the click-select path); no-op when the
-    /// index no longer exists.
-    pub(crate) fn select_index(&mut self, ix: usize) -> bool {
-        if self.shapes.get(ix).is_some() {
-            self.selected = Some(ix);
-            true
-        } else {
-            false
-        }
-    }
-
-    pub(crate) fn deselect(&mut self) {
-        self.selected = None;
-    }
-
-    pub(crate) fn selected(&self) -> Option<&Shape> {
-        self.selected.and_then(|ix| self.shapes.get(ix))
-    }
     pub(crate) fn set_color(&mut self, ix: usize) {
         if ix < crate::ui::theme::c().annotation_colors.len() {
             if self.tool == Some(ShapeKind::Highlighter) {
@@ -440,10 +358,6 @@ impl Annotations {
             }
         }
     }
-    /// Step the active tool's size preset one notch (S→M→L or back) —
-    /// the scroll-wheel path onto the same slots the toolbar's S/M/L
-    /// buttons drive, so the two stay in lockstep. Returns whether the
-    /// index moved (false at either end stop or with no active tool).
     /// Step a size preset one notch. With a live selection this targets
     /// the SELECTED shape's stroke width (recorded as a reversible
     /// edit); otherwise it steps the active tool's preset — the value
@@ -476,51 +390,6 @@ impl Annotations {
             Some(ShapeKind::Number) => self.set_number_size(next),
             _ => self.set_width(next),
         }
-        true
-    }
-
-    /// Step the selected shape's size through its OWN preset ladder —
-    /// the same rungs the toolbar exposes per tool. Number badges grow
-    /// their diameter (bounds re-centered); every other kind steps its
-    /// width field. One reversible Edit entry per notch.
-    fn step_selected_size(&mut self, ix: usize, up: bool) -> bool {
-        let ladder: &[f32] = match self.shapes[ix].kind {
-            ShapeKind::Text => &[16., 24., 32.],
-            ShapeKind::Number => &[24., 32., 40.],
-            ShapeKind::Mosaic | ShapeKind::Blur => &[8., 16., 24.],
-            ShapeKind::Highlighter => &[12., 20., 32.],
-            _ => &[1., 3., 5.],
-        };
-        let current = match self.shapes[ix].kind {
-            ShapeKind::Number => f32::from(self.shapes[ix].bounds.size.width),
-            _ => self.shapes[ix].width,
-        };
-        let cur = ladder
-            .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| (**a - current).abs().total_cmp(&(**b - current).abs()))
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        let next = if up { cur + 1 } else { cur.saturating_sub(1) };
-        if next == cur || next >= ladder.len() {
-            return false;
-        }
-        let before = self.shapes[ix].clone();
-        if self.shapes[ix].kind == ShapeKind::Number {
-            // grow the badge around its center
-            let d = ladder[next];
-            let b = self.shapes[ix].bounds;
-            let c = point(b.left() + b.size.width / 2., b.top() + b.size.height / 2.);
-            self.shapes[ix].bounds = Bounds::new(
-                point(c.x - px(d / 2.), c.y - px(d / 2.)),
-                size(px(d), px(d)),
-            );
-        } else {
-            self.shapes[ix].width = ladder[next];
-        }
-        let after = self.shapes[ix].clone();
-        self.history.push(HistoryEntry::Edit { ix, before, after });
-        self.redo.clear();
         true
     }
 
@@ -881,149 +750,6 @@ impl Annotations {
             }
         }
     }
-}
-
-/// Whether a point lands on a selectable shape. Phase A covers the
-/// four vector tools; every other kind is click-transparent so
-/// drawing behavior through them is unchanged.
-fn shape_hit(shape: &Shape, p: Point<Pixels>) -> bool {
-    let (x, y) = (f32::from(p.x), f32::from(p.y));
-    match shape.kind {
-        // stroke band: any of the four edge rectangles, inflated by the
-        // pointing tolerance (the band itself can be a hairline)
-        ShapeKind::Rectangle => shape
-            .strokes()
-            .iter()
-            .any(|s| inflate(s, px(HIT_TOLERANCE)).contains(&p)),
-        ShapeKind::Ellipse => {
-            let rx = f32::from(shape.bounds.size.width) / 2.;
-            let ry = f32::from(shape.bounds.size.height) / 2.;
-            if rx <= 0. || ry <= 0. {
-                return false;
-            }
-            let cx = f32::from(shape.bounds.origin.x) + rx;
-            let cy = f32::from(shape.bounds.origin.y) + ry;
-            let outer = ((x - cx) / (rx + HIT_TOLERANCE)).powi(2)
-                + ((y - cy) / (ry + HIT_TOLERANCE)).powi(2);
-            let inner_rx = (rx - shape.width - HIT_TOLERANCE).max(0.);
-            let inner_ry = (ry - shape.width - HIT_TOLERANCE).max(0.);
-            // a band thinner than the tolerance means even the center
-            // is within reach — the whole disc hits
-            let inner_clear = inner_rx <= 0.
-                || inner_ry <= 0.
-                || ((x - cx) / inner_rx).powi(2) + ((y - cy) / inner_ry).powi(2) >= 1.;
-            outer <= 1. && inner_clear
-        }
-        ShapeKind::Line | ShapeKind::Arrow => {
-            // the exact visual geometry (capsule / arrowhead polygon):
-            // what you see is what you can click
-            line::geometry(&shape.points, shape.width, shape.kind == ShapeKind::Arrow)
-                .iter()
-                .any(|poly| point_in_polygon(p, poly))
-        }
-        // freehand families share the same visual-polygon outline
-        ShapeKind::Polyline | ShapeKind::Pencil | ShapeKind::Highlighter => {
-            line::geometry(&shape.points, shape.width, false)
-                .iter()
-                .any(|poly| point_in_polygon(p, poly))
-        }
-        // the badge is a circle inscribed in its bounds
-        ShapeKind::Number => {
-            let r = f32::from(shape.bounds.size.width) / 2.;
-            if r <= 0. {
-                return false;
-            }
-            let c = shape.bounds.origin + point(px(r), px(r));
-            (f32::from(p.x - c.x)).hypot(f32::from(p.y - c.y)) <= r + HIT_TOLERANCE
-        }
-        // solid regions: anywhere inside the bounds
-        ShapeKind::Text | ShapeKind::Mosaic | ShapeKind::Blur => {
-            inflate(&shape.bounds, px(HIT_TOLERANCE)).contains(&p)
-        }
-        _ => false,
-    }
-}
-
-/// Even-odd ray casting: is the point inside the polygon?
-fn point_in_polygon(p: Point<Pixels>, poly: &[Point<Pixels>]) -> bool {
-    let (x, y) = (f32::from(p.x), f32::from(p.y));
-    let mut inside = false;
-    let mut j = poly.len() - 1;
-    for i in 0..poly.len() {
-        let (xi, yi) = (f32::from(poly[i].x), f32::from(poly[i].y));
-        let (xj, yj) = (f32::from(poly[j].x), f32::from(poly[j].y));
-        if (yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi {
-            inside = !inside;
-        }
-        j = i;
-    }
-    inside
-}
-
-fn inflate(b: &Bounds<Pixels>, by: Pixels) -> Bounds<Pixels> {
-    Bounds::new(
-        point(b.origin.x - by, b.origin.y - by),
-        size(b.size.width + by * 2., b.size.height + by * 2.),
-    )
-}
-
-/// A 1 px stroke tracing a rectangle's perimeter.
-fn rect_stroke(b: Bounds<Pixels>, offset: Point<Pixels>) -> Option<Path<Pixels>> {
-    let mut builder = PathBuilder::stroke(px(1.));
-    builder.add_polygon(
-        &[
-            point(b.left(), b.top()) + offset,
-            point(b.right(), b.top()) + offset,
-            point(b.right(), b.bottom()) + offset,
-            point(b.left(), b.bottom()) + offset,
-        ],
-        true,
-    );
-    builder.build().ok()
-}
-
-/// Append one eight-arc cubic ellipse contour to a builder (either
-/// fill or stroke mode). `direction` flips the winding to cut holes.
-fn ellipse_contour(
-    builder: &mut PathBuilder,
-    center: Point<Pixels>,
-    rx: f32,
-    ry: f32,
-    direction: f32,
-) {
-    let step = direction * std::f32::consts::TAU / 8.;
-    let k = 4. / 3. * (step / 4.).tan();
-    let at = |x, y| center + point(px(rx * x), px(ry * y));
-    builder.move_to(at(1., 0.));
-    for i in 0..8 {
-        let (s0, c0) = (i as f32 * step).sin_cos();
-        let (s1, c1) = ((i + 1) as f32 * step).sin_cos();
-        builder.cubic_bezier_to(
-            at(c1, s1),
-            at(c0 - k * s0, s0 + k * c0),
-            at(c1 + k * s1, s1 - k * c1),
-        );
-    }
-    builder.close();
-}
-
-/// A 1 px stroke tracing an ellipse's perimeter (the bounds box; a
-/// circle is the square-bounds case).
-fn ellipse_stroke(b: Bounds<Pixels>, offset: Point<Pixels>) -> Option<Path<Pixels>> {
-    let rx = f32::from(b.size.width) / 2.;
-    let ry = f32::from(b.size.height) / 2.;
-    if rx <= 0. || ry <= 0. {
-        return None;
-    }
-    let mut builder = PathBuilder::stroke(px(1.));
-    ellipse_contour(
-        &mut builder,
-        b.origin + offset + point(px(rx), px(ry)),
-        rx,
-        ry,
-        1.,
-    );
-    builder.build().ok()
 }
 
 fn number_bounds(p: Point<Pixels>, selection: Bounds<Pixels>, diameter: f32) -> Bounds<Pixels> {
