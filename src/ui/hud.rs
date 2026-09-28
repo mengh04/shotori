@@ -252,6 +252,45 @@ fn spinner() -> impl IntoElement {
         )
 }
 
+/// The annotation selection chrome: a 1 px accent stroke tracing the
+/// selected shape's own visual outline, plus 6 px handles at its
+/// anchor points (endpoints for lines, vertices for polylines, corners
+/// for rects/ellipses). Pure rendering of [`crate::annotation::Shape`]
+/// geometry — independent of which preview path paints the marks, and
+/// the same visual language as [`selection_handles`].
+pub(crate) fn annotation_chrome(selected: Option<crate::annotation::Shape>) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |viewport, (), window, _| {
+            let Some(shape) = &selected else {
+                return;
+            };
+            let accent = rgba(theme::c().accent);
+            for path in shape.hilite_paths(viewport.origin) {
+                window.paint_path(path, accent);
+            }
+            // sized between the selection's HANDLE_VIS (8) and the
+            // annotation marks' own scale so small shapes keep handles
+            let vis = px(6.);
+            for p in shape.handle_points() {
+                let h = Bounds::new(
+                    point(
+                        p.x + viewport.origin.x - vis / 2.,
+                        p.y + viewport.origin.y - vis / 2.,
+                    ),
+                    size(vis, vis),
+                );
+                window.paint_quad(fill(h, rgba(0xFFFFFFFF)));
+                window.paint_quad(outline(h, accent, BorderStyle::default()));
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+}
+
 #[cfg(test)]
 mod tests {
     // Explicit imports (same reason as selection.rs: avoid gpui's test macro
@@ -342,43 +381,4 @@ mod tests {
             }
         }
     }
-}
-
-/// The annotation selection chrome: a 1 px accent stroke tracing the
-/// selected shape's own visual outline, plus 6 px handles at its
-/// anchor points (endpoints for lines, vertices for polylines, corners
-/// for rects/ellipses). Pure rendering of [`crate::annotation::Shape`]
-/// geometry — independent of which preview path paints the marks, and
-/// the same visual language as [`selection_handles`].
-pub(crate) fn annotation_chrome(selected: Option<crate::annotation::Shape>) -> impl IntoElement {
-    canvas(
-        |_, _, _| (),
-        move |viewport, (), window, _| {
-            let Some(shape) = &selected else {
-                return;
-            };
-            let accent = rgba(theme::c().accent);
-            for path in shape.hilite_paths(viewport.origin) {
-                window.paint_path(path, accent);
-            }
-            // sized between the selection's HANDLE_VIS (8) and the
-            // annotation marks' own scale so small shapes keep handles
-            let vis = px(6.);
-            for p in shape.handle_points() {
-                let h = Bounds::new(
-                    point(
-                        p.x + viewport.origin.x - vis / 2.,
-                        p.y + viewport.origin.y - vis / 2.,
-                    ),
-                    size(vis, vis),
-                );
-                window.paint_quad(fill(h, rgba(0xFFFFFFFF)));
-                window.paint_quad(outline(h, accent, BorderStyle::default()));
-            }
-        },
-    )
-    .absolute()
-    .top_0()
-    .left_0()
-    .size_full()
 }
