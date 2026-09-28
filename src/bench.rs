@@ -4,7 +4,7 @@
 //! clap runs (same convention as the `--notify` / `--clipboard-daemon`
 //! child entry points). Zero new dependencies; release build only — debug
 //! timings of the pure-Rust pixel code are meaningless (10–100× slower,
-//! see the v0.6.3 ROADMAP note).
+//! see ROADMAP, testing methodology: benchmark with the release install).
 //!
 //! Inputs are generated ONCE per benchmark (fixed-seed LCG noise, so A/B
 //! runs are bit-identical) and only the measured function runs inside the
@@ -275,7 +275,7 @@ pub fn bench_main() -> i32 {
         let make = |kind: ShapeKind| {
             let mut a = Annotations::default();
             a.toggle(kind);
-            a.set_width(2); // strength index 2 → 24 (largest)
+            a.set_tool_size(24.); // strongest filter (spec max is 48, 24 = old L)
             a.begin(point(px(100.), px(100.)), sel);
             a.drag_to(point(px(800.), px(600.)), sel, false);
             a.end();

@@ -4,7 +4,14 @@
 //! `dispatch_action` — one action, two triggers, one pipeline. Row two
 //! (annotation tools, colors, widths) only appears while a tool is
 //! active. Geometry lives in [`crate::model::placement`].
-use gpui_kit::{assets::IconName, base::Button, *};
+use gpui_kit::{
+    assets::IconName,
+    base::{
+        Button,
+        slider::{Slider, SliderIndicator, SliderState, SliderThumb, SliderTrack},
+    },
+    *,
+};
 
 use crate::model::session::ScreenshotSession;
 use crate::ui::theme;
@@ -82,12 +89,24 @@ fn own_icon(path: &'static str) -> Svg {
         .text_color(rgba(theme::c().toolbar_text))
 }
 
+/// The active tool's size-slider bundle. The overlay owns the
+/// SliderState entity (rebuilt per tool spec) and passes it down;
+/// this module only renders.
+pub(crate) struct SizeSlider {
+    pub(crate) state: Entity<SliderState>,
+    pub(crate) spec: crate::annotation::SizeSpec,
+    /// The value's 0..1 position on the track, for the thumb.
+    pub(crate) percentage: f32,
+    pub(crate) current: f32,
+}
+
 pub(crate) fn selection_toolbar(
     rect: Bounds<Pixels>,
     output: SharedString,
     annotations: &crate::annotation::Annotations,
     session: Entity<ScreenshotSession>,
     focus: FocusHandle,
+    size_slider: Option<SizeSlider>,
 ) -> impl IntoElement {
     let selected_color = annotations.color().0;
     let filter_tool = matches!(
@@ -98,16 +117,8 @@ pub(crate) fn selection_toolbar(
         annotations.tool(),
         Some(crate::annotation::ShapeKind::Eraser | crate::annotation::ShapeKind::EraserRect)
     );
-    let highlighter_tool = annotations.tool() == Some(crate::annotation::ShapeKind::Highlighter);
     let number_tool = annotations.tool() == Some(crate::annotation::ShapeKind::Number);
     let text_tool = annotations.tool() == Some(crate::annotation::ShapeKind::Text);
-    let selected_width = if text_tool {
-        annotations.text_size()
-    } else if number_tool {
-        annotations.number_size()
-    } else {
-        annotations.width()
-    };
     let settings_focus = focus.clone();
 
     div()
@@ -357,30 +368,12 @@ pub(crate) fn selection_toolbar(
                         ),
                     );
                 }
-                options = options.child(separator());
-                for (ix, label) in ["Low", "Medium", "High"].into_iter().enumerate() {
-                    let session = session.clone();
-                    options = options.child(
-                        control(
-                            format!("tb-strength-{ix}"),
-                            format!("Effect strength: {label}"),
-                            settings_focus.clone(),
-                            move |_, cx| {
-                                session.update(cx, |s, cx| {
-                                    s.edit_annotations(|a| a.set_width(ix));
-                                    cx.notify();
-                                });
-                            },
-                        )
-                        .w(px(26.))
-                        .selected(annotations.width() == [8., 16., 24.][ix])
-                        .child(
-                            div()
-                                .size(px([4., 7., 10.][ix]))
-                                .rounded(px(1.))
-                                .bg(rgba(theme::c().toolbar_text)),
-                        ),
-                    );
+                if let Some(sc) = &size_slider {
+                    options = options.child(separator()).child(size_control(
+                        &settings_focus,
+                        &session,
+                        sc,
+                    ));
                 }
                 return options;
             }
@@ -439,82 +432,8 @@ pub(crate) fn selection_toolbar(
                 options = options.child(separator());
             }
 
-            let sizes = if eraser_tool {
-                [16., 32., 48.]
-            } else if text_tool {
-                [16., 24., 32.]
-            } else if number_tool {
-                [24., 32., 40.]
-            } else if highlighter_tool {
-                [12., 20., 32.]
-            } else {
-                [1., 3., 5.]
-            };
-            for (ix, width) in sizes.into_iter().enumerate() {
-                let session = session.clone();
-                options = options.child(
-                    control(
-                        if text_tool {
-                            format!("tb-text-size-{ix}")
-                        } else if number_tool {
-                            format!("tb-number-size-{ix}")
-                        } else {
-                            format!("tb-width-{ix}")
-                        },
-                        if text_tool {
-                            format!("Font size: {width} px")
-                        } else if number_tool {
-                            format!("Marker size: {width} px")
-                        } else {
-                            format!(
-                                "{}: {width} px",
-                                if eraser_tool {
-                                    "Eraser diameter"
-                                } else {
-                                    "Line width"
-                                }
-                            )
-                        },
-                        settings_focus.clone(),
-                        move |_, cx| {
-                            session.update(cx, |s, cx| {
-                                s.edit_annotation_settings(|a| {
-                                    if text_tool {
-                                        a.set_text_size(ix)
-                                    } else if number_tool {
-                                        a.set_number_size(ix)
-                                    } else {
-                                        a.set_width(ix)
-                                    }
-                                });
-                                cx.notify();
-                            })
-                        },
-                    )
-                    .w(px(26.))
-                    .selected(selected_width == width)
-                    .child(if text_tool {
-                        div()
-                            .text_size(px(12.))
-                            .child(format!("{width:.0}"))
-                            .into_any_element()
-                    } else if number_tool {
-                        div()
-                            .text_size(px(12.))
-                            .child(["S", "M", "L"][ix])
-                            .into_any_element()
-                    } else {
-                        div()
-                            .size(px(if highlighter_tool || eraser_tool {
-                                4. + ix as f32 * 3.
-                            } else {
-                                width + 2.
-                            }))
-                            .rounded_full()
-                            .bg(rgba(theme::c().toolbar_text))
-                            .into_any_element()
-                    }),
-                );
+            if let Some(sc) = &size_slider {
+                options = options.child(size_control(&settings_focus, &session, sc));
             }
             if eraser_tool {
                 return options;
@@ -557,6 +476,100 @@ pub(crate) fn selection_toolbar(
 /// quiet dot matrix like the textured rubber on physical devices — NOT
 /// a button: no pill, no hover background. The open/closed hand cursor
 /// is the affordance (see `Overlay::cursor_style`).
+/// The continuous size control (issue #3, phase 2): an unstyled base
+/// slider styled to the toolbar, a live value readout, and the three
+/// legacy presets as clickable detents on the track. Behavior comes
+/// from the base primitives (track click-to-position, thumb drag);
+/// this is presentation only.
+fn size_control(focus: &FocusHandle, session: &Entity<ScreenshotSession>, sc: &SizeSlider) -> Div {
+    /// track length; the thumb travels TRACK_W - THUMB inside it
+    const TRACK_W: f32 = 108.;
+    const THUMB: f32 = 12.;
+    let state = &sc.state;
+    div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .child(
+            div()
+                .relative()
+                .w(px(TRACK_W))
+                .h(px(20.))
+                // behavior root: aria + release handling across the strip
+                .child(
+                    Slider::new(state)
+                        .horizontal()
+                        .absolute()
+                        .size_full()
+                        .child(
+                            SliderTrack::new(state)
+                                .absolute()
+                                .left(px(THUMB / 2.))
+                                .top(px(8.))
+                                .w(px(TRACK_W - THUMB))
+                                .h(px(4.))
+                                .rounded_full()
+                                .bg(rgba(theme::c().toolbar_border))
+                                // the indicator is the bounds probe the
+                                // track's click-to-position maps through
+                                .child(SliderIndicator::new(state).size_full()),
+                        ),
+                )
+                .child(
+                    SliderThumb::new(state)
+                        .absolute()
+                        .top(px(10. - THUMB / 2.))
+                        .left(px(sc.percentage * (TRACK_W - THUMB)))
+                        .size(px(THUMB))
+                        .rounded_full()
+                        .bg(rgba(theme::c().toolbar_text))
+                        .border_1()
+                        .border_color(rgba(theme::c().toolbar_bg)),
+                )
+                // detents: the three legacy presets, clickable dots on
+                // the track line (jump to the preset)
+                .children((0..3usize).map(|ix| {
+                    let d = sc.spec.detents[ix];
+                    let center = (d - sc.spec.min) / (sc.spec.max - sc.spec.min)
+                        * (TRACK_W - THUMB)
+                        + THUMB / 2.;
+                    let session = session.clone();
+                    control(
+                        format!("tb-size-detent-{ix}"),
+                        format!("Preset size: {d:.0} px"),
+                        focus.clone(),
+                        move |_, cx| {
+                            session.update(cx, |s, cx| {
+                                s.edit_annotation_settings(|a| a.set_tool_size(d));
+                                cx.notify();
+                            })
+                        },
+                    )
+                    .absolute()
+                    .left(px(center - 5.))
+                    .top(px(5.))
+                    .size(px(10.))
+                    .rounded_full()
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(3.5))
+                            .top(px(6.5))
+                            .size(px(3.))
+                            .rounded_full()
+                            .bg(rgba(theme::c().toolbar_text)),
+                    )
+                })),
+        )
+        .child(
+            div()
+                .w(px(26.))
+                .text_size(px(12.))
+                .text_color(rgba(theme::c().toolbar_text))
+                .child(format!("{:.0}", sc.current)),
+        )
+}
+
 fn grip(
     id: &'static str,
     output: SharedString,

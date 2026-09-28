@@ -60,6 +60,14 @@ pub struct Overlay {
     /// boot trace: this instance's first render not yet reported
     /// (per-instance — the warm-window suite opens several overlays)
     perf_first_render_pending: bool,
+    /// The toolbar's size slider, rebuilt when the active tool (its
+    /// spec) changes; `SliderEvent::Change` writes through to the
+    /// session. UI state, never crosses to the model.
+    slider: Option<(
+        crate::annotation::ShapeKind,
+        Entity<gpui_kit::base::slider::SliderState>,
+    )>,
+    slider_sub: Option<Subscription>,
 }
 
 impl Overlay {
@@ -107,6 +115,8 @@ impl Overlay {
             text_subscription: None,
             cursor: std::rc::Rc::new(std::cell::Cell::new(CursorStyle::Crosshair)),
             perf_first_render_pending: true,
+            slider: None,
+            slider_sub: None,
             size_scroll_acc: 0.0,
         };
         overlay.attach_observers(window, cx);
@@ -787,6 +797,57 @@ impl Render for Overlay {
         // with a correct cursor on EVERY window, pointer motion or not
         // (e.g. chrome re-hosted by another window's release event).
         self.cursor.set(self.cursor_style(cx));
+        // The size slider FIRST: building/rebuilding it needs &mut cx
+        // (cx.new / cx.subscribe), which the `shared` read borrow below
+        // would block for the rest of render.
+        let size_slider = {
+            let a = self.session.read(cx).annotations();
+            let (tool, current) = (a.tool(), a.tool_size());
+            tool.map(|kind| {
+                let spec = crate::annotation::size_spec(kind);
+                let state = if self.slider.as_ref().is_none_or(|(k, _)| *k != kind) {
+                    // a new tool family means a new range — the state is
+                    // baked at build time, so rebuild the entity
+                    let state = cx.new(|_| {
+                        gpui_kit::base::slider::SliderState::new()
+                            .min(spec.min)
+                            .max(spec.max)
+                            .step(1.)
+                            .default_value(current)
+                    });
+                    let sub = cx.subscribe(
+                        &state,
+                        |this, _, event: &gpui_kit::base::slider::SliderEvent, cx| {
+                            if let gpui_kit::base::slider::SliderEvent::Change(v) = event {
+                                this.session.update(cx, |s, cx| {
+                                    s.edit_annotations(|a| a.set_tool_size(v.start()));
+                                    cx.notify();
+                                });
+                            }
+                        },
+                    );
+                    self.slider_sub = Some(sub);
+                    self.slider = Some((kind, state.clone()));
+                    state
+                } else {
+                    let (_, state) = self.slider.as_ref().expect("checked above");
+                    // sync external changes (wheel, detents) into the
+                    // thumb; skip when equal or every frame would
+                    // re-notify itself into a loop
+                    if (state.read(cx).value().start() - current).abs() > f32::EPSILON {
+                        state.update(cx, |s, cx| s.set_value(current, window, cx));
+                    }
+                    state.clone()
+                };
+                let percentage = state.read(cx).percentage().start;
+                crate::ui::toolbar::SizeSlider {
+                    state,
+                    spec,
+                    percentage,
+                    current,
+                }
+            })
+        };
         // Keep display geometry stable while dragging. The backdrop paints
         // shared edges directly so fractional DPI cannot open layout seams.
         let filtered = self.session.update(cx, |session, cx| {
@@ -816,7 +877,8 @@ impl Render for Overlay {
 
         // Bind the base chain, then attach feature-gated handlers via
         // shadowing — cfg attributes are illegal in the middle of a method
-        // chain (see ROADMAP v0.6.2 pitfall notes)
+        // chain (see ROADMAP, gpui pitfalls: "#[cfg] cannot hang
+        // mid-method-chain")
         let base = div()
             .id("shotori-overlay")
             .key_context(if self.ocr_setup.is_some() {
@@ -1200,6 +1262,7 @@ impl Render for Overlay {
                         self.session.read(cx).annotations(),
                         self.session.clone(),
                         self.text_editing.as_ref().map(|e|e.focus_handle(cx)).unwrap_or_else(||self.focus_handle.clone()),
+                        size_slider,
                     ))
                 } else {
                     None
@@ -2208,21 +2271,21 @@ mod multi_output_tests {
         let button = cx.debug_bounds("tb-text").unwrap();
         cx.simulate_click(button.center(), Default::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let button = cx.debug_bounds("tb-text-size-2").unwrap();
+        let button = cx.debug_bounds("tb-size-detent-2").unwrap();
         cx.simulate_click(button.center(), Default::default());
         cx.simulate_click(point(px(60.), px(60.)), Default::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.run_until_parked();
         assert!(cx.debug_bounds("text-editor").unwrap().size.width <= px(2.));
         assert!(cx.debug_bounds("tb-text").is_some());
-        assert!(cx.debug_bounds("tb-text-size-0").is_some());
+        assert!(cx.debug_bounds("tb-size-detent-0").is_some());
         let color = cx.debug_bounds("tb-color-4").unwrap();
         cx.simulate_click(color.center(), Default::default());
-        let small = cx.debug_bounds("tb-text-size-0").unwrap();
+        let small = cx.debug_bounds("tb-size-detent-0").unwrap();
         cx.simulate_click(small.center(), Default::default());
         cx.run_until_parked();
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let large = cx.debug_bounds("tb-text-size-2").unwrap();
+        let large = cx.debug_bounds("tb-size-detent-2").unwrap();
         cx.simulate_click(large.center(), Default::default());
         cx.run_until_parked();
         cx.update(|window, cx| {
@@ -2376,7 +2439,7 @@ mod multi_output_tests {
         cx.simulate_click(line_button.center(), Default::default());
         if kind == crate::annotation::ShapeKind::Number {
             cx.update(|window, cx| window.draw(cx).clear(cx));
-            let size = cx.debug_bounds("tb-number-size-2").unwrap();
+            let size = cx.debug_bounds("tb-size-detent-2").unwrap();
             cx.simulate_click(size.center(), Default::default());
             cx.simulate_keystrokes("n");
             cx.update(|_, cx| assert!(!session.read(cx).annotations().enabled()));
@@ -2390,13 +2453,13 @@ mod multi_output_tests {
         if kind == crate::annotation::ShapeKind::Eraser {
             cx.update(|window, cx| window.draw(cx).clear(cx));
             assert!(cx.debug_bounds("tb-color-0").is_none());
-            let width = cx.debug_bounds("tb-width-2").unwrap();
+            let width = cx.debug_bounds("tb-size-detent-2").unwrap();
             cx.simulate_click(width.center(), Default::default());
             cx.update(|_, cx| assert_eq!(session.read(cx).annotations().width(), 48.));
             let rect = cx.debug_bounds("tb-eraser-rect").unwrap();
             cx.simulate_click(rect.center(), Default::default());
             cx.update(|window, cx| window.draw(cx).clear(cx));
-            assert!(cx.debug_bounds("tb-width-2").is_none());
+            assert!(cx.debug_bounds("tb-size-detent-2").is_none());
             cx.simulate_keystrokes("d");
             cx.update(|_, cx| assert!(!session.read(cx).annotations().enabled()));
             cx.simulate_keystrokes("d");
@@ -2477,7 +2540,7 @@ mod multi_output_tests {
             let blur = cx.debug_bounds("tb-blur").unwrap();
             cx.simulate_click(blur.center(), Default::default());
             cx.update(|window, cx| window.draw(cx).clear(cx));
-            let strength = cx.debug_bounds("tb-strength-2").unwrap();
+            let strength = cx.debug_bounds("tb-size-detent-2").unwrap();
             cx.simulate_click(strength.center(), Default::default());
             cx.update(|_, cx| {
                 assert_eq!(
@@ -2669,7 +2732,7 @@ mod multi_output_tests {
         assert!(cx.debug_bounds("tb-undo").is_none());
         assert!(cx.debug_bounds("tb-redo").is_none());
         // Settings clicks must not strand keyboard focus on a transient button.
-        for selector in ["tb-color-3", "tb-width-2"] {
+        for selector in ["tb-color-3", "tb-size-detent-2"] {
             let button = cx.debug_bounds(selector).unwrap();
             cx.simulate_click(button.center(), Default::default());
             cx.update(|window, cx| window.draw(cx).clear(cx));

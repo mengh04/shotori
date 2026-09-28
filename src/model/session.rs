@@ -2027,7 +2027,7 @@ mod tests {
         s.end("right", point(px(40.), px(90.)));
         let bounds = s.text_bounds("left", point(px(85.), px(25.))).unwrap();
         s.edit_annotations(|a| {
-            a.set_text_size(0);
+            a.set_tool_size(16.);
             a.set_color(4);
             a.add_text(bounds, "MMMM 中文".into());
         });
