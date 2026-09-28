@@ -1138,18 +1138,40 @@ impl Render for Overlay {
                 .left_0()
                 .size_full(),
             )
-            // ①½ Annotation selection highlight: an independent layer
-            // painting the shape's OWN visual geometry (capsule, ring,
-            // arrowhead — never a bounding rectangle) with translucent
-            // chrome, identical over both preview paths.
+            // ①½ Annotation selection highlight: a thin accent stroke
+            // tracing the shape's own visual outline (capsule rim,
+            // ring, arrowhead) plus corner handles from its visual
+            // footprint — an independent layer, identical over both
+            // preview paths.
             .child(
                 canvas(
                     |_, _, _| (),
                     move |viewport, (), window, _| {
-                        if let Some(shape) = &selected_shape {
-                            for path in shape.hilite_paths(viewport.origin) {
-                                window.paint_path(path, rgba(0x3b82f666));
-                            }
+                        let Some(shape) = &selected_shape else {
+                            return;
+                        };
+                        let accent = rgba(crate::ui::theme::c().accent);
+                        for path in shape.hilite_paths(viewport.origin) {
+                            window.paint_path(path, accent);
+                        }
+                        // corner handles, sized between the selection's
+                        // HANDLE_VIS (8) and annotation marks' scale so
+                        // small shapes keep visible corners
+                        let mut b = shape.visual_bounds();
+                        b.origin += viewport.origin;
+                        let vis = px(6.);
+                        for (x, y) in [
+                            (b.left(), b.top()),
+                            (b.right(), b.top()),
+                            (b.right(), b.bottom()),
+                            (b.left(), b.bottom()),
+                        ] {
+                            let h = Bounds::new(
+                                point(x - vis / 2., y - vis / 2.),
+                                size(vis, vis),
+                            );
+                            window.paint_quad(fill(h, rgba(0xFFFFFFFF)));
+                            window.paint_quad(outline(h, accent, BorderStyle::default()));
                         }
                     },
                 )
