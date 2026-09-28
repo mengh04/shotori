@@ -326,9 +326,14 @@ pub(crate) fn selection_toolbar(
                 .child(grip("tb-grip-right", output, session.clone())),
         )
         .children(annotations.enabled().then(|| {
-            let mut options = bar();
+            // Settings rows hug their content like every other row — no
+            // fixed widths. The filter/eraser rows once carried `.w()`
+            // tuned for the old S/M/L preset buttons; when the slider
+            // bundle (wider than the three buttons) replaced them, the
+            // readout silently spilled past the painted border — near-black
+            // on near-black, only obvious on a HiDPI screen (user-reported).
+            let mut options = bar().debug_selector(|| "tb-options".to_string());
             if filter_tool {
-                options = options.w(px(178.));
                 for (id, label, kind) in [
                     (
                         "tb-pixelate",
@@ -374,13 +379,6 @@ pub(crate) fn selection_toolbar(
             }
 
             if eraser_tool {
-                options = options.w(px(
-                    if annotations.tool() == Some(crate::annotation::ShapeKind::EraserRect) {
-                        78.
-                    } else {
-                        170.
-                    },
-                ));
                 for (id, label, kind, icon) in [
                     (
                         "tb-eraser-brush",
@@ -524,6 +522,7 @@ fn size_control(sc: &SizeSlider) -> Div {
         )
         .child(
             div()
+                .debug_selector(|| "tb-size-readout".to_string())
                 .w(px(26.))
                 .text_size(px(12.))
                 .text_color(rgba(theme::c().toolbar_text))
