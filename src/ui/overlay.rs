@@ -858,7 +858,9 @@ impl Render for Overlay {
                     }
                     state.clone()
                 };
-                let percentage = state.read(cx).percentage().start;
+                // single-value sliders carry the thumb position in
+                // percentage().END (start stays 0)
+                let percentage = state.read(cx).percentage().end;
                 crate::ui::toolbar::SizeSlider {
                     state,
                     percentage,
