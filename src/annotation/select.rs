@@ -61,8 +61,24 @@ impl Annotations {
         }
     }
 
-    /// Finish a move drag: record the Edit (before → current) so undo
-    /// restores the pre-move position. No entry when nothing moved.
+    /// Re-derive shape `ix` from the press snapshot with handle
+    /// `anchor` placed at `p` — snapshot semantics like [`place_shape`].
+    pub(crate) fn place_handle(
+        &mut self,
+        ix: usize,
+        anchor: usize,
+        before: &Shape,
+        p: Point<Pixels>,
+    ) {
+        if let Some(shape) = self.shapes.get_mut(ix) {
+            *shape = before.clone();
+            shape.set_handle(anchor, p);
+        }
+    }
+
+    /// Finish an in-place edit drag (move or handle): record the Edit
+    /// (before → current) so undo restores the pre-drag state. No
+    /// entry when nothing changed.
     pub(crate) fn commit_move(&mut self, ix: usize, before: Shape) {
         let Some(after) = self.shapes.get(ix) else {
             return;

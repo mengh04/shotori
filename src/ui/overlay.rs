@@ -191,11 +191,24 @@ impl Overlay {
                     }
                 }
                 if session.annotations().enabled() {
-                    // mid-move: grabbed; a shape under the pointer
-                    // selects on press — promise it with the grab
-                    // cursor; blank canvas keeps the crosshair
+                    // mid-edit-drag: grabbed; a handle under the pointer
+                    // promises its directional resize; a shape body
+                    // selects on press (grab cursor); blank canvas keeps
+                    // the crosshair (new stroke)
                     if session.is_moving() {
                         return CursorStyle::ClosedHand;
+                    }
+                    if let Some((kind, anchor)) = session.annotation_handle_hover() {
+                        // corner handles resize along their diagonal;
+                        // endpoint/vertex handles reposition freely
+                        return if kind.is_region() {
+                            match anchor {
+                                0 | 2 => CursorStyle::ResizeUpLeftDownRight,
+                                _ => CursorStyle::ResizeUpRightDownLeft,
+                            }
+                        } else {
+                            CursorStyle::Crosshair
+                        };
                     }
                     if session.pointer_on_annotation() {
                         return CursorStyle::OpenHand;

@@ -23,6 +23,16 @@ struct MoveDrag {
     press: Point<Pixels>,
 }
 
+/// An in-flight handle drag (issue #5 phase C): which handle anchor of
+/// the selected shape, plus the press-time snapshot. The anchor
+/// follows the pointer exactly (no snapping yet); commit records one
+/// Edit.
+struct HandleDrag {
+    ix: usize,
+    anchor: usize,
+    before: crate::annotation::Shape,
+}
+
 impl Screen {
     fn bounds(&self) -> Bounds<Pixels> {
         Bounds {
@@ -96,6 +106,9 @@ pub struct ScreenshotSession {
     /// when a press on the ALREADY-SELECTED shape moves past the click
     /// slop; the shape follows the pointer until release.
     moving: Option<MoveDrag>,
+    /// Handle drag of the selected annotation in flight (phase C):
+    /// grabbed an endpoint/vertex/corner of the selected shape.
+    handle_drag: Option<HandleDrag>,
     blocked: bool,
     /// The user-dragged toolbar position (window-local to the ACTIVE
     /// output); None → the placement anchor decides. Reset by a NEW
@@ -140,6 +153,7 @@ impl ScreenshotSession {
             pointer_global: None,
             pending_click: None,
             moving: None,
+            handle_drag: None,
             blocked: false,
             toolbar_pos: None,
             toolbar_drag: None,
@@ -617,6 +631,15 @@ impl ScreenshotSession {
         if self.annotations.enabled() {
             if let Some(selection) = self.selection.bounds() {
                 let p = local + self.screen(name).bounds().origin;
+                // a handle of the SELECTED shape grabs first (phase C);
+                // the handles sit on the shape's body, so this must run
+                // before the shape hit-test parks a click
+                if let Some(anchor) = self.annotations.selected().and_then(|s| s.handle_at(p)) {
+                    let ix = self.annotations.selected_index().expect("selected");
+                    let before = self.annotations.selected().expect("selected").clone();
+                    self.handle_drag = Some(HandleDrag { ix, anchor, before });
+                    return;
+                }
                 // press on a shape: click-or-drag resolves on the
                 // following move/up events (polyline never parks — its
                 // clicks place vertices)
@@ -654,6 +677,14 @@ impl ScreenshotSession {
         if self.annotations.enabled() {
             if let Some(selection) = self.selection.bounds() {
                 let p = local + self.screen(name).bounds().origin;
+                // handle grab wins over everything: handles only exist
+                // for the selected shape, and catching one must not
+                // fall through to selecting/drawing on the body
+                if let Some(drag) = &self.handle_drag {
+                    self.annotations
+                        .place_handle(drag.ix, drag.anchor, &drag.before, p);
+                    return true;
+                }
                 if let Some((ix, press)) = self.pending_click {
                     let dx = f32::from(p.x - press.x);
                     let dy = f32::from(p.y - press.y);
@@ -706,6 +737,11 @@ impl ScreenshotSession {
                 self.annotations.commit_move(drag.ix, drag.before);
                 return;
             }
+            // release of a handle drag: one Edit entry when it changed
+            if let Some(drag) = self.handle_drag.take() {
+                self.annotations.commit_move(drag.ix, drag.before);
+                return;
+            }
             self.pointer_move(name, local, square);
             self.annotations.end();
         } else if self.selection.is_editing() {
@@ -718,8 +754,14 @@ impl ScreenshotSession {
     }
 
     pub(crate) fn cancel_annotation(&mut self) -> bool {
-        // Escape interrupts an in-flight move: restore the snapshot
+        // Escape interrupts an in-flight edit drag (move or handle):
+        // restore the snapshot
         if let Some(drag) = self.moving.take() {
+            self.annotations
+                .place_shape(drag.ix, &drag.before, point(px(0.), px(0.)));
+            return true;
+        }
+        if let Some(drag) = self.handle_drag.take() {
             self.annotations
                 .place_shape(drag.ix, &drag.before, point(px(0.), px(0.)));
             return true;
@@ -727,9 +769,19 @@ impl ScreenshotSession {
         !self.blocked && self.annotations.cancel()
     }
 
-    /// Whether a drag-move of the selected annotation is in flight.
+    /// Whether an edit drag of the selected annotation is in flight
+    /// (body move or handle).
     pub(crate) fn is_moving(&self) -> bool {
-        self.moving.is_some()
+        self.moving.is_some() || self.handle_drag.is_some()
+    }
+
+    /// The handle of the selected annotation under the pointer, if
+    /// any — the hover probe for the directional cursor.
+    pub(crate) fn annotation_handle_hover(&self) -> Option<(crate::annotation::ShapeKind, usize)> {
+        let p = self.pointer_global?;
+        let shape = self.annotations.selected()?;
+        let anchor = shape.handle_at(p)?;
+        Some((shape.kind, anchor))
     }
 
     pub(crate) fn local_annotations(&self, name: &str) -> Vec<crate::annotation::Shape> {
@@ -2107,6 +2159,76 @@ mod tests {
         s.cancel_annotation();
         assert!(!s.is_moving());
         assert_eq!(s.annotations().committed()[0].bounds.origin, moved_origin);
+    }
+
+    #[test]
+    fn handle_drags_edit_geometry_and_undo_restores() {
+        use crate::annotation::ShapeKind;
+        let mut s = session();
+        s.select_all();
+        let sel = s.selection.bounds().unwrap();
+        let local = |p: gpui_kit::Point<gpui_kit::Pixels>| p - point(px(-100.), px(20.));
+
+        // a line; endpoints may be snapped — read them back
+        s.edit_annotations(|a| {
+            a.toggle(ShapeKind::Line);
+            a.begin(point(px(10.), px(10.)), sel);
+            a.drag_to(point(px(60.), px(60.)), sel, false);
+            a.end();
+        });
+        let line = s.annotations().committed()[0].clone();
+        // click-select at the midpoint, then grab the END handle and
+        // drag it (grabbing the handle must not move the whole shape)
+        let mid = point(
+            (line.points[0].x + line.points[1].x) / 2.,
+            (line.points[0].y + line.points[1].y) / 2.,
+        );
+        s.pointer_down("left", local(mid));
+        s.pointer_up("left", local(mid), false);
+        assert!(s.annotations().selected().is_some());
+
+        let target = point(px(80.), px(20.));
+        s.pointer_down("left", local(line.points[1]));
+        s.pointer_move("left", local(target), false);
+        s.pointer_up("left", local(target), false);
+        let edited = s.annotations().committed()[0].clone();
+        assert_eq!(edited.points[1], target);
+        assert_eq!(edited.points[0], line.points[0]); // anchor moved only
+        s.edit_annotations(|a| a.undo());
+        assert_eq!(s.annotations().committed()[0].points, line.points);
+
+        // rectangle: grab the BR handle and drag THROUGH the fixed TL
+        // corner — bounds re-normalize like drawing did
+        s.edit_annotations(|a| {
+            a.toggle(ShapeKind::Rectangle);
+            a.begin(point(px(0.), px(10.)), sel);
+            a.drag_to(point(px(40.), px(50.)), sel, false);
+            a.end();
+        });
+        s.pointer_down("left", local(point(px(2.), px(25.))));
+        s.pointer_up("left", local(point(px(2.), px(25.))), false);
+        let br = {
+            let b = s.annotations().selected().unwrap().bounds;
+            point(b.right() - px(2.), b.bottom() - px(2.))
+        };
+        let through = point(px(-20.), px(-10.));
+        s.pointer_down("left", local(br));
+        s.pointer_move("left", local(through), false);
+        s.pointer_up("left", local(through), false);
+        let after = s.annotations().selected().unwrap().bounds;
+        assert_eq!(
+            after,
+            Bounds::new(point(px(-20.), px(-10.)), size(px(20.), px(20.)))
+        );
+
+        // Escape mid-handle-drag restores the press-time snapshot
+        let br = point(after.right() - px(2.), after.bottom() - px(2.));
+        s.pointer_down("left", local(br));
+        s.pointer_move("left", local(point(px(60.), px(70.))), false);
+        assert!(s.is_moving());
+        s.cancel_annotation();
+        assert!(!s.is_moving());
+        assert_eq!(s.annotations().committed()[1].bounds, after);
     }
 
     #[test]
