@@ -139,6 +139,28 @@ impl Shape {
     }
 
     /// Inward strokes keep both preview and export within the rectangle.
+    /// Bounds for the selection chrome outline. Line-like shapes carry
+    /// their geometry in `points` (their `bounds` stays at the zero-size
+    /// placeholder from `begin`), so derive it from there. Inflated by
+    /// half the stroke plus a margin so the outline clears the mark.
+    pub(crate) fn chrome_bounds(&self) -> Bounds<Pixels> {
+        let base =
+            if matches!(self.kind, ShapeKind::Line | ShapeKind::Arrow) && self.points.len() >= 2 {
+                let mut min = self.points[0];
+                let mut max = self.points[0];
+                for p in &self.points[1..] {
+                    min.x = min.x.min(p.x);
+                    min.y = min.y.min(p.y);
+                    max.x = max.x.max(p.x);
+                    max.y = max.y.max(p.y);
+                }
+                Bounds::new(min, size(max.x - min.x, max.y - min.y))
+            } else {
+                self.bounds
+            };
+        inflate(&base, px(self.width / 2. + 3.))
+    }
+
     pub(crate) fn strokes(&self) -> [Bounds<Pixels>; 4] {
         let b = self.bounds;
         let width = px(self.width)
@@ -168,6 +190,24 @@ struct Draft {
     shape: Shape,
 }
 
+/// One reversible step. Placement history was a plain shape stack, but
+/// in-place edits need both directions recorded: `before` to undo,
+/// `after` to redo. Shape indices are stable because committed shapes
+/// only ever leave from the tail via undo.
+#[derive(Clone)]
+enum HistoryEntry {
+    Add(Shape),
+    Edit {
+        ix: usize,
+        before: Shape,
+        after: Shape,
+    },
+}
+
+/// Logical-pixel forgiveness for pointing at thin strokes — pure
+/// geometry hit bands would be unreachable for 1 px lines.
+const HIT_TOLERANCE: f32 = 8.;
+
 pub(crate) struct Annotations {
     tool: Option<ShapeKind>,
     color_ix: usize,
@@ -179,10 +219,14 @@ pub(crate) struct Annotations {
     highlighter_width_ix: usize,
     highlighter_color_ix: usize,
     shapes: Vec<Shape>,
-    undone: Vec<Shape>,
+    history: Vec<HistoryEntry>,
+    redo: Vec<HistoryEntry>,
     draft: Option<Draft>,
     draft_generation: u64,
     pressed: bool,
+    /// Index into `shapes` of the currently selected annotation, if any.
+    /// Editing actions (wheel size stepping, later drags) target it.
+    selected: Option<usize>,
 }
 
 impl Default for Annotations {
@@ -198,10 +242,12 @@ impl Default for Annotations {
             highlighter_width_ix: 1,
             highlighter_color_ix: 2,
             shapes: Vec::new(),
-            undone: Vec::new(),
+            history: Vec::new(),
+            redo: Vec::new(),
             draft: None,
             draft_generation: 0,
             pressed: false,
+            selected: None,
         }
     }
 }
@@ -289,7 +335,7 @@ impl Annotations {
         if value.trim().is_empty() {
             return;
         }
-        self.shapes.push(Shape {
+        self.record_add(Shape {
             kind: ShapeKind::Text,
             number: None,
             text: Some(value),
@@ -298,7 +344,6 @@ impl Annotations {
             width: self.text_size(),
             points: Vec::new(),
         });
-        self.undone.clear();
     }
     pub(crate) fn number_size(&self) -> f32 {
         [24., 32., 40.][self.number_size_ix]
@@ -322,11 +367,32 @@ impl Annotations {
     pub(crate) fn toggle(&mut self, kind: ShapeKind) {
         self.draft = None;
         self.pressed = false;
+        self.selected = None;
         self.tool = if self.tool == Some(kind) {
             None
         } else {
             Some(kind)
         };
+    }
+
+    /// Hit-priority selection: the topmost committed shape under the
+    /// point wins (later shapes paint above earlier ones). Returns
+    /// whether a shape was selected — callers then skip starting a new
+    /// draft stroke.
+    pub(crate) fn select_at(&mut self, p: Point<Pixels>) -> bool {
+        let hit = self.shapes.iter().rposition(|s| shape_hit(s, p));
+        self.selected = hit;
+        hit.is_some()
+    }
+
+    /// Whether a point sits on a selectable shape — the hover probe for
+    /// the pointer affordance (no state change).
+    pub(crate) fn hits_shape(&self, p: Point<Pixels>) -> bool {
+        self.shapes.iter().rev().any(|s| shape_hit(s, p))
+    }
+
+    pub(crate) fn selected(&self) -> Option<&Shape> {
+        self.selected.and_then(|ix| self.shapes.get(ix))
     }
     pub(crate) fn set_color(&mut self, ix: usize) {
         if ix < crate::ui::theme::c().annotation_colors.len() {
@@ -354,7 +420,16 @@ impl Annotations {
     /// the scroll-wheel path onto the same slots the toolbar's S/M/L
     /// buttons drive, so the two stay in lockstep. Returns whether the
     /// index moved (false at either end stop or with no active tool).
+    /// Step a size preset one notch. With a live selection this targets
+    /// the SELECTED shape's stroke width (recorded as a reversible
+    /// edit); otherwise it steps the active tool's preset — the value
+    /// the NEXT stroke will take.
     pub(crate) fn step_size(&mut self, up: bool) -> bool {
+        if let Some(ix) = self.selected
+            && self.shapes.get(ix).is_some()
+        {
+            return self.step_selected_width(ix, up);
+        }
         let cur = match self.tool {
             Some(ShapeKind::Text) => self.text_size_ix,
             Some(ShapeKind::Number) => self.number_size_ix,
@@ -378,18 +453,45 @@ impl Annotations {
         true
     }
 
+    /// Step the selected shape's stroke width through the generic S/M/L
+    /// ladder (the same rungs `width()` exposes), one reversible Edit
+    /// entry per notch so undo walks back one step at a time.
+    fn step_selected_width(&mut self, ix: usize, up: bool) -> bool {
+        const STROKE_LADDER: [f32; 3] = [1., 3., 5.];
+        let rung = |w: f32| match w {
+            w if w < 2. => 0usize,
+            w if w < 4. => 1,
+            _ => 2,
+        };
+        let cur = rung(self.shapes[ix].width);
+        let next = if up { cur + 1 } else { cur.saturating_sub(1) };
+        if next == cur || next >= STROKE_LADDER.len() {
+            return false;
+        }
+        let before = self.shapes[ix].clone();
+        self.shapes[ix].width = STROKE_LADDER[next];
+        let after = self.shapes[ix].clone();
+        self.history.push(HistoryEntry::Edit { ix, before, after });
+        self.redo.clear();
+        true
+    }
+
     pub(crate) fn reset(&mut self) {
         self.shapes.clear();
-        self.undone.clear();
+        self.history.clear();
+        self.redo.clear();
         self.draft = None;
         self.pressed = false;
         self.tool = None;
+        self.selected = None;
     }
 
     pub(crate) fn begin(&mut self, p: Point<Pixels>, selection: Bounds<Pixels>) {
         if !self.enabled() || self.tool == Some(ShapeKind::Text) || !selection.contains(&p) {
             return;
         }
+        // starting a new stroke gives up the selection
+        self.selected = None;
         if self.tool == Some(ShapeKind::Number)
             && (selection.size.width < px(16.) || selection.size.height < px(16.))
         {
@@ -536,8 +638,7 @@ impl Annotations {
                 draft.shape.bounds.size.width >= px(2.) && draft.shape.bounds.size.height >= px(2.)
             };
             if valid {
-                self.shapes.push(draft.shape);
-                self.undone.clear();
+                self.record_add(draft.shape);
             }
         }
     }
@@ -561,15 +662,18 @@ impl Annotations {
         let mut shape = self.draft.take().unwrap().shape;
         shape.points.pop();
         if shape.points.len() >= 2 {
-            self.shapes.push(shape);
-            self.undone.clear();
+            self.record_add(shape);
         }
     }
 
-    /// Escape cancels a stroke first, then leaves the tool while keeping marks.
+    /// Escape cancels a stroke first, then drops the selection, then
+    /// leaves the tool while keeping marks.
     pub(crate) fn cancel(&mut self) -> bool {
         self.pressed = false;
         if self.draft.take().is_some() {
+            return true;
+        }
+        if self.selected.take().is_some() {
             return true;
         }
         if self.enabled() {
@@ -578,20 +682,51 @@ impl Annotations {
         }
         false
     }
+    /// Record a committed shape: the Add entry enables undo, and any
+    /// diverging action invalidates the redo stack. Also drops the
+    /// selection — indices above the tail may have shifted.
+    fn record_add(&mut self, shape: Shape) {
+        self.shapes.push(shape.clone());
+        self.history.push(HistoryEntry::Add(shape));
+        self.redo.clear();
+        self.selected = None;
+    }
+
     pub(crate) fn undo(&mut self) {
         self.pressed = false;
+        self.selected = None;
         if self.draft.take().is_some() {
             return;
         }
-        if let Some(shape) = self.shapes.pop() {
-            self.undone.push(shape);
+        if let Some(entry) = self.history.pop() {
+            match &entry {
+                HistoryEntry::Add(_) => {
+                    self.shapes.pop();
+                }
+                HistoryEntry::Edit { ix, before, .. } => {
+                    if let Some(shape) = self.shapes.get_mut(*ix) {
+                        *shape = before.clone();
+                    }
+                }
+            }
+            self.redo.push(entry);
         }
     }
     pub(crate) fn redo(&mut self) {
         if self.draft.is_none()
-            && let Some(shape) = self.undone.pop()
+            && let Some(entry) = self.redo.pop()
         {
-            self.shapes.push(shape);
+            match &entry {
+                HistoryEntry::Add(shape) => {
+                    self.shapes.push(shape.clone());
+                }
+                HistoryEntry::Edit { ix, after, .. } => {
+                    if let Some(shape) = self.shapes.get_mut(*ix) {
+                        *shape = after.clone();
+                    }
+                }
+            }
+            self.history.push(entry);
         }
     }
     pub(crate) fn visible(&self) -> impl Iterator<Item = &Shape> + '_ {
@@ -700,6 +835,69 @@ impl Annotations {
     }
 }
 
+/// Whether a point lands on a selectable shape. Phase A covers the
+/// four vector tools; every other kind is click-transparent so
+/// drawing behavior through them is unchanged.
+fn shape_hit(shape: &Shape, p: Point<Pixels>) -> bool {
+    let (x, y) = (f32::from(p.x), f32::from(p.y));
+    match shape.kind {
+        // stroke band: any of the four edge rectangles, inflated by the
+        // pointing tolerance (the band itself can be a hairline)
+        ShapeKind::Rectangle => shape
+            .strokes()
+            .iter()
+            .any(|s| inflate(s, px(HIT_TOLERANCE)).contains(&p)),
+        ShapeKind::Ellipse => {
+            let rx = f32::from(shape.bounds.size.width) / 2.;
+            let ry = f32::from(shape.bounds.size.height) / 2.;
+            if rx <= 0. || ry <= 0. {
+                return false;
+            }
+            let cx = f32::from(shape.bounds.origin.x) + rx;
+            let cy = f32::from(shape.bounds.origin.y) + ry;
+            let outer = ((x - cx) / (rx + HIT_TOLERANCE)).powi(2)
+                + ((y - cy) / (ry + HIT_TOLERANCE)).powi(2);
+            let inner_rx = (rx - shape.width - HIT_TOLERANCE).max(0.);
+            let inner_ry = (ry - shape.width - HIT_TOLERANCE).max(0.);
+            // a band thinner than the tolerance means even the center
+            // is within reach — the whole disc hits
+            let inner_clear = inner_rx <= 0.
+                || inner_ry <= 0.
+                || ((x - cx) / inner_rx).powi(2) + ((y - cy) / inner_ry).powi(2) >= 1.;
+            outer <= 1. && inner_clear
+        }
+        ShapeKind::Line | ShapeKind::Arrow => {
+            let (Some(a), Some(b)) = (shape.points.first(), shape.points.get(1)) else {
+                return false;
+            };
+            point_segment_distance(p, *a, *b) <= shape.width / 2. + HIT_TOLERANCE
+        }
+        _ => false,
+    }
+}
+
+/// Euclidean point-to-segment distance with clamped projection.
+fn point_segment_distance(p: Point<Pixels>, a: Point<Pixels>, b: Point<Pixels>) -> f32 {
+    let (x, y) = (f32::from(p.x), f32::from(p.y));
+    let (ax, ay) = (f32::from(a.x), f32::from(a.y));
+    let (dx, dy) = (f32::from(b.x) - ax, f32::from(b.y) - ay);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 <= f32::EPSILON {
+        0.
+    } else {
+        (((x - ax) * dx + (y - ay) * dy) / len2).clamp(0., 1.)
+    };
+    let (cx, cy) = (ax + t * dx, ay + t * dy);
+    (x - cx).hypot(y - cy)
+}
+
+fn inflate(b: &Bounds<Pixels>, by: Pixels) -> Bounds<Pixels> {
+    Bounds::new(
+        point(b.origin.x - by, b.origin.y - by),
+        size(b.size.width + by * 2., b.size.height + by * 2.),
+    )
+}
+
 fn number_bounds(p: Point<Pixels>, selection: Bounds<Pixels>, diameter: f32) -> Bounds<Pixels> {
     let diameter = px(diameter)
         .min(selection.size.width)
@@ -784,6 +982,108 @@ mod tests {
         a.begin(point(px(10.), px(10.)), selection());
         a.drag_to(point(px(30.), px(40.)), selection(), false);
         a.end();
+    }
+
+    #[test]
+    fn vector_shapes_select_by_hit_with_topmost_priority() {
+        let mut a = Annotations::default();
+        // three marks laid out with clear water between them — the 8 px
+        // hit tolerance reaches surprisingly far, so each probe point
+        // must be checked against every shape's inflated band
+        a.toggle(super::ShapeKind::Rectangle);
+        a.begin(point(px(0.), px(10.)), selection());
+        a.drag_to(point(px(40.), px(50.)), selection(), false);
+        a.end();
+        a.toggle(super::ShapeKind::Line);
+        a.begin(point(px(50.), px(10.)), selection());
+        a.drag_to(point(px(90.), px(50.)), selection(), false);
+        a.end();
+        a.toggle(super::ShapeKind::Ellipse);
+        a.begin(point(px(50.), px(65.)), selection());
+        a.drag_to(point(px(78.), px(95.)), selection(), false);
+        a.end();
+
+        // rectangle: edge band hits, interior is click-transparent
+        assert!(a.select_at(point(px(0.), px(30.))));
+        assert_eq!(
+            a.selected().map(|s| s.kind),
+            Some(super::ShapeKind::Rectangle)
+        );
+        assert!(!a.hits_shape(point(px(20.), px(30.))));
+
+        // line: on-segment hits, far off-segment misses
+        assert!(a.select_at(point(px(70.), px(30.))));
+        assert_eq!(a.selected().map(|s| s.kind), Some(super::ShapeKind::Line));
+        assert!(!a.hits_shape(point(px(75.), px(5.))));
+
+        // ellipse (center 64,80, rx 14, ry 15): ring band hits, the
+        // empty middle does not
+        assert!(a.select_at(point(px(78.), px(80.))));
+        assert_eq!(
+            a.selected().map(|s| s.kind),
+            Some(super::ShapeKind::Ellipse)
+        );
+        assert!(!a.hits_shape(point(px(64.), px(80.))));
+    }
+
+    #[test]
+    fn wheel_edits_the_selected_shape_not_the_tool_preset() {
+        let mut a = Annotations::default();
+        a.toggle(super::ShapeKind::Rectangle);
+        rectangle(&mut a); // committed at width 3 (M)
+        assert!(a.select_at(point(px(10.), px(25.))));
+
+        assert!(a.step_size(true)); // 3 → 5 on the SHAPE
+        assert_eq!(a.selected().map(|s| s.width), Some(5.));
+        assert_eq!(a.width(), 3.); // tool preset untouched
+        assert!(!a.step_size(true)); // already at L
+
+        // deselected, the same wheel steps the preset again
+        let _ = a.cancel(); // consumed by dropping the selection
+        assert!(a.enabled());
+        assert!(a.step_size(false));
+        assert_eq!(a.width(), 1.);
+    }
+
+    #[test]
+    fn selected_width_edits_undo_and_redo_through_the_command_stack() {
+        let mut a = Annotations::default();
+        a.toggle(super::ShapeKind::Rectangle);
+        rectangle(&mut a); // committed at width 3 (M)
+        assert!(a.select_at(point(px(10.), px(25.))));
+        assert!(a.step_size(true)); // 3 → 5
+        assert_eq!(a.visible().next().unwrap().width, 5.);
+
+        a.undo(); // Edit reversed
+        assert_eq!(a.visible().next().unwrap().width, 3.);
+        a.undo(); // Add reversed — shape leaves
+        assert_eq!(a.visible().count(), 0);
+        a.redo(); // Add replayed
+        assert_eq!(a.visible().next().unwrap().width, 3.);
+        a.redo(); // Edit replayed
+        assert_eq!(a.visible().next().unwrap().width, 5.);
+    }
+
+    #[test]
+    fn selection_lifecycle_clears_on_draw_tool_switch_and_escape() {
+        let mut a = Annotations::default();
+        a.toggle(super::ShapeKind::Rectangle);
+        rectangle(&mut a);
+
+        assert!(a.select_at(point(px(10.), px(25.))));
+        a.begin(point(px(50.), px(50.)), selection()); // new stroke wins
+        assert_eq!(a.selected(), None);
+        a.end();
+
+        assert!(a.select_at(point(px(10.), px(25.))));
+        a.toggle(super::ShapeKind::Arrow); // tool switch wins
+        assert_eq!(a.selected(), None);
+
+        assert!(a.select_at(point(px(10.), px(25.))));
+        assert!(a.cancel()); // Escape consumed by the deselection
+        assert!(a.enabled()); // tool still active…
+        assert!(a.cancel()); // …the next Escape leaves it
+        assert!(!a.enabled());
     }
 
     #[test]
@@ -922,13 +1222,13 @@ mod tests {
         rectangle(&mut a);
         assert_eq!(a.visible().count(), 2);
         a.undo();
-        assert!(!a.undone.is_empty());
+        assert!(!a.redo.is_empty());
         assert_eq!(a.visible().next().unwrap().color, first_color);
         a.redo();
         assert_eq!(a.visible().count(), 2);
         a.undo();
         rectangle(&mut a);
-        assert!(a.undone.is_empty());
+        assert!(a.redo.is_empty());
         a.reset();
         assert_eq!(a.visible().count(), 0);
         assert!(!a.enabled());
@@ -958,7 +1258,7 @@ mod tests {
         a.begin(point(px(10.), px(10.)), selection());
         a.drag_to(point(px(11.), px(11.)), selection(), false);
         a.end();
-        assert!(!a.undone.is_empty());
+        assert!(!a.redo.is_empty());
         assert_eq!(a.visible().count(), 0);
     }
 

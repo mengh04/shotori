@@ -591,8 +591,14 @@ impl ScreenshotSession {
         self.pointer_global = Some(self.to_global(name, local));
         if self.annotations.enabled() {
             if let Some(selection) = self.selection.bounds() {
-                self.annotations
-                    .begin(local + self.screen(name).bounds().origin, selection);
+                let p = local + self.screen(name).bounds().origin;
+                // Hit-priority: pressing a placed shape selects it as the
+                // edit target instead of starting a new stroke (issue #5
+                // phase A). Blank canvas keeps the draw behavior.
+                if self.annotations.select_at(p) {
+                    return;
+                }
+                self.annotations.begin(p, selection);
             }
         } else {
             // A finalized selection is editable in place: an edge/corner
@@ -670,6 +676,24 @@ impl ScreenshotSession {
                 shape
             })
             .collect()
+    }
+
+    /// Selection-chrome bounds of the selected annotation, in the
+    /// output's local coordinates; `None` while nothing is selected.
+    pub(crate) fn selected_chrome(&self, name: &str) -> Option<Bounds<Pixels>> {
+        let origin = self.screen(name).bounds().origin;
+        self.annotations.selected().map(|shape| {
+            let mut b = shape.chrome_bounds();
+            b.origin -= origin;
+            b
+        })
+    }
+
+    /// Whether the pointer currently sits on a selectable annotation
+    /// shape — the hover probe for the pointer affordance.
+    pub(crate) fn pointer_on_annotation(&self) -> bool {
+        self.pointer_global
+            .is_some_and(|p| self.annotations.hits_shape(p))
     }
 
     pub(crate) fn crop(&self, output: &str) -> Option<(u32, u32, Vec<u8>)> {
@@ -1930,9 +1954,17 @@ mod tests {
             let mut s = session();
             s.select_all();
             s.edit_annotations(|a| a.toggle(kind));
+            let sel = s.selection.bounds().unwrap();
             for i in 0..65 {
-                s.pointer_down("left", point(px(10. + (i % 40) as f32), px(30.)));
-                s.pointer_up("right", point(px(25.), px(60.)), false);
+                // Drive the annotation API directly — this test is about
+                // the preview/export pipeline, and pointer_down's
+                // hit-priority selection (issue #5) would swallow presses
+                // landing on earlier strokes
+                s.edit_annotations(|a| {
+                    a.begin(point(px((i % 40) as f32 - 90.), px(50.)), sel);
+                    a.drag_to(point(px(25.), px(60.)), sel, false);
+                    a.end();
+                });
                 if i == 62 {
                     assert!(s.filtered_preview("left").is_none());
                 }
@@ -1955,6 +1987,7 @@ mod tests {
         let mut s = session();
         s.select_all();
         // Mixed DPI, negative desktop coordinates and transparent gaps.
+        let sel = s.selection.bounds().unwrap();
         for kind in [
             ShapeKind::Blur,
             ShapeKind::Rectangle,
@@ -1965,7 +1998,9 @@ mod tests {
             ShapeKind::Highlighter,
         ] {
             s.edit_annotations(|a| a.toggle(kind));
-            s.pointer_down("left", point(px(70.), px(25.)));
+            // begin past the pointer layer: hit-priority selection would
+            // grab the earlier rectangle instead of starting this stroke
+            s.edit_annotations(|a| a.begin(point(px(-30.), px(45.)), sel));
             for x in [5., 15., 30.] {
                 s.pointer_move("right", point(px(x), px(60.)), false);
                 assert_preview_matches_export(&s);
@@ -1974,7 +2009,7 @@ mod tests {
             assert_preview_matches_export(&s);
         }
         let completed = s.crop("left").unwrap().2;
-        s.pointer_down("left", point(px(75.), px(30.)));
+        s.edit_annotations(|a| a.begin(point(px(-25.), px(50.)), sel));
         s.pointer_move("right", point(px(45.), px(70.)), false);
         assert_preview_matches_export(&s);
         s.cancel_annotation();
@@ -2121,8 +2156,14 @@ mod tests {
             s.pointer_up("right", point(px(38.), px(60.)), false);
             let marked = s.crop("left").unwrap().2;
             s.edit_annotations(|a| a.toggle(kind));
-            s.pointer_down("left", point(px(81.), px(22.)));
-            s.pointer_up("right", point(px(39.), px(70.)), false);
+            // begin past the pointer layer: this stroke starts on the
+            // rectangle's edge band, which selects on press now
+            let sel = s.selection.bounds().unwrap();
+            s.edit_annotations(|a| {
+                a.begin(point(px(-19.), px(42.)), sel);
+                a.drag_to(point(px(39.), px(70.)), sel, false);
+                a.end();
+            });
             let pixels = s.crop("left").unwrap().2;
             assert_ne!(pixels, marked);
             let (_, left) = s.filtered_preview("left").unwrap();
