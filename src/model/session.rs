@@ -5,6 +5,10 @@ use gpui_kit::*;
 
 use crate::{model::selection::Selection, platform::capture::Capture};
 
+/// How far a press on an annotation shape may travel before it stops
+/// being a click (select) and turns into a draw stroke instead.
+const CLICK_SLOP: f32 = 4.;
+
 struct Screen {
     capture: Arc<Capture>,
     logical_size: Size<Pixels>,
@@ -73,6 +77,12 @@ pub struct ScreenshotSession {
     /// state flip that lands chrome under a "fresh" window shows a
     /// stale cursor until the user wiggles the mouse.
     pointer_global: Option<Point<Pixels>>,
+    /// A press that landed on a selectable annotation shape, waiting to
+    /// resolve: release without motion CLICKS (select), motion past
+    /// CLICK_SLOP converts it into a normal draw stroke starting at the
+    /// press point (draw-through — pressing on a shape never blocks
+    /// drawing, issue #5).
+    pending_click: Option<(usize, Point<Pixels>)>,
     blocked: bool,
     /// The user-dragged toolbar position (window-local to the ACTIVE
     /// output); None → the placement anchor decides. Reset by a NEW
@@ -115,6 +125,7 @@ impl ScreenshotSession {
             selection: Selection::Idle,
             active_output: None,
             pointer_global: None,
+            pending_click: None,
             blocked: false,
             toolbar_pos: None,
             toolbar_drag: None,
@@ -592,12 +603,13 @@ impl ScreenshotSession {
         if self.annotations.enabled() {
             if let Some(selection) = self.selection.bounds() {
                 let p = local + self.screen(name).bounds().origin;
-                // Hit-priority: pressing a placed shape selects it as the
-                // edit target instead of starting a new stroke (issue #5
-                // phase A). Blank canvas keeps the draw behavior.
-                if self.annotations.select_at(p) {
+                if let Some(ix) = self.annotations.hit_test(p) {
+                    // press on a shape: click-or-drag resolves on the
+                    // following move/up events
+                    self.pending_click = Some((ix, p));
                     return;
                 }
+                self.annotations.deselect(); // click on blank canvas
                 self.annotations.begin(p, selection);
             }
         } else {
@@ -624,11 +636,19 @@ impl ScreenshotSession {
         self.pointer_global = Some(self.to_global(name, local));
         if self.annotations.enabled() {
             if let Some(selection) = self.selection.bounds() {
-                return self.annotations.drag_to(
-                    local + self.screen(name).bounds().origin,
-                    selection,
-                    square,
-                );
+                let p = local + self.screen(name).bounds().origin;
+                if let Some((_, press)) = self.pending_click {
+                    let dx = f32::from(p.x - press.x);
+                    let dy = f32::from(p.y - press.y);
+                    if dx * dx + dy * dy <= CLICK_SLOP * CLICK_SLOP {
+                        return false; // still within click slop
+                    }
+                    // dragged off a shape → it was a draw stroke after
+                    // all; start it at the original press point
+                    self.pending_click = None;
+                    self.annotations.begin(press, selection);
+                }
+                return self.annotations.drag_to(p, selection, square);
             }
             false
         } else if self.selection.is_editing() {
@@ -648,6 +668,11 @@ impl ScreenshotSession {
         }
         self.pointer_global = Some(self.to_global(name, local));
         if self.annotations.enabled() {
+            // a press-release without drag = click-select
+            if let Some((ix, _)) = self.pending_click.take() {
+                self.annotations.select_index(ix);
+                return;
+            }
             self.pointer_move(name, local, square);
             self.annotations.end();
         } else if self.selection.is_editing() {
@@ -678,14 +703,17 @@ impl ScreenshotSession {
             .collect()
     }
 
-    /// Selection-chrome bounds of the selected annotation, in the
-    /// output's local coordinates; `None` while nothing is selected.
-    pub(crate) fn selected_chrome(&self, name: &str) -> Option<Bounds<Pixels>> {
+    /// The selected shape cloned into the output's local coordinates —
+    /// the highlight layer paints its visual geometry from this.
+    pub(crate) fn selected_shape_local(&self, name: &str) -> Option<crate::annotation::Shape> {
         let origin = self.screen(name).bounds().origin;
         self.annotations.selected().map(|shape| {
-            let mut b = shape.chrome_bounds();
-            b.origin -= origin;
-            b
+            let mut s = shape.clone();
+            s.bounds.origin -= origin;
+            for p in &mut s.points {
+                *p -= origin;
+            }
+            s
         })
     }
 
@@ -693,7 +721,7 @@ impl ScreenshotSession {
     /// shape — the hover probe for the pointer affordance.
     pub(crate) fn pointer_on_annotation(&self) -> bool {
         self.pointer_global
-            .is_some_and(|p| self.annotations.hits_shape(p))
+            .is_some_and(|p| self.annotations.hit_test(p).is_some())
     }
 
     pub(crate) fn crop(&self, output: &str) -> Option<(u32, u32, Vec<u8>)> {
@@ -1939,6 +1967,46 @@ mod tests {
         assert_eq!(preview.as_bytes(0).unwrap(), expected);
         let (_, other) = s.filtered_preview("right").unwrap();
         assert!(Arc::ptr_eq(&preview, &other));
+    }
+
+    #[test]
+    fn click_selects_shapes_and_drag_through_still_draws() {
+        use crate::annotation::ShapeKind;
+        let mut s = session();
+        s.select_all();
+        let sel = s.selection.bounds().unwrap();
+        s.edit_annotations(|a| {
+            a.toggle(ShapeKind::Rectangle);
+            a.begin(point(px(0.), px(10.)), sel); // global (0,10) → (40,50)
+            a.drag_to(point(px(40.), px(50.)), sel, false);
+            a.end();
+        });
+
+        // single click on the left edge band selects
+        s.pointer_down("left", point(px(101.), px(5.))); // local → global (1,25)
+        s.pointer_up("left", point(px(101.), px(5.)), false);
+        assert!(s.annotations().selected().is_some());
+
+        // click on blank canvas deselects
+        s.pointer_down("left", point(px(300.), px(300.)));
+        s.pointer_up("left", point(px(300.), px(300.)), false);
+        assert!(s.annotations().selected().is_none());
+
+        // press ON the shape but DRAG: a draw stroke starts at the press
+        // point (draw-through), no selection
+        s.pointer_down("left", point(px(101.), px(5.)));
+        s.pointer_move("left", point(px(160.), px(60.)), false);
+        assert!(s.annotations().draft_shape().is_some());
+        s.pointer_up("left", point(px(160.), px(60.)), false);
+        assert!(s.annotations().selected().is_none());
+        assert_eq!(s.annotations().committed().len(), 2);
+
+        // a press that only wiggles within the slop still click-selects
+        s.pointer_down("left", point(px(101.), px(5.)));
+        s.pointer_move("left", point(px(103.), px(7.)), false); // < CLICK_SLOP
+        s.pointer_up("left", point(px(103.), px(7.)), false);
+        assert!(s.annotations().selected().is_some());
+        assert_eq!(s.annotations().committed().len(), 2);
     }
 
     #[test]
