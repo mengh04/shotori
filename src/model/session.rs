@@ -1267,12 +1267,18 @@ mod tests {
         });
         cx.run_until_parked();
         session.update(cx, |s, cx| {
+            // the committed blur auto-selected (select-on-place); this
+            // second gesture must DRAW again, not move it
+            s.edit_annotations(|a| a.deselect());
             s.pointer_down("left", point(px(0.), px(0.)));
             s.pointer_move("left", point(px(580.), px(580.)), false);
             s.filtered_preview("left").unwrap();
             s.pointer_move("left", point(px(600.), px(600.)), false);
             assert!(s.request_filtered_preview("left", cx).is_some());
             s.cancel_annotation();
+            // cancel cleared the draft, but the auto-selection from the
+            // first commit is still live — drop it so this is a DRAW
+            s.edit_annotations(|a| a.deselect());
             // Same tool and same start position, but a distinct gesture.
             s.pointer_down("left", point(px(0.), px(0.)));
             s.pointer_move("left", point(px(550.), px(550.)), false);
@@ -1331,6 +1337,9 @@ mod tests {
                 .flat_map(|p| [p[2], p[1], p[0], p[3]])
                 .collect();
             assert_eq!(image.as_bytes(0).unwrap(), expected);
+            // the first blur auto-selected on commit (select-on-place);
+            // this second gesture must DRAW again, not move it
+            s.edit_annotations(|a| a.deselect());
             s.pointer_down("left", point(px(0.), px(0.)));
             s.pointer_move("left", point(px(512.), px(512.)), false);
             s.request_filtered_preview("left", cx);
@@ -2092,13 +2101,14 @@ mod tests {
         s.pointer_up("left", point(px(300.), px(300.)), false);
         assert!(s.annotations().selected().is_none());
 
-        // press ON the shape but DRAG: a draw stroke starts at the press
-        // point (draw-through), no selection
+        // press ON the (deselected) shape and DRAG: a draw stroke starts
+        // at the press point (draw-through) — and the freshly drawn
+        // mark selects itself on commit (select-on-place)
         s.pointer_down("left", point(px(101.), px(5.)));
         s.pointer_move("left", point(px(160.), px(60.)), false);
         assert!(s.annotations().draft_shape().is_some());
         s.pointer_up("left", point(px(160.), px(60.)), false);
-        assert!(s.annotations().selected().is_none());
+        assert!(s.annotations().selected().is_some()); // the new mark
         assert_eq!(s.annotations().committed().len(), 2);
 
         // a press that only wiggles within the slop still click-selects

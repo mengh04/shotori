@@ -842,7 +842,6 @@ impl Render for Overlay {
                 let percentage = state.read(cx).percentage().start;
                 crate::ui::toolbar::SizeSlider {
                     state,
-                    spec,
                     percentage,
                     current,
                 }
@@ -2271,22 +2270,18 @@ mod multi_output_tests {
         let button = cx.debug_bounds("tb-text").unwrap();
         cx.simulate_click(button.center(), Default::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let button = cx.debug_bounds("tb-size-detent-2").unwrap();
-        cx.simulate_click(button.center(), Default::default());
+        cx.update(|_, cx| session.update(cx, |s, _| s.edit_annotations(|a| a.set_tool_size(32.))));
         cx.simulate_click(point(px(60.), px(60.)), Default::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.run_until_parked();
         assert!(cx.debug_bounds("text-editor").unwrap().size.width <= px(2.));
         assert!(cx.debug_bounds("tb-text").is_some());
-        assert!(cx.debug_bounds("tb-size-detent-0").is_some());
         let color = cx.debug_bounds("tb-color-4").unwrap();
         cx.simulate_click(color.center(), Default::default());
-        let small = cx.debug_bounds("tb-size-detent-0").unwrap();
-        cx.simulate_click(small.center(), Default::default());
+        cx.update(|_, cx| session.update(cx, |s, _| s.edit_annotations(|a| a.set_tool_size(16.))));
         cx.run_until_parked();
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let large = cx.debug_bounds("tb-size-detent-2").unwrap();
-        cx.simulate_click(large.center(), Default::default());
+        cx.update(|_, cx| session.update(cx, |s, _| s.edit_annotations(|a| a.set_tool_size(32.))));
         cx.run_until_parked();
         cx.update(|window, cx| {
             let input = view.read(cx).text_editing.as_ref().unwrap().input().clone();
@@ -2439,8 +2434,9 @@ mod multi_output_tests {
         cx.simulate_click(line_button.center(), Default::default());
         if kind == crate::annotation::ShapeKind::Number {
             cx.update(|window, cx| window.draw(cx).clear(cx));
-            let size = cx.debug_bounds("tb-size-detent-2").unwrap();
-            cx.simulate_click(size.center(), Default::default());
+            cx.update(|_, cx| {
+                session.update(cx, |s, _| s.edit_annotations(|a| a.set_tool_size(40.)))
+            });
             cx.simulate_keystrokes("n");
             cx.update(|_, cx| assert!(!session.read(cx).annotations().enabled()));
             cx.simulate_keystrokes("n");
@@ -2453,13 +2449,14 @@ mod multi_output_tests {
         if kind == crate::annotation::ShapeKind::Eraser {
             cx.update(|window, cx| window.draw(cx).clear(cx));
             assert!(cx.debug_bounds("tb-color-0").is_none());
-            let width = cx.debug_bounds("tb-size-detent-2").unwrap();
-            cx.simulate_click(width.center(), Default::default());
+            cx.update(|_, cx| {
+                session.update(cx, |s, _| s.edit_annotations(|a| a.set_tool_size(48.)))
+            });
             cx.update(|_, cx| assert_eq!(session.read(cx).annotations().width(), 48.));
             let rect = cx.debug_bounds("tb-eraser-rect").unwrap();
             cx.simulate_click(rect.center(), Default::default());
             cx.update(|window, cx| window.draw(cx).clear(cx));
-            assert!(cx.debug_bounds("tb-size-detent-2").is_none());
+            // (no size UI in rectangle-eraser mode — same as before)
             cx.simulate_keystrokes("d");
             cx.update(|_, cx| assert!(!session.read(cx).annotations().enabled()));
             cx.simulate_keystrokes("d");
@@ -2540,8 +2537,9 @@ mod multi_output_tests {
             let blur = cx.debug_bounds("tb-blur").unwrap();
             cx.simulate_click(blur.center(), Default::default());
             cx.update(|window, cx| window.draw(cx).clear(cx));
-            let strength = cx.debug_bounds("tb-size-detent-2").unwrap();
-            cx.simulate_click(strength.center(), Default::default());
+            cx.update(|_, cx| {
+                session.update(cx, |s, _| s.edit_annotations(|a| a.set_tool_size(24.)))
+            });
             cx.update(|_, cx| {
                 assert_eq!(
                     session.read(cx).annotations().tool(),
@@ -2732,8 +2730,8 @@ mod multi_output_tests {
         assert!(cx.debug_bounds("tb-undo").is_none());
         assert!(cx.debug_bounds("tb-redo").is_none());
         // Settings clicks must not strand keyboard focus on a transient button.
-        for selector in ["tb-color-3", "tb-size-detent-2"] {
-            let button = cx.debug_bounds(selector).unwrap();
+        {
+            let button = cx.debug_bounds("tb-color-3").unwrap();
             cx.simulate_click(button.center(), Default::default());
             cx.update(|window, cx| window.draw(cx).clear(cx));
             cx.simulate_keystrokes("ctrl-z");
@@ -2742,6 +2740,9 @@ mod multi_output_tests {
             cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 1));
         }
         cx.update(|_, cx| {
+            // (the old tb-width-2 detent click set this; the detents are
+            // gone — set the stroke width through the session instead)
+            session.update(cx, |s, _| s.edit_annotations(|a| a.set_tool_size(5.)));
             assert_eq!(session.read(cx).annotations().color().1, "Green");
             assert_eq!(session.read(cx).annotations().width(), 5.);
         });

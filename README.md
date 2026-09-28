@@ -95,7 +95,7 @@ CI enforces `cargo fmt --all --check` and
 `cargo clippy --all-targets -- -D warnings` — run both before pushing.
 
 - Module map: the header of [`src/lib.rs`](src/lib.rs)
-- Implementation write-ups: [ROADMAP.md](ROADMAP.md)
+- Decisions & pitfall archive: [ROADMAP.md](ROADMAP.md)
 
 ## License
 
