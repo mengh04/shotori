@@ -769,10 +769,14 @@ impl ScreenshotSession {
         !self.blocked && self.annotations.cancel()
     }
 
-    /// Whether an edit drag of the selected annotation is in flight
-    /// (body move or handle).
-    pub(crate) fn is_moving(&self) -> bool {
-        self.moving.is_some() || self.handle_drag.is_some()
+    /// Whether the body-move drag (phase B) is in flight.
+    pub(crate) fn is_body_moving(&self) -> bool {
+        self.moving.is_some()
+    }
+
+    /// The shape kind and anchor of the in-flight handle drag, if any.
+    pub(crate) fn handle_drag_anchor(&self) -> Option<(crate::annotation::ShapeKind, usize)> {
+        self.handle_drag.as_ref().map(|d| (d.before.kind, d.anchor))
     }
 
     /// The handle of the selected annotation under the pointer, if
@@ -2155,9 +2159,9 @@ mod tests {
             local(edge(rect) + delta + point(px(50.), px(0.))),
             false,
         );
-        assert!(s.is_moving());
+        assert!(s.is_body_moving());
         s.cancel_annotation();
-        assert!(!s.is_moving());
+        assert!(!s.is_body_moving());
         assert_eq!(s.annotations().committed()[0].bounds.origin, moved_origin);
     }
 
@@ -2225,9 +2229,9 @@ mod tests {
         let br = point(after.right() - px(2.), after.bottom() - px(2.));
         s.pointer_down("left", local(br));
         s.pointer_move("left", local(point(px(60.), px(70.))), false);
-        assert!(s.is_moving());
+        assert!(s.handle_drag_anchor().is_some());
         s.cancel_annotation();
-        assert!(!s.is_moving());
+        assert!(s.handle_drag_anchor().is_none());
         assert_eq!(s.annotations().committed()[1].bounds, after);
     }
 
