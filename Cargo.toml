@@ -19,7 +19,10 @@ keywords = ["screenshot", "wayland", "gpui", "screencopy", "clipboard"]
 categories = ["graphics", "multimedia::images", "command-line-utilities"]
 
 [dependencies]
-gpui-kit = "0.6"
+# default-features off: the default pulls the component library, whose
+# Root/WindowState is poison for layer-shell overlays (AGENTS.md "the
+# Root/CSD poisoning case"). We only use the base layer + assets.
+gpui-kit = { version = "0.6", default-features = false, features = ["assets"] }
 anyhow = "1.0"
 png = "0.18"
 
@@ -95,7 +98,9 @@ default-features = false
 version = "0.11"
 
 [dev-dependencies]
-gpui-kit = { version = "0.6", features = ["test-support"] }
+# default-features off here too: feature unification with the main
+# dependency would resurrect component otherwise
+gpui-kit = { version = "0.6", default-features = false, features = ["test-support"] }
 
 # The pin (floating image) feature lives on the `pin` branch (it needs the
 # vendored set_layer_margin patch); once upstream merges it, the branch can
