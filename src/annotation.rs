@@ -31,6 +31,15 @@ pub(crate) enum ShapeKind {
     Polyline,
 }
 
+impl ShapeKind {
+    /// Region kinds carry their geometry as a single bounds box
+    /// (corner-handle editing); point-cloud kinds as `points`
+    /// (endpoint/vertex editing).
+    pub(crate) fn is_region(self) -> bool {
+        matches!(self, ShapeKind::Rectangle | ShapeKind::Ellipse)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Shape {
     pub(crate) kind: ShapeKind,
