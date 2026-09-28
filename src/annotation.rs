@@ -176,6 +176,14 @@ enum HistoryEntry {
         before: Shape,
         after: Shape,
     },
+    /// A mid-sequence removal (the Delete key): undo re-inserts at the
+    /// same index. Indices in older entries stay valid because the
+    /// stack unwinds in reverse order — each entry's index matches the
+    /// moment it was recorded.
+    Remove {
+        ix: usize,
+        shape: Shape,
+    },
 }
 
 pub(crate) struct Annotations {
@@ -634,6 +642,9 @@ impl Annotations {
                         *shape = before.clone();
                     }
                 }
+                HistoryEntry::Remove { ix, shape } => {
+                    self.shapes.insert(*ix, shape.clone());
+                }
             }
             self.redo.push(entry);
         }
@@ -650,6 +661,9 @@ impl Annotations {
                     if let Some(shape) = self.shapes.get_mut(*ix) {
                         *shape = after.clone();
                     }
+                }
+                HistoryEntry::Remove { ix, .. } => {
+                    self.shapes.remove(*ix);
                 }
             }
             self.history.push(entry);
@@ -1041,6 +1055,32 @@ mod tests {
         assert_eq!(a.selected().map(|s| s.kind), Some(super::ShapeKind::Mosaic));
         assert!(a.step_size(true));
         assert_eq!(a.selected().map(|s| s.width), Some(24.));
+    }
+
+    #[test]
+    fn delete_removes_the_selection_and_undo_reinserts_in_place() {
+        let mut a = Annotations::default();
+        a.toggle(super::ShapeKind::Rectangle);
+        rectangle(&mut a); // A: (10,10) → (30,40)
+        a.begin(point(px(40.), px(10.)), selection());
+        a.drag_to(point(px(60.), px(40.)), selection(), false);
+        a.end(); // B beside it
+
+        assert!(click(&mut a, point(px(10.), px(25.)))); // A (ix 0)
+        assert!(a.delete_selected());
+        assert_eq!(a.visible().count(), 1);
+        assert_eq!(a.committed()[0].bounds.origin, point(px(40.), px(10.))); // B shifted down to ix 0
+
+        a.undo(); // re-insert at the same index
+        assert_eq!(a.visible().count(), 2);
+        assert_eq!(a.committed()[0].bounds.origin, point(px(10.), px(10.)));
+        assert_eq!(a.committed()[1].bounds.origin, point(px(40.), px(10.)));
+
+        a.redo(); // remove again
+        assert_eq!(a.visible().count(), 1);
+
+        // deleting with no selection is a no-op
+        assert!(!a.delete_selected());
     }
 
     #[test]

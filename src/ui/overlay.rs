@@ -16,10 +16,10 @@ use gpui_kit::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOpti
 use gpui_kit::*;
 
 use crate::actions::{
-    CancelText, CopySelection, FinishPolyline, OcrSelection, PinSelection, QuitOverlay,
-    RedoAnnotation, SaveSelection, SelectScreen, ToggleArrow, ToggleEllipse, ToggleEraser,
-    ToggleHighlighter, ToggleLine, ToggleMosaic, ToggleNumber, TogglePencil, TogglePolyline,
-    ToggleRectangle, ToggleText, UndoAnnotation,
+    CancelText, CopySelection, DeleteAnnotation, FinishPolyline, OcrSelection, PinSelection,
+    QuitOverlay, RedoAnnotation, SaveSelection, SelectScreen, ToggleArrow, ToggleEllipse,
+    ToggleEraser, ToggleHighlighter, ToggleLine, ToggleMosaic, ToggleNumber, TogglePencil,
+    TogglePolyline, ToggleRectangle, ToggleText, UndoAnnotation,
 };
 use crate::model::placement::round_px;
 use crate::model::selection::{PressTarget, Selection};
@@ -200,14 +200,15 @@ impl Overlay {
                     }
                     if let Some((kind, anchor)) = session.annotation_handle_hover() {
                         // corner handles resize along their diagonal;
-                        // endpoint/vertex handles reposition freely
+                        // endpoint/vertex handles reposition — the plain
+                        // arrow until the drag closes the hand
                         return if kind.is_region() {
                             match anchor {
                                 0 | 2 => CursorStyle::ResizeUpLeftDownRight,
                                 _ => CursorStyle::ResizeUpRightDownLeft,
                             }
                         } else {
-                            CursorStyle::Crosshair
+                            CursorStyle::Arrow
                         };
                     }
                     if session.pointer_on_annotation() {
@@ -924,6 +925,15 @@ impl Render for Overlay {
                 window.focus(&this.focus_handle, cx);
                 this.session.update(cx, |s, cx| {
                     s.edit_annotations(|a| a.undo());
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &DeleteAnnotation, window, cx| {
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| {
+                        a.delete_selected();
+                    });
                     cx.notify();
                 });
             }))

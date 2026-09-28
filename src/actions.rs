@@ -36,7 +36,8 @@ gpui_kit::actions!([
     TogglePolyline,
     FinishPolyline,
     UndoAnnotation,
-    RedoAnnotation
+    RedoAnnotation,
+    DeleteAnnotation
 ]);
 
 /// Keybindings, scoped to the `ShotoriOverlay` key context. Bound once
@@ -87,5 +88,7 @@ pub fn init_annotation_keybindings(cx: &mut App) {
         KeyBinding::new("ctrl-z", UndoAnnotation, Some("ShotoriOverlay")),
         KeyBinding::new("ctrl-y", RedoAnnotation, Some("ShotoriOverlay")),
         KeyBinding::new("ctrl-shift-z", RedoAnnotation, Some("ShotoriOverlay")),
+        KeyBinding::new("delete", DeleteAnnotation, Some("ShotoriOverlay")),
+        KeyBinding::new("backspace", DeleteAnnotation, Some("ShotoriOverlay")),
     ]);
 }

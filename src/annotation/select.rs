@@ -41,6 +41,23 @@ impl Annotations {
         self.selected = None;
     }
 
+    /// Remove the selected shape (the Delete/Backspace path). Records
+    /// a Remove entry so undo re-inserts at the same index; drops the
+    /// selection because indices shift after a mid-sequence removal.
+    pub(crate) fn delete_selected(&mut self) -> bool {
+        let Some(ix) = self.selected_index() else {
+            return false;
+        };
+        if ix >= self.shapes.len() {
+            return false;
+        }
+        let shape = self.shapes.remove(ix);
+        self.history.push(HistoryEntry::Remove { ix, shape });
+        self.redo.clear();
+        self.selected = None;
+        true
+    }
+
     pub(crate) fn selected(&self) -> Option<&Shape> {
         self.selected.and_then(|ix| self.shapes.get(ix))
     }
