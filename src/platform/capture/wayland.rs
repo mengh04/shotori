@@ -127,6 +127,16 @@ impl App {
         h: i32,
         stride: i32,
     ) {
+        // The compositor may advertise multiple supported buffer formats (e.g.
+        // ARGB8888 then XRGB8888). The wlr-screencopy protocol specifies that
+        // clients pick one and call copy once per frame; subsequent buffer events
+        // must be ignored once a buffer is prepared or if the frame already failed.
+        if self
+            .frame_mut(idx)
+            .is_some_and(|f| f.buffer.is_some() || f.failed)
+        {
+            return;
+        }
         if let Some(f) = self.frame_mut(idx) {
             f.info = Some((fmt, w, h, stride));
         }
