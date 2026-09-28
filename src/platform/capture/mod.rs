@@ -95,6 +95,7 @@ impl Capture {
 
 /// Capture all outputs (at least one is required, otherwise error)
 pub fn capture_all_outputs() -> anyhow::Result<Vec<Capture>> {
+    use std::os::fd::AsFd;
     use wayland::*;
 
     let conn = wayland_client::Connection::connect_to_env()?;
@@ -130,17 +131,39 @@ pub fn capture_all_outputs() -> anyhow::Result<Vec<Capture>> {
     queue.roundtrip(&mut app)?; // buffer events → create shm buffers, request copy
 
     // A stuck screencopy frame (compositor killed mid-capture, protocol
-    // violation) must not hang shotori forever: drain the queue
-    // non-blockingly against a 10 s deadline instead of blocking_dispatch.
+    // violation) must not hang shotori forever: wait against a 10 s
+    // deadline. The loop must BOTH read the socket and dispatch —
+    // dispatch_pending alone never reads the socket (so the compositor's
+    // ready events would never arrive), and blocking_dispatch has no
+    // deadline. Per pass: flush pending requests → dispatch what's
+    // already queued → bounded poll on the socket → synchronized read.
     const FRAME_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
     let deadline = std::time::Instant::now() + FRAME_DEADLINE;
     while !app.all_frames_done() {
-        if std::time::Instant::now() >= deadline {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
             anyhow::bail!("screencopy frame timed out (compositor not responding)");
         }
+        conn.flush()?; // push the frame.copy requests out
         queue.dispatch_pending(&mut app)?;
-        if !app.all_frames_done() {
-            std::thread::sleep(std::time::Duration::from_millis(5));
+        if app.all_frames_done() {
+            break;
+        }
+        // Bounded wait for the socket to become readable
+        let ts = rustix::event::Timespec {
+            tv_sec: remaining.as_secs() as _,
+            tv_nsec: remaining.subsec_nanos() as _,
+        };
+        let fd = conn.as_fd();
+        let mut fds = [rustix::event::PollFd::new(&fd, rustix::event::PollFlags::IN)];
+        match rustix::event::poll(&mut fds, Some(&ts)) {
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(e) => return Err(e.into()),
+            Ok(_) => {}
+        }
+        // Read what arrived; events land in the queue for the next pass
+        if let Some(guard) = queue.prepare_read() {
+            guard.read()?;
         }
     }
 
