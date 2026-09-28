@@ -115,9 +115,15 @@ pub(crate) fn selection_toolbar(
         .absolute()
         .left(rect.origin.x)
         .top(rect.origin.y)
-        .w(rect.size.width)
+        // No fixed width: each row hugs its own natural width (row one
+        // ≈ TB_W_ROW1, the settings row is wider). The old fixed TB_W
+        // stretched row one, and its flex_1 spacer ballooned into the
+        // giant gap between tool cluster and action cluster. The width
+        // basis still drives placement/clamping via `toolbar_bounds` —
+        // rendering just no longer forces it onto every row.
         .flex()
         .flex_col()
+        .items_start()
         .gap(px(6.))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(
