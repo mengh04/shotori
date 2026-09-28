@@ -46,7 +46,7 @@ pub(crate) fn save_dir() -> anyhow::Result<PathBuf> {
 }
 
 /// Encode RGBA8 pixels as PNG with balanced compression (the png crate's
-/// default — the quality/size balance for files on disk)
+/// default — best quality/size balance; used for small thumbnails and tests)
 pub fn encode_png(w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<Vec<u8>> {
     encode_png_with(w, h, rgba, png::Compression::Balanced)
 }
@@ -84,7 +84,10 @@ fn encode_png_with(
 /// atomic `create_new` + suffixes against concurrent instances; with a
 /// picker in front, collisions are the dialog's business.)
 pub fn save_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<()> {
-    let bytes = encode_png(w, h, rgba)?;
+    // Fast tier: saves happen interactively and a save shouldn't stall the
+    // flow for hundreds of ms; the 30x faster encode outweighs the larger
+    // file (a 1440p screen: ~0.2 s saved for ~1.2 → ~3 MB).
+    let bytes = encode_png_fast(w, h, rgba)?;
     std::fs::write(path, &bytes)
         .with_context(|| format!("writing {} ({} KB)", path.display(), bytes.len() / 1024))?;
     Ok(())
