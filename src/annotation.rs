@@ -208,15 +208,31 @@ enum HistoryEntry {
     },
 }
 
+/// Per-tool size memory: every ShapeKind remembers its own last-used
+/// size, so adjusting one tool never bleeds into another. Editing a
+/// SELECTED shape writes back to its own kind's slot too — the next
+/// stroke of that kind continues from the adjusted value. Ranges
+/// still come from `size_spec` per family.
+struct ToolSizes {
+    rectangle: f32,
+    ellipse: f32,
+    line: f32,
+    arrow: f32,
+    polyline: f32,
+    pencil: f32,
+    highlighter: f32,
+    mosaic: f32,
+    blur: f32,
+    eraser: f32,
+    eraser_rect: f32,
+    number: f32,
+    text: f32,
+}
+
 pub(crate) struct Annotations {
     tool: Option<ShapeKind>,
     color_ix: usize,
-    stroke_width: f32,
-    number_size: f32,
-    text_size: f32,
-    filter_strength: f32,
-    eraser_width: f32,
-    highlighter_width: f32,
+    preset: ToolSizes,
     highlighter_color_ix: usize,
     shapes: Vec<Shape>,
     history: Vec<HistoryEntry>,
@@ -237,12 +253,21 @@ impl Default for Annotations {
         Self {
             tool: None,
             color_ix: 0,
-            stroke_width: 3.,
-            number_size: 32.,
-            text_size: 24.,
-            filter_strength: 16.,
-            eraser_width: 32.,
-            highlighter_width: 20.,
+            preset: ToolSizes {
+                rectangle: 3.,
+                ellipse: 3.,
+                line: 3.,
+                arrow: 3.,
+                polyline: 3.,
+                pencil: 3.,
+                highlighter: 20.,
+                mosaic: 16.,
+                blur: 16.,
+                eraser: 32.,
+                eraser_rect: 32.,
+                number: 32.,
+                text: 24.,
+            },
             highlighter_color_ix: 2,
             shapes: Vec::new(),
             history: Vec::new(),
@@ -281,42 +306,62 @@ impl Annotations {
             crate::ui::theme::PALETTE_NAMES[ix],
         )
     }
-    /// The active tool's drawing width (stroke / brush / filter /
-    /// eraser — not the font or badge sizes; see [`tool_size`]).
-    pub(crate) fn width(&self) -> f32 {
-        match self.tool {
-            Some(ShapeKind::Mosaic | ShapeKind::Blur) => self.filter_strength,
-            Some(ShapeKind::Eraser | ShapeKind::EraserRect) => self.eraser_width,
-            Some(ShapeKind::Highlighter) => self.highlighter_width,
-            _ => self.stroke_width,
+    /// A kind's remembered size (width, strength, diameter or font —
+    /// whatever that kind's slider means).
+    pub(crate) fn size_of(&self, kind: ShapeKind) -> f32 {
+        match kind {
+            ShapeKind::Rectangle => self.preset.rectangle,
+            ShapeKind::Ellipse => self.preset.ellipse,
+            ShapeKind::Line => self.preset.line,
+            ShapeKind::Arrow => self.preset.arrow,
+            ShapeKind::Polyline => self.preset.polyline,
+            ShapeKind::Pencil => self.preset.pencil,
+            ShapeKind::Highlighter => self.preset.highlighter,
+            ShapeKind::Mosaic => self.preset.mosaic,
+            ShapeKind::Blur => self.preset.blur,
+            ShapeKind::Eraser => self.preset.eraser,
+            ShapeKind::EraserRect => self.preset.eraser_rect,
+            ShapeKind::Number => self.preset.number,
+            ShapeKind::Text => self.preset.text,
         }
+    }
+    /// Remember a kind's size, clamped to its family's [`SizeSpec`].
+    pub(crate) fn set_size_of(&mut self, kind: ShapeKind, v: f32) {
+        let spec = size_spec(kind);
+        let v = v.clamp(spec.min, spec.max);
+        let slot = match kind {
+            ShapeKind::Rectangle => &mut self.preset.rectangle,
+            ShapeKind::Ellipse => &mut self.preset.ellipse,
+            ShapeKind::Line => &mut self.preset.line,
+            ShapeKind::Arrow => &mut self.preset.arrow,
+            ShapeKind::Polyline => &mut self.preset.polyline,
+            ShapeKind::Pencil => &mut self.preset.pencil,
+            ShapeKind::Highlighter => &mut self.preset.highlighter,
+            ShapeKind::Mosaic => &mut self.preset.mosaic,
+            ShapeKind::Blur => &mut self.preset.blur,
+            ShapeKind::Eraser => &mut self.preset.eraser,
+            ShapeKind::EraserRect => &mut self.preset.eraser_rect,
+            ShapeKind::Number => &mut self.preset.number,
+            ShapeKind::Text => &mut self.preset.text,
+        };
+        *slot = v;
+    }
+    /// The active tool's drawing width (what a fresh stroke takes).
+    pub(crate) fn width(&self) -> f32 {
+        self.tool.map_or(3., |t| self.size_of(t))
     }
     pub(crate) fn text_size(&self) -> f32 {
-        self.text_size
+        self.preset.text
     }
     /// The active tool's current size — whatever that means for the
-    /// tool (width, strength, diameter or font size); one continuous
-    /// value the slider shows.
+    /// tool; one continuous value the slider shows.
     pub(crate) fn tool_size(&self) -> f32 {
-        match self.tool {
-            Some(ShapeKind::Text) => self.text_size,
-            Some(ShapeKind::Number) => self.number_size,
-            _ => self.width(),
-        }
+        self.tool.map_or(3., |t| self.size_of(t))
     }
     /// Set the active tool's size, clamped to its [`SizeSpec`].
     pub(crate) fn set_tool_size(&mut self, v: f32) {
         let Some(tool) = self.tool else { return };
-        let spec = size_spec(tool);
-        let v = v.clamp(spec.min, spec.max);
-        match tool {
-            ShapeKind::Text => self.text_size = v,
-            ShapeKind::Number => self.number_size = v,
-            ShapeKind::Mosaic | ShapeKind::Blur => self.filter_strength = v,
-            ShapeKind::Eraser | ShapeKind::EraserRect => self.eraser_width = v,
-            ShapeKind::Highlighter => self.highlighter_width = v,
-            _ => self.stroke_width = v,
-        }
+        self.set_size_of(tool, v);
     }
     pub(crate) fn draft_generation(&self) -> u64 {
         self.draft_generation
@@ -368,7 +413,7 @@ impl Annotations {
         });
     }
     pub(crate) fn number_size(&self) -> f32 {
-        self.number_size
+        self.preset.number
     }
     pub(crate) fn next_number(&self) -> u32 {
         self.shapes
@@ -952,7 +997,7 @@ mod tests {
     }
 
     #[test]
-    fn wheel_edits_the_selected_shape_not_the_tool_preset() {
+    fn wheel_edits_the_selection_and_adopts_it_as_the_preset() {
         let mut a = Annotations::default();
         a.toggle(super::ShapeKind::Rectangle);
         rectangle(&mut a); // committed at width 3 (M)
@@ -960,13 +1005,13 @@ mod tests {
 
         assert!(a.step_size(true)); // 3 → 4 on the SHAPE
         assert_eq!(a.selected().map(|s| s.width), Some(4.));
-        assert_eq!(a.width(), 3.); // tool preset untouched
+        assert_eq!(a.width(), 4.); // the edit became the preset too
 
-        // deselected, the same wheel steps the preset again
+        // deselected, the same wheel steps the preset directly
         let _ = a.cancel(); // consumed by dropping the selection
         assert!(a.enabled());
         assert!(a.step_size(false));
-        assert_eq!(a.width(), 2.);
+        assert_eq!(a.width(), 3.);
     }
 
     #[test]
@@ -1124,6 +1169,27 @@ mod tests {
         a.end_size_drag();
         assert_eq!(a.width(), 7.);
         assert_eq!(a.committed()[0].width, 3.); // shape untouched
+    }
+
+    #[test]
+    fn size_edits_carry_to_the_next_stroke_and_stay_per_tool() {
+        let mut a = Annotations::default();
+
+        // thicken the pencil's next stroke by editing its placed mark
+        a.toggle(super::ShapeKind::Pencil);
+        a.begin(point(px(5.), px(5.)), selection());
+        a.drag_to(point(px(60.), px(50.)), selection(), false);
+        a.end(); // auto-selected
+        a.apply_size(9.);
+        a.end_size_drag();
+        a.deselect();
+        a.begin(point(px(5.), px(5.)), selection()); // next pencil stroke
+        assert_eq!(a.draft_shape().unwrap().width, 9.);
+
+        // the rectangle tool keeps its OWN memory
+        a.end();
+        a.toggle(super::ShapeKind::Rectangle);
+        assert_eq!(a.width(), 3.);
     }
 
     #[test]
@@ -1578,7 +1644,8 @@ mod tests {
         assert_eq!(mark.bounds.size, size(px(40.), px(40.)));
         assert_eq!(mark.bounds.right(), selection().right());
         assert_eq!(mark.bounds.bottom(), selection().bottom());
-        assert_eq!(a.width(), 3.);
+        // the number slot is its own — other tools' presets untouched
+        assert_eq!(a.size_of(super::ShapeKind::Rectangle), 3.);
         let tiny = Bounds::new(point(px(0.), px(0.)), size(px(10.), px(10.)));
         a.begin(point(px(5.), px(5.)), tiny);
         a.end();

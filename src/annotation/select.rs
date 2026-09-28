@@ -95,6 +95,7 @@ impl Annotations {
         let kind = self.shapes[ix].kind;
         let spec = super::size_spec(kind);
         let v = v.clamp(spec.min, spec.max);
+        self.set_size_of(kind, v); // remember for the next stroke
         let write = |shapes: &mut Vec<Shape>| {
             if let Some(shape) = shapes.get_mut(ix) {
                 if kind == ShapeKind::Number {
@@ -205,6 +206,7 @@ impl Annotations {
         if next == current || next < spec.min || next > spec.max {
             return false;
         }
+        self.set_size_of(kind, next); // remember for the next stroke
         let before = self.shapes[ix].clone();
         if kind == ShapeKind::Number {
             // grow the badge around its center
