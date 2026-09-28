@@ -52,6 +52,10 @@ pub struct Overlay {
     /// (crosshair / open hand / resize), refreshed by the pointer-move
     /// path and pushed during paint by the handles canvas.
     cursor: std::rc::Rc<std::cell::Cell<CursorStyle>>,
+    /// Scroll accumulator for wheel-stepping the active tool's S/M/L
+    /// preset: touchpads emit sub-notch deltas, so they pile up here
+    /// until a full notch (±1.0) is reached
+    size_scroll_acc: f32,
     /// boot trace: this instance's first render not yet reported
     /// (per-instance — the warm-window suite opens several overlays)
     perf_first_render_pending: bool,
@@ -102,6 +106,7 @@ impl Overlay {
             text_subscription: None,
             cursor: std::rc::Rc::new(std::cell::Cell::new(CursorStyle::Crosshair)),
             perf_first_render_pending: true,
+            size_scroll_acc: 0.0,
         };
         overlay.attach_observers(window, cx);
         overlay
@@ -1012,6 +1017,41 @@ impl Render for Overlay {
                     s.edit_annotations(|a| a.finish_polyline());
                     cx.notify();
                 });
+            }))
+            // Wheel steps the active tool's S/M/L size preset (issue #3,
+            // phase 1: preset stepping with toolbar highlight sync). Only
+            // consumed while an annotation tool is active and no text
+            // editor owns the pointer; otherwise the event bubbles.
+            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+                let usable = this.text_editing.is_none()
+                    && this.session.read(cx).annotations().tool().is_some();
+                if !usable {
+                    cx.propagate();
+                    return;
+                }
+                let lines = match event.delta {
+                    ScrollDelta::Lines(l) => l.y,
+                    ScrollDelta::Pixels(p) => f32::from(p.y) / 40.,
+                };
+                // accumulate touchpad-scale deltas; one notch = one preset
+                this.size_scroll_acc += lines;
+                let mut changed = false;
+                while this.size_scroll_acc >= 1.0 {
+                    this.session.update(cx, |s, _| {
+                        s.edit_annotations(|a| changed |= a.step_size(true));
+                    });
+                    this.size_scroll_acc -= 1.0;
+                }
+                while this.size_scroll_acc <= -1.0 {
+                    this.session.update(cx, |s, _| {
+                        s.edit_annotations(|a| changed |= a.step_size(false));
+                    });
+                    this.size_scroll_acc += 1.0;
+                }
+                if changed {
+                    cx.notify();
+                }
+                cx.stop_propagation();
             }))
             // ── Layer stack (bottom to top) ─────────────────────────────
             // ① The frozen screen image (opaque, filling the window)
