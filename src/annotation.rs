@@ -163,24 +163,25 @@ impl Shape {
                     })
                     .collect()
             }
-            ShapeKind::Rectangle => {
-                let mut builder = PathBuilder::fill();
-                for stroke in self.strokes() {
-                    let corners = [
-                        point(stroke.left(), stroke.top()),
-                        point(stroke.right(), stroke.top()),
-                        point(stroke.right(), stroke.bottom()),
-                        point(stroke.left(), stroke.bottom()),
-                    ];
-                    builder.move_to(corners[0] + offset);
-                    for c in &corners[1..] {
-                        builder.line_to(*c + offset);
-                    }
-                    builder.close();
-                }
-                builder.build().ok().into_iter().collect()
-            }
+            ShapeKind::Rectangle => self
+                .strokes()
+                .iter()
+                .filter_map(|s| rect_path(*s, offset))
+                .collect(),
             ShapeKind::Ellipse => self.ellipse_path(offset).into_iter().collect(),
+            ShapeKind::Number => circle_path(
+                point(
+                    self.bounds.left() + self.bounds.size.width / 2. + offset.x,
+                    self.bounds.top() + self.bounds.size.height / 2. + offset.y,
+                ),
+                f32::from(self.bounds.size.width) / 2.,
+            )
+            .into_iter()
+            .collect(),
+            // solid regions highlight as their bounds rectangle
+            ShapeKind::Text | ShapeKind::Mosaic | ShapeKind::Blur => {
+                rect_path(self.bounds, offset).into_iter().collect()
+            }
             _ => Vec::new(),
         }
     }
@@ -458,7 +459,7 @@ impl Annotations {
         if let Some(ix) = self.selected
             && self.shapes.get(ix).is_some()
         {
-            return self.step_selected_width(ix, up);
+            return self.step_selected_size(ix, up);
         }
         let cur = match self.tool {
             Some(ShapeKind::Text) => self.text_size_ix,
@@ -483,23 +484,45 @@ impl Annotations {
         true
     }
 
-    /// Step the selected shape's stroke width through the generic S/M/L
-    /// ladder (the same rungs `width()` exposes), one reversible Edit
-    /// entry per notch so undo walks back one step at a time.
-    fn step_selected_width(&mut self, ix: usize, up: bool) -> bool {
-        const STROKE_LADDER: [f32; 3] = [1., 3., 5.];
-        let rung = |w: f32| match w {
-            w if w < 2. => 0usize,
-            w if w < 4. => 1,
-            _ => 2,
+    /// Step the selected shape's size through its OWN preset ladder —
+    /// the same rungs the toolbar exposes per tool. Number badges grow
+    /// their diameter (bounds re-centered); every other kind steps its
+    /// width field. One reversible Edit entry per notch.
+    fn step_selected_size(&mut self, ix: usize, up: bool) -> bool {
+        let ladder: &[f32] = match self.shapes[ix].kind {
+            ShapeKind::Text => &[16., 24., 32.],
+            ShapeKind::Number => &[24., 32., 40.],
+            ShapeKind::Mosaic | ShapeKind::Blur => &[8., 16., 24.],
+            ShapeKind::Highlighter => &[12., 20., 32.],
+            _ => &[1., 3., 5.],
         };
-        let cur = rung(self.shapes[ix].width);
+        let current = match self.shapes[ix].kind {
+            ShapeKind::Number => f32::from(self.shapes[ix].bounds.size.width),
+            _ => self.shapes[ix].width,
+        };
+        let cur = ladder
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| (**a - current).abs().total_cmp(&(**b - current).abs()))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
         let next = if up { cur + 1 } else { cur.saturating_sub(1) };
-        if next == cur || next >= STROKE_LADDER.len() {
+        if next == cur || next >= ladder.len() {
             return false;
         }
         let before = self.shapes[ix].clone();
-        self.shapes[ix].width = STROKE_LADDER[next];
+        if self.shapes[ix].kind == ShapeKind::Number {
+            // grow the badge around its center
+            let d = ladder[next];
+            let b = self.shapes[ix].bounds;
+            let c = point(b.left() + b.size.width / 2., b.top() + b.size.height / 2.);
+            self.shapes[ix].bounds = Bounds::new(
+                point(c.x - px(d / 2.), c.y - px(d / 2.)),
+                size(px(d), px(d)),
+            );
+        } else {
+            self.shapes[ix].width = ladder[next];
+        }
         let after = self.shapes[ix].clone();
         self.history.push(HistoryEntry::Edit { ix, before, after });
         self.redo.clear();
@@ -903,6 +926,25 @@ fn shape_hit(shape: &Shape, p: Point<Pixels>) -> bool {
                 .iter()
                 .any(|poly| point_in_polygon(p, poly))
         }
+        // freehand families share the same visual-polygon outline
+        ShapeKind::Polyline | ShapeKind::Pencil | ShapeKind::Highlighter => {
+            line::geometry(&shape.points, shape.width, false)
+                .iter()
+                .any(|poly| point_in_polygon(p, poly))
+        }
+        // the badge is a circle inscribed in its bounds
+        ShapeKind::Number => {
+            let r = f32::from(shape.bounds.size.width) / 2.;
+            if r <= 0. {
+                return false;
+            }
+            let c = shape.bounds.origin + point(px(r), px(r));
+            (f32::from(p.x - c.x)).hypot(f32::from(p.y - c.y)) <= r + HIT_TOLERANCE
+        }
+        // solid regions: anywhere inside the bounds
+        ShapeKind::Text | ShapeKind::Mosaic | ShapeKind::Blur => {
+            inflate(&shape.bounds, px(HIT_TOLERANCE)).contains(&p)
+        }
         _ => false,
     }
 }
@@ -928,6 +970,47 @@ fn inflate(b: &Bounds<Pixels>, by: Pixels) -> Bounds<Pixels> {
         point(b.origin.x - by, b.origin.y - by),
         size(b.size.width + by * 2., b.size.height + by * 2.),
     )
+}
+
+/// A filled rectangle path (selection highlight for solid regions).
+fn rect_path(b: Bounds<Pixels>, offset: Point<Pixels>) -> Option<Path<Pixels>> {
+    let mut builder = PathBuilder::fill();
+    let corners = [
+        point(b.left(), b.top()),
+        point(b.right(), b.top()),
+        point(b.right(), b.bottom()),
+        point(b.left(), b.bottom()),
+    ];
+    builder.move_to(corners[0] + offset);
+    for c in &corners[1..] {
+        builder.line_to(*c + offset);
+    }
+    builder.close();
+    builder.build().ok()
+}
+
+/// A filled circle path (the number badge highlight), eight cubic
+/// arcs with the same approximation ellipse_path uses.
+fn circle_path(c: Point<Pixels>, r: f32) -> Option<Path<Pixels>> {
+    if r <= 0. {
+        return None;
+    }
+    let mut builder = PathBuilder::fill();
+    let step = std::f32::consts::TAU / 8.;
+    let k = 4. / 3. * (step / 4.).tan();
+    let at = |x: f32, y: f32| c + point(px(r * x), px(r * y));
+    builder.move_to(at(1., 0.));
+    for i in 0..8 {
+        let (s0, c0) = (i as f32 * step).sin_cos();
+        let (s1, c1) = ((i + 1) as f32 * step).sin_cos();
+        builder.cubic_bezier_to(
+            at(c1, s1),
+            at(c0 - k * s0, s0 + k * c0),
+            at(c1 + k * s1, s1 + k * c1),
+        );
+    }
+    builder.close();
+    builder.build().ok()
 }
 
 fn number_bounds(p: Point<Pixels>, selection: Bounds<Pixels>, diameter: f32) -> Bounds<Pixels> {
@@ -1123,6 +1206,70 @@ mod tests {
         assert!(a.enabled()); // tool still active…
         assert!(a.cancel()); // …the next Escape leaves it
         assert!(!a.enabled());
+    }
+
+    #[test]
+    fn freehand_number_text_and_filter_shapes_select_and_step() {
+        let mut a = Annotations::default();
+
+        // pencil: visual-polygon hit on the stroke, stroke ladder M→L
+        a.toggle(super::ShapeKind::Pencil);
+        a.begin(point(px(5.), px(5.)), selection());
+        for p in [(20., 20.), (40., 30.), (60., 50.)] {
+            a.drag_to(point(px(p.0), px(p.1)), selection(), false);
+        }
+        a.end();
+        assert!(click(&mut a, point(px(40.), px(30.))));
+        assert_eq!(a.selected().map(|s| s.kind), Some(super::ShapeKind::Pencil));
+        assert!(a.step_size(true));
+        assert_eq!(a.selected().map(|s| s.width), Some(5.));
+
+        // number badge: circle hit, miss outside; wheel grows the
+        // DIAMETER (32 → 40) around the center, undo restores
+        a.toggle(super::ShapeKind::Number);
+        a.begin(point(px(30.), px(50.)), selection());
+        a.end();
+        assert!(click(&mut a, point(px(30.), px(50.))));
+        assert_eq!(a.selected().map(|s| s.kind), Some(super::ShapeKind::Number));
+        assert!(a.hit_test(point(px(30.), px(70.))).is_none());
+        let b = a.selected().unwrap().bounds;
+        let center = point(b.left() + b.size.width / 2., b.top() + b.size.height / 2.);
+        assert!(a.step_size(true));
+        let b = a.selected().unwrap().bounds;
+        assert_eq!(f32::from(b.size.width), 40.);
+        assert_eq!(
+            point(b.left() + b.size.width / 2., b.top() + b.size.height / 2.),
+            center
+        );
+        a.undo();
+        // undo drops the selection — read the badge back from committed
+        let badge = a
+            .committed()
+            .iter()
+            .find(|s| s.kind == super::ShapeKind::Number)
+            .unwrap();
+        assert_eq!(f32::from(badge.bounds.size.width), 32.);
+
+        // text: solid-bounds hit; wheel steps the font ladder (24 → 32)
+        a.toggle(super::ShapeKind::Text);
+        a.add_text(
+            Bounds::new(point(px(0.), px(60.)), size(px(50.), px(20.))),
+            "hi".into(),
+        );
+        assert!(click(&mut a, point(px(25.), px(70.))));
+        assert_eq!(a.selected().map(|s| s.kind), Some(super::ShapeKind::Text));
+        assert!(a.step_size(true));
+        assert_eq!(a.selected().map(|s| s.width), Some(32.));
+
+        // mosaic: solid-bounds hit; wheel steps filter strength (16 → 24)
+        a.toggle(super::ShapeKind::Mosaic);
+        a.begin(point(px(-10.), px(10.)), selection());
+        a.drag_to(point(px(20.), px(40.)), selection(), false);
+        a.end();
+        assert!(click(&mut a, point(px(5.), px(25.))));
+        assert_eq!(a.selected().map(|s| s.kind), Some(super::ShapeKind::Mosaic));
+        assert!(a.step_size(true));
+        assert_eq!(a.selected().map(|s| s.width), Some(24.));
     }
 
     #[test]
