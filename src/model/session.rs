@@ -603,13 +603,12 @@ impl ScreenshotSession {
         if self.annotations.enabled() {
             if let Some(selection) = self.selection.bounds() {
                 let p = local + self.screen(name).bounds().origin;
-                // Polyline is exempt: its clicks PLACE VERTICES — a hit
-                // would break the drawing flow mid-polygon
-                if self.annotations.tool() != Some(crate::annotation::ShapeKind::Polyline)
+                // press on a shape: click-or-drag resolves on the
+                // following move/up events (polyline never parks — its
+                // clicks place vertices)
+                if self.annotations.parks_click_select()
                     && let Some(ix) = self.annotations.hit_test(p)
                 {
-                    // press on a shape: click-or-drag resolves on the
-                    // following move/up events
                     self.pending_click = Some((ix, p));
                     return;
                 }
@@ -725,7 +724,7 @@ impl ScreenshotSession {
     /// shape — the hover probe for the pointer affordance.
     pub(crate) fn pointer_on_annotation(&self) -> bool {
         self.pointer_global
-            .is_some_and(|p| self.annotations.hit_test(p).is_some())
+            .is_some_and(|p| self.annotations.hits_shape(p))
     }
 
     pub(crate) fn crop(&self, output: &str) -> Option<(u32, u32, Vec<u8>)> {

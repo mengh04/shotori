@@ -25,7 +25,8 @@ use crate::model::placement::round_px;
 use crate::model::selection::{PressTarget, Selection};
 use crate::platform::capture::Capture;
 use crate::ui::hud::{
-    handle_cursor, hover_outline, selection_backdrop, selection_handles, selection_label,
+    annotation_chrome, handle_cursor, hover_outline, selection_backdrop, selection_handles,
+    selection_label,
 };
 use crate::ui::image_util;
 use crate::ui::toolbar::selection_toolbar;
@@ -1138,45 +1139,9 @@ impl Render for Overlay {
                 .left_0()
                 .size_full(),
             )
-            // ①½ Annotation selection highlight: a thin accent stroke
-            // tracing the shape's own visual outline (capsule rim,
-            // ring, arrowhead) plus corner handles from its visual
-            // footprint — an independent layer, identical over both
-            // preview paths.
-            .child(
-                canvas(
-                    |_, _, _| (),
-                    move |viewport, (), window, _| {
-                        let Some(shape) = &selected_shape else {
-                            return;
-                        };
-                        let accent = rgba(crate::ui::theme::c().accent);
-                        for path in shape.hilite_paths(viewport.origin) {
-                            window.paint_path(path, accent);
-                        }
-                        // handles at the shape's own anchor points —
-                        // endpoints for lines, vertices for polylines,
-                        // corners for rects/ellipses; 6 px, between the
-                        // selection's HANDLE_VIS (8) and annotation scale
-                        let vis = px(6.);
-                        for p in shape.handle_points() {
-                            let h = Bounds::new(
-                                point(
-                                    p.x + viewport.origin.x - vis / 2.,
-                                    p.y + viewport.origin.y - vis / 2.,
-                                ),
-                                size(vis, vis),
-                            );
-                            window.paint_quad(fill(h, rgba(0xFFFFFFFF)));
-                            window.paint_quad(outline(h, accent, BorderStyle::default()));
-                        }
-                    },
-                )
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full(),
-            )
+            // ①½ Annotation selection chrome (stroke + handles),
+            // above the marks, below the selection border.
+            .child(annotation_chrome(selected_shape))
             // Paint the border above the export-backed preview as well as vector marks.
             .child(selection_backdrop(backdrop))
             // ②¼ Resize handles (above the border; the toolbar paints later
