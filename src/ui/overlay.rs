@@ -191,9 +191,12 @@ impl Overlay {
                     }
                 }
                 if session.annotations().enabled() {
-                    // A shape under the pointer selects on press — promise
-                    // it with the grab cursor; blank canvas keeps the
-                    // crosshair (new stroke)
+                    // mid-move: grabbed; a shape under the pointer
+                    // selects on press — promise it with the grab
+                    // cursor; blank canvas keeps the crosshair
+                    if session.is_moving() {
+                        return CursorStyle::ClosedHand;
+                    }
                     if session.pointer_on_annotation() {
                         return CursorStyle::OpenHand;
                     }

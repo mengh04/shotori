@@ -45,6 +45,38 @@ impl Annotations {
         self.selected.and_then(|ix| self.shapes.get(ix))
     }
 
+    /// The selected shape's index (valid or None).
+    pub(crate) fn selected_index(&self) -> Option<usize> {
+        self.selected.filter(|ix| self.shapes.get(*ix).is_some())
+    }
+
+    /// Re-place shape `ix` as the press-time snapshot translated by
+    /// `delta`. Snapshot re-derivation means move events cannot
+    /// accumulate float error, and a zero delta restores the snapshot
+    /// (the Escape path).
+    pub(crate) fn place_shape(&mut self, ix: usize, before: &Shape, delta: Point<Pixels>) {
+        if let Some(shape) = self.shapes.get_mut(ix) {
+            shape.bounds = Bounds::new(before.bounds.origin + delta, before.bounds.size);
+            shape.points = before.points.iter().map(|p| *p + delta).collect();
+        }
+    }
+
+    /// Finish a move drag: record the Edit (before → current) so undo
+    /// restores the pre-move position. No entry when nothing moved.
+    pub(crate) fn commit_move(&mut self, ix: usize, before: Shape) {
+        let Some(after) = self.shapes.get(ix) else {
+            return;
+        };
+        if after != &before {
+            self.history.push(HistoryEntry::Edit {
+                ix,
+                before,
+                after: after.clone(),
+            });
+            self.redo.clear();
+        }
+    }
+
     /// Whether a press right now should park a click-select pending
     /// resolution (release = select, drag past the slop = draw
     /// through). Polyline never parks: its clicks PLACE VERTICES, and
