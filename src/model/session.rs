@@ -603,7 +603,11 @@ impl ScreenshotSession {
         if self.annotations.enabled() {
             if let Some(selection) = self.selection.bounds() {
                 let p = local + self.screen(name).bounds().origin;
-                if let Some(ix) = self.annotations.hit_test(p) {
+                // Polyline is exempt: its clicks PLACE VERTICES — a hit
+                // would break the drawing flow mid-polygon
+                if self.annotations.tool() != Some(crate::annotation::ShapeKind::Polyline)
+                    && let Some(ix) = self.annotations.hit_test(p)
+                {
                     // press on a shape: click-or-drag resolves on the
                     // following move/up events
                     self.pending_click = Some((ix, p));
