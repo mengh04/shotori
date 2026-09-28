@@ -44,6 +44,17 @@ impl TextEditor {
     pub(crate) fn bounds(&self) -> Bounds<Pixels> {
         self.bounds
     }
+    pub(crate) fn actual_bounds(&self) -> Bounds<Pixels> {
+        Bounds::new(
+            self.bounds.origin,
+            size(
+                px(self.visible_width)
+                    .min(self.bounds.size.width)
+                    .max(px(16.)),
+                px(self.height).min(self.bounds.size.height).max(px(16.)),
+            ),
+        )
+    }
     pub(crate) fn value(&self, cx: &App) -> String {
         self.input.read(cx).value()
     }

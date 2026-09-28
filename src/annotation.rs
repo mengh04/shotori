@@ -438,12 +438,44 @@ impl Annotations {
     }
 
     pub(crate) fn set_color(&mut self, ix: usize) {
-        if ix < crate::ui::theme::c().annotation_colors.len() {
-            if self.tool == Some(ShapeKind::Highlighter) {
+        if ix >= crate::ui::theme::c().annotation_colors.len() {
+            return;
+        }
+        if let Some(selected_ix) = self.selected_index() {
+            let kind = self.shapes[selected_ix].kind;
+            if kind == ShapeKind::Highlighter {
                 self.highlighter_color_ix = ix;
             } else {
                 self.color_ix = ix;
             }
+            if !matches!(
+                kind,
+                ShapeKind::Mosaic | ShapeKind::Blur | ShapeKind::Eraser | ShapeKind::EraserRect
+            ) {
+                let raw_color = crate::ui::theme::c().annotation_colors[ix];
+                let color = if kind == ShapeKind::Highlighter {
+                    (raw_color & 0xffffff00) | 96
+                } else {
+                    raw_color
+                };
+                if self.shapes[selected_ix].color != color {
+                    let before = self.shapes[selected_ix].clone();
+                    self.shapes[selected_ix].color = color;
+                    let after = self.shapes[selected_ix].clone();
+                    self.history.push(HistoryEntry::Edit {
+                        ix: selected_ix,
+                        before,
+                        after,
+                    });
+                    self.redo.clear();
+                }
+            }
+            return;
+        }
+        if self.tool == Some(ShapeKind::Highlighter) {
+            self.highlighter_color_ix = ix;
+        } else {
+            self.color_ix = ix;
         }
     }
     /// Nudge a size by one unit (the wheel). With a live selection this
@@ -1650,5 +1682,21 @@ mod tests {
         a.begin(point(px(5.), px(5.)), tiny);
         a.end();
         assert_eq!(a.next_number(), 2);
+    }
+    #[test]
+    fn set_color_updates_selected_shape_and_records_undo() {
+        let mut a = Annotations::default();
+        a.toggle(super::ShapeKind::Rectangle);
+        rectangle(&mut a);
+        let orig_color = a.visible().next().unwrap().color;
+        assert_eq!(a.selected_index(), Some(0));
+        a.set_color(1);
+        let new_color = a.visible().next().unwrap().color;
+        assert_ne!(new_color, orig_color);
+        assert_eq!(new_color, crate::ui::theme::c().annotation_colors[1]);
+        a.undo();
+        assert_eq!(a.visible().next().unwrap().color, orig_color);
+        a.redo();
+        assert_eq!(a.visible().next().unwrap().color, new_color);
     }
 }

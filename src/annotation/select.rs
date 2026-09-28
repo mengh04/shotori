@@ -187,7 +187,7 @@ impl Annotations {
     /// an intercepting hit would break polygons mid-drawing — its
     /// shapes stay selectable from any other tool.
     pub(crate) fn parks_click_select(&self) -> bool {
-        self.enabled() && self.tool != Some(ShapeKind::Polyline)
+        self.tool != Some(ShapeKind::Polyline)
     }
 
     /// Step the selected shape's size through its OWN preset ladder —
@@ -277,7 +277,7 @@ fn shape_hit(shape: &Shape, p: Point<Pixels>) -> bool {
                 return false;
             }
             let c = shape.bounds.origin + point(px(r), px(r));
-            (f32::from(p.x - c.x)).hypot(f32::from(p.y - c.y)) <= r + HIT_TOLERANCE
+            (f32::from(p.x - c.x)).hypot(f32::from(p.y - c.y)) <= r + 3.0
         }
         // solid regions: anywhere inside the bounds
         ShapeKind::Text | ShapeKind::Mosaic | ShapeKind::Blur => {
@@ -303,7 +303,7 @@ fn point_in_polygon(p: Point<Pixels>, poly: &[Point<Pixels>]) -> bool {
     inside
 }
 
-fn inflate(b: &Bounds<Pixels>, by: Pixels) -> Bounds<Pixels> {
+pub(crate) fn inflate(b: &Bounds<Pixels>, by: Pixels) -> Bounds<Pixels> {
     Bounds::new(
         point(b.origin.x - by, b.origin.y - by),
         size(b.size.width + by * 2., b.size.height + by * 2.),
