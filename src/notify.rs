@@ -170,8 +170,20 @@ fn show(
     let mut n = notify_rust::Notification::new();
     n.appname("Shotori")
         .summary(summary)
+        .icon(crate::APP_ID)
+        .hint(notify_rust::Hint::DesktopEntry(crate::APP_ID.into()))
         .body(&escape_markup(body))
         .timeout(notify_rust::Timeout::Milliseconds(3500));
+    // An explicit app icon remains available for cargo installs too. Keep it
+    // separate from image-path, which belongs to the screenshot thumbnail.
+    if let Some(dir) = cache_dir() {
+        match cache_app_icon(&dir) {
+            Ok(path) => {
+                n.icon(&path.to_string_lossy());
+            }
+            Err(error) => eprintln!("[shotori] could not cache app icon: {error}"),
+        }
+    }
     if let Some(path) = image {
         n.image_path(&format!("file://{}", path.display()));
     }
@@ -198,6 +210,22 @@ fn show(
         });
     }
     Ok(())
+}
+
+/// Atomic replacement prevents simultaneous notification children from reading
+/// a partly written icon. This stable file is not a screenshot-cache entry.
+#[cfg(target_os = "linux")]
+fn cache_app_icon(dir: &std::path::Path) -> std::io::Result<PathBuf> {
+    use std::io::Write;
+    const PNG: &[u8] = include_bytes!("../assets/app/shotori-128.png");
+    let path = dir.join("shotori-icon.png");
+    if std::fs::read(&path).is_ok_and(|bytes| bytes == PNG) {
+        return Ok(path);
+    }
+    let mut file = tempfile::NamedTempFile::new_in(dir)?;
+    file.write_all(PNG)?;
+    file.persist(&path).map_err(|error| error.error)?;
+    Ok(path)
 }
 
 #[cfg(target_os = "linux")]
@@ -273,6 +301,28 @@ fn cleanup_old_previews(dir: &std::path::Path) {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
+    #[test]
+    fn app_icon_cache_repairs_corruption_and_survives_thumbnail_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = super::cache_app_icon(dir.path()).unwrap();
+        assert_eq!(image::open(&path).unwrap().width(), 128);
+        std::fs::write(&path, b"interrupted or old icon").unwrap();
+        assert_eq!(super::cache_app_icon(dir.path()).unwrap(), path);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            include_bytes!("../assets/app/shotori-128.png")
+        );
+        let old =
+            std::time::SystemTime::now() - super::PREVIEW_TTL - std::time::Duration::from_secs(60);
+        std::fs::File::open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+        super::cleanup_old_previews(dir.path());
+        assert!(path.exists());
+        assert!(super::cache_app_icon(&dir.path().join("missing-directory")).is_err());
+    }
+
     #[test]
     fn cache_cleanup_removes_only_expired_notification_images() {
         let dir = tempfile::tempdir().unwrap();

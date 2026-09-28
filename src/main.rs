@@ -131,6 +131,7 @@ fn main() {
         .with_assets(shotori::ui::toolbar::ToolbarSource)
         .run(move |cx| {
             shotori::boot_mark("gpui run entered");
+            cx.set_app_identity(shotori::APP_ID, "Shotori");
             gpui_kit::base::init(cx);
             shotori::ui::ocr_setup::init(cx);
             shotori::actions::init_annotation_keybindings(cx);
