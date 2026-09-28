@@ -3,6 +3,11 @@
 # only; the tools build via `cargo build --workspace` / `-p vptr`.
 members = ["tools/vptr"]
 
+[features]
+# Developer-only E2E perf harness (`shotori --perf`): not part of
+# release builds; run with `cargo build --release --features perf`
+perf = []
+
 [package]
 name = "shotori"
 version = "0.12.0"

@@ -47,6 +47,11 @@ pub mod args;
 
 /// In-binary microbenchmarks (`shotori --bench`); see bench.rs
 pub mod bench;
+
+/// Developer-only E2E perf suites (`shotori --perf`); behind the
+/// `perf` feature — see perf.rs
+#[cfg(feature = "perf")]
+pub mod perf;
 pub mod model;
 pub mod platform;
 pub mod ui;
