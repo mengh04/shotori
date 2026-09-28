@@ -350,6 +350,34 @@ impl Annotations {
             }
         }
     }
+    /// Step the active tool's size preset one notch (S→M→L or back) —
+    /// the scroll-wheel path onto the same slots the toolbar's S/M/L
+    /// buttons drive, so the two stay in lockstep. Returns whether the
+    /// index moved (false at either end stop or with no active tool).
+    pub(crate) fn step_size(&mut self, up: bool) -> bool {
+        let cur = match self.tool {
+            Some(ShapeKind::Text) => self.text_size_ix,
+            Some(ShapeKind::Number) => self.number_size_ix,
+            Some(ShapeKind::Mosaic | ShapeKind::Blur) => self.filter_strength_ix,
+            Some(ShapeKind::Eraser | ShapeKind::EraserRect) => self.eraser_width_ix,
+            Some(ShapeKind::Highlighter) => self.highlighter_width_ix,
+            Some(_) => self.width_ix,
+            None => return false,
+        };
+        let next = if up { cur + 1 } else { cur.saturating_sub(1) };
+        if next == cur || next >= 3 {
+            return false;
+        }
+        match self.tool {
+            // set_width re-dispatches on the tool, which is unchanged
+            // since the read above — it lands in the same slot
+            Some(ShapeKind::Text) => self.set_text_size(next),
+            Some(ShapeKind::Number) => self.set_number_size(next),
+            _ => self.set_width(next),
+        }
+        true
+    }
+
     pub(crate) fn reset(&mut self) {
         self.shapes.clear();
         self.undone.clear();
@@ -756,6 +784,47 @@ mod tests {
         a.begin(point(px(10.), px(10.)), selection());
         a.drag_to(point(px(30.), px(40.)), selection(), false);
         a.end();
+    }
+
+    #[test]
+    fn wheel_steps_size_presets_per_tool_and_clamps_at_ends() {
+        let mut a = Annotations::default();
+
+        // no active tool → nothing to step
+        assert!(!a.step_size(true));
+
+        // pencil drives the generic stroke width (S=1, M=3, L=5)
+        a.toggle(super::ShapeKind::Pencil);
+        assert_eq!(a.width(), 3.);
+        assert!(a.step_size(true));
+        assert_eq!(a.width(), 5.);
+        assert!(!a.step_size(true)); // already L
+        assert!(a.step_size(false));
+        assert_eq!(a.width(), 3.);
+        assert!(a.step_size(false));
+        assert_eq!(a.width(), 1.);
+        assert!(!a.step_size(false)); // already S
+
+        // mosaic drives filter strength (8/16/24); pencil keeps its own ix
+        a.toggle(super::ShapeKind::Mosaic);
+        assert_eq!(a.width(), 16.);
+        assert!(a.step_size(true));
+        assert_eq!(a.width(), 24.);
+        a.toggle(super::ShapeKind::Pencil);
+        assert_eq!(a.width(), 1.);
+
+        // text drives the font preset (16/24/32)
+        a.toggle(super::ShapeKind::Text);
+        assert_eq!(a.text_size(), 24.);
+        assert!(a.step_size(false));
+        assert_eq!(a.text_size(), 16.);
+
+        // number drives the badge preset (24/32/40)
+        a.toggle(super::ShapeKind::Number);
+        assert_eq!(a.number_size(), 32.);
+        assert!(a.step_size(true));
+        assert_eq!(a.number_size(), 40.);
+        assert!(!a.step_size(true));
     }
 
     #[test]
