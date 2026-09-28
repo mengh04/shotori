@@ -802,9 +802,17 @@ impl Render for Overlay {
         // would block for the rest of render.
         let size_slider = {
             let a = self.session.read(cx).annotations();
-            let (tool, current) = (a.tool(), a.tool_size());
-            tool.map(|kind| {
-                let spec = crate::annotation::size_spec(kind);
+            // the edit target is the SELECTED shape when one is live
+            // (select-on-place), else the active tool's preset — the
+            // slider position, readout and writes all follow it
+            let edit = a.edit_kind().map(|kind| {
+                (
+                    kind,
+                    crate::annotation::size_spec(kind),
+                    a.current_edit_size(),
+                )
+            });
+            edit.map(|(kind, spec, current)| {
                 let state = if self.slider.as_ref().is_none_or(|(k, _)| *k != kind) {
                     // a new tool family means a new range — the state is
                     // baked at build time, so rebuild the entity
@@ -818,11 +826,22 @@ impl Render for Overlay {
                     let sub = cx.subscribe(
                         &state,
                         |this, _, event: &gpui_kit::base::slider::SliderEvent, cx| {
-                            if let gpui_kit::base::slider::SliderEvent::Change(v) = event {
-                                this.session.update(cx, |s, cx| {
-                                    s.edit_annotations(|a| a.set_tool_size(v.start()));
+                            match event {
+                                // value writes go to the edit target
+                                // (selected shape first) and repaint the
+                                // overlay so the thumb follows the pointer
+                                gpui_kit::base::slider::SliderEvent::Change(v) => {
+                                    this.session.update(cx, |s, _| {
+                                        s.edit_annotations(|a| a.apply_size(v.start()))
+                                    });
                                     cx.notify();
-                                });
+                                }
+                                // one history entry per drag
+                                gpui_kit::base::slider::SliderEvent::Release(_) => {
+                                    this.session.update(cx, |s, _| {
+                                        s.edit_annotations(|a| a.end_size_drag())
+                                    });
+                                }
                             }
                         },
                     );
@@ -831,9 +850,9 @@ impl Render for Overlay {
                     state
                 } else {
                     let (_, state) = self.slider.as_ref().expect("checked above");
-                    // sync external changes (wheel, detents) into the
-                    // thumb; skip when equal or every frame would
-                    // re-notify itself into a loop
+                    // sync external changes (wheel) into the thumb;
+                    // skip when equal or every frame would re-notify
+                    // itself into a loop
                     if (state.read(cx).value().start() - current).abs() > f32::EPSILON {
                         state.update(cx, |s, cx| s.set_value(current, window, cx));
                     }
