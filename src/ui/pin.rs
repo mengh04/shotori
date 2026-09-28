@@ -70,6 +70,12 @@ fn zoomed_size(base: Size<Pixels>, zoom: f32) -> Size<Pixels> {
     )
 }
 
+/// Clamp that never panics: when lo > hi (a degenerate output size),
+/// pin to lo. Same posture as selection::clamp_to — f32::clamp panics on inverted bounds.
+fn clamp_to(v: f32, lo: f32, hi: f32) -> f32 {
+    if lo > hi { lo } else { v.clamp(lo, hi) }
+}
+
 /// Keep the pin grabbable: at least `MIN_VISIBLE` stays inside the
 /// desktop on each axis (parking it mostly off an edge is fine).
 fn clamp_to_output(
@@ -85,8 +91,8 @@ fn clamp_to_output(
     let (dl, dt) = (f32::from(desk.left()), f32::from(desk.top()));
     let (dr, db) = (f32::from(desk.right()), f32::from(desk.bottom()));
     point(
-        px(f32::from(origin.x).clamp(dl - (w - vw), dr - vw)),
-        px(f32::from(origin.y).clamp(dt - (h - vh), db - vh)),
+        px(clamp_to(f32::from(origin.x), dl - (w - vw), dr - vw)),
+        px(clamp_to(f32::from(origin.y), dt - (h - vh), db - vh)),
     )
 }
 
@@ -811,6 +817,15 @@ mod tests {
         let tiny: gpui_kit::Size<Pixels> = size(px(10.), px(8.));
         let p = clamp_origin(point(px(-500.), px(-500.)), tiny, &[desk()]);
         assert_eq!((p.x, p.y), (px(-100.), px(0.)));
+    }
+
+    #[test]
+    fn degenerate_output_size_does_not_panic() {
+        let tiny = Bounds::new(point(px(0.), px(0.)), size(px(10.), px(10.)));
+        let pin = size(px(100.), px(60.));
+        let p = clamp_origin(point(px(50.), px(50.)), pin, &[tiny]);
+        assert!(f32::from(p.x).is_finite());
+        assert!(f32::from(p.y).is_finite());
     }
 }
 
