@@ -29,6 +29,10 @@ and feedback are welcome in the
   scales and rotated outputs, with selections spanning screens
 - Annotations: rectangle, ellipse, line, polyline, arrow, numbered steps,
   pencil, highlighter, mosaic/blur, eraser, and text
+- Double-click existing text to edit it in place; live wrapping extends to the
+  selection edge, with size/color controls and one-step undo of the edit. Text
+  keeps a 2px inset; input, paste, or size changes that overflow the bottom
+  are rejected rather than storing clipped text
 - Pin: crop a selection into a floating always-on-top image that
   survives the overlay — drag across outputs, scroll to zoom
 - Copy to clipboard, save via the system "save as" dialog, or OCR to text

@@ -8,8 +8,8 @@ pub(crate) struct TextEditor {
     local: Point<Pixels>,
     height: f32,
     visible_width: f32,
-    font_size: f32,
-    color: u32,
+    pub(crate) font_size: f32,
+    pub(crate) color: u32,
 }
 impl TextEditor {
     pub(crate) fn new(
@@ -17,18 +17,39 @@ impl TextEditor {
         local: Point<Pixels>,
         font_size: f32,
         color: u32,
-        _: &mut Window,
+        cx: &mut App,
+    ) -> Self {
+        Self::new_with_text(bounds, local, font_size, color, "", None, cx)
+    }
+
+    pub(crate) fn new_with_text(
+        bounds: Bounds<Pixels>,
+        local: Point<Pixels>,
+        font_size: f32,
+        color: u32,
+        initial_text: &str,
+        click_local: Option<Point<Pixels>>,
         cx: &mut App,
     ) -> Self {
         let input = cx.new(|cx| {
-            TextInput::new(
+            let mut input = TextInput::new_with_initial(
+                initial_text,
                 f32::from(bounds.size.width),
                 f32::from(bounds.size.height),
                 font_size,
                 cx,
-            )
+            );
+            input.set_color(color, cx);
+            // Position the cursor at the click point so the user can
+            // immediately type at the exact location they tapped.
+            if let Some(click) = click_local {
+                let p = click - local;
+                let (x, y) = (f32::from(p.x) as i32, f32::from(p.y) as i32);
+                input.action(cosmic_text::Action::Click { x, y });
+            }
+            input
         });
-        Self {
+        let mut editor = Self {
             input,
             font_size,
             color,
@@ -36,22 +57,21 @@ impl TextEditor {
             local,
             visible_width: 1.,
             height: (font_size * 1.35).min(f32::from(bounds.size.height)),
-        }
+        };
+        editor.refresh(cx);
+        editor
     }
     pub(crate) fn input(&self) -> &Entity<TextInput> {
         &self.input
-    }
-    pub(crate) fn bounds(&self) -> Bounds<Pixels> {
-        self.bounds
     }
     pub(crate) fn actual_bounds(&self) -> Bounds<Pixels> {
         Bounds::new(
             self.bounds.origin,
             size(
                 px(self.visible_width)
-                    .min(self.bounds.size.width)
-                    .max(px(16.)),
-                px(self.height).min(self.bounds.size.height).max(px(16.)),
+                    .max(px(1.))
+                    .min(self.bounds.size.width),
+                px(self.height).min(self.bounds.size.height),
             ),
         )
     }
@@ -65,11 +85,15 @@ impl TextEditor {
     pub(crate) fn sync_style(&mut self, size: f32, color: u32, cx: &mut App) -> bool {
         let changed = self.font_size != size || self.color != color;
         if self.font_size != size {
-            self.font_size = size;
-            self.input.update(cx, |s, cx| s.set_font_size(size, cx));
+            if self.input.update(cx, |s, cx| s.set_font_size(size, cx)) {
+                self.font_size = size;
+            }
             self.refresh(cx);
         }
-        self.color = color;
+        if self.color != color {
+            self.color = color;
+            self.input.update(cx, |s, cx| s.set_color(color, cx));
+        }
         changed
     }
     pub(crate) fn focus_handle(&self, cx: &App) -> FocusHandle {
@@ -79,16 +103,22 @@ impl TextEditor {
         self.input.update(cx, |s, cx| s.focus(window, cx));
     }
     pub(crate) fn render(&self) -> impl IntoElement {
+        // Less than one character width when empty: a compact box (~8px)
+        // just wide enough to cleanly hold the caret without gluing to the border.
+        let min_w = (self.font_size * 0.35).round().clamp(6., 9.);
+        let display_w = self.visible_width.max(min_w);
+        let display_h = self.height.max(self.font_size * 1.35);
         let visible = size(
-            px(self.visible_width).min(self.bounds.size.width),
-            px(self.height).min(self.bounds.size.height),
+            px(display_w).min(self.bounds.size.width),
+            px(display_h).min(self.bounds.size.height),
         );
+        let outline_bounds = Bounds::new(self.local, visible);
         div()
             .absolute()
             .top_0()
             .left_0()
             .size_full()
-            .child(editor_outline(Bounds::new(self.local, visible)))
+            .child(editor_outline(outline_bounds))
             .child(
                 div()
                     .id("text-editor")
@@ -143,6 +173,55 @@ mod tests {
                 .size_full()
                 .child(crate::ui::hud::selection_backdrop(Some(self.selection)))
                 .child(super::editor_outline(self.editor))
+        }
+    }
+    struct EditorHarness {
+        selection: Bounds<Pixels>,
+        editor: super::TextEditor,
+    }
+    impl Render for EditorHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(crate::ui::hud::selection_backdrop(Some(self.selection)))
+                .child(self.editor.render())
+        }
+    }
+    #[gpui_kit::test]
+    fn actual_text_editor_stays_inside_selection(cx: &mut TestAppContext) {
+        let selection =
+            Bounds::from_corners(point(px(20.2), px(20.3)), point(px(350.5), px(360.8)));
+        let (view, cx) = cx.add_window_view(|_, cx| EditorHarness {
+            selection,
+            editor: super::TextEditor::new_with_text(
+                Bounds::from_corners(point(px(70.2), px(80.6)), selection.bottom_right()),
+                point(px(70.2), px(80.6)),
+                24.,
+                0xff0000ff,
+                &"long text which wraps ".repeat(100),
+                None,
+                cx,
+            ),
+        });
+        for scale in [1., 1.25, 1.5, 1.73, 2.] {
+            cx.simulate_scale_factor_change(scale);
+            let quads = cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+                window.painted_quads()
+            });
+            let borders = quads
+                .iter()
+                .filter(|q| q.border_widths.top.0 > 0.)
+                .collect::<Vec<_>>();
+            assert!(borders.len() >= 2);
+            for border in &borders[1..] {
+                assert!(border.bounds.right() <= borders[0].bounds.right());
+                assert!(border.bounds.bottom() <= borders[0].bounds.bottom());
+            }
+            view.update(cx, |s, _| {
+                assert!(s.editor.actual_bounds().right() <= selection.right());
+                assert!(s.editor.actual_bounds().bottom() <= selection.bottom());
+            });
         }
     }
     #[gpui_kit::test]

@@ -15,6 +15,7 @@ pub(crate) struct TextInput {
     width: f32,
     limit: f32,
     font_size: f32,
+    text_color: u32,
     bounds: Bounds<Pixels>,
     dragging: bool,
 }
@@ -25,9 +26,22 @@ impl Focusable for TextInput {
     }
 }
 impl TextInput {
+    // Used by unit tests in this file (`TextInput::new` creates an empty
+    // editor; production code calls `new_with_initial` directly).
+    #[allow(dead_code)]
     pub(crate) fn new(width: f32, limit: f32, font_size: f32, cx: &mut Context<Self>) -> Self {
+        Self::new_with_initial("", width, limit, font_size, cx)
+    }
+
+    pub(crate) fn new_with_initial(
+        initial: &str,
+        width: f32,
+        limit: f32,
+        font_size: f32,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self {
-            editor: Editor::new(text::buffer("", width, limit, font_size)),
+            editor: Editor::new(text::buffer(initial, width, limit, font_size)),
             focus: cx.focus_handle(),
             marked: None,
             composition_start: None,
@@ -36,9 +50,14 @@ impl TextInput {
             width,
             limit,
             font_size,
+            text_color: 0,
             bounds: Bounds::default(),
             dragging: false,
         }
+    }
+    pub(crate) fn set_color(&mut self, color: u32, cx: &mut Context<Self>) {
+        self.text_color = color;
+        cx.notify();
     }
     pub(crate) fn value(&self) -> String {
         self.editor.with_buffer(|b| {
@@ -58,6 +77,9 @@ impl TextInput {
         })
     }
     pub(crate) fn height(&self) -> f32 {
+        self.layout_height().min(self.limit)
+    }
+    fn layout_height(&self) -> f32 {
         self.editor.with_buffer(|b| {
             let single_line_h = self.font_size * 1.35;
             let run_height = b
@@ -65,14 +87,33 @@ impl TextInput {
                 .map(|r| r.line_top + r.line_height)
                 .fold(single_line_h, f32::max);
             let min_lines_h = b.lines.len() as f32 * single_line_h;
-            run_height.max(min_lines_h).min(self.limit)
+            run_height.max(min_lines_h)
         })
     }
-    pub(crate) fn set_font_size(&mut self, font_size: f32, cx: &mut Context<Self>) {
+    pub(crate) fn set_font_size(&mut self, font_size: f32, cx: &mut Context<Self>) -> bool {
+        let old_size = self.font_size;
+        let before = self.editor.clone();
         self.font_size = font_size;
-        self.editor
-            .with_buffer_mut(|b| b.set_metrics(Metrics::new(font_size, font_size * 1.35)));
+        self.shape();
+        if self.layout_height() > self.limit + 0.01 {
+            self.font_size = old_size;
+            self.editor = before;
+            return false;
+        }
         self.changed(cx);
+        true
+    }
+
+    // Validate actual shaped rows, not the clipped widget height. Reject the
+    // whole operation so a paste or IME commit never silently loses its tail.
+    fn accept_edit(&mut self, before: Editor<'static>) -> bool {
+        self.shape();
+        if self.layout_height() > self.limit + 0.01 {
+            self.editor = before;
+            false
+        } else {
+            true
+        }
     }
     fn shape(&mut self) {
         text::with_fonts(|fonts| {
@@ -89,12 +130,9 @@ impl TextInput {
         cx.emit(InputEvent::Change);
         cx.notify();
     }
-    fn remember(&mut self) {
-        self.undo.push(
-            self.composition_start
-                .take()
-                .unwrap_or_else(|| self.editor.clone()),
-        );
+    fn remember(&mut self, before: Editor<'static>) {
+        self.undo
+            .push(self.composition_start.take().unwrap_or(before));
         if self.undo.len() > 100 {
             self.undo.remove(0);
         }
@@ -134,7 +172,7 @@ impl TextInput {
         let text = self.value();
         text[..r.start].encode_utf16().count()..text[..r.end].encode_utf16().count()
     }
-    fn replace(&mut self, range: Range<usize>, value: &str) {
+    pub(crate) fn replace(&mut self, range: Range<usize>, value: &str) {
         let start = self.cursor_for(range.start);
         let end = self.cursor_for(range.end);
         self.editor.set_cursor(end);
@@ -149,13 +187,13 @@ impl TextInput {
                     r.cursor_position(&cursor).map(|x| {
                         Bounds::new(
                             point(px(x), px(r.line_top)),
-                            size(px(1.), px(r.line_height)),
+                            size(px(2.), px(r.line_height)),
                         )
                     })
                 })
                 .unwrap_or_else(|| {
                     let top = cursor.line as f32 * single_line_h;
-                    Bounds::new(point(px(0.), px(top)), size(px(1.), px(single_line_h)))
+                    Bounds::new(point(px(0.), px(top)), size(px(2.), px(single_line_h)))
                 })
         })
     }
@@ -178,7 +216,7 @@ impl TextInput {
                 .collect()
         })
     }
-    fn action(&mut self, a: EditAction) {
+    pub(crate) fn action(&mut self, a: EditAction) {
         text::with_fonts(|fonts| self.editor.action(fonts, a));
         self.shape();
     }
@@ -186,6 +224,9 @@ impl TextInput {
         if self.marked.is_some() {
             return;
         } // the IME owns keys while composing
+        let before = self.editor.clone();
+        let mut record = false;
+        let mut history_direction = None;
         let key = event.keystroke.key.as_str();
         let mods = event.keystroke.modifiers;
         let command = mods.control || mods.platform;
@@ -233,14 +274,14 @@ impl TextInput {
                     });
                 }
                 "enter" => {
-                    self.remember();
+                    record = true;
                     self.action(EditAction::Enter);
                 }
                 "escape" => {
                     window.dispatch_action(Box::new(crate::actions::CancelText), cx);
                 }
                 "backspace" | "delete" => {
-                    self.remember();
+                    record = true;
                     if command && self.editor.selection_bounds().is_none() {
                         self.editor
                             .set_selection(Selection::Normal(self.editor.cursor()));
@@ -266,13 +307,13 @@ impl TextInput {
                         cx.write_to_clipboard(ClipboardItem::new_string(value));
                     }
                     if key == "x" {
-                        self.remember();
+                        record = true;
                         self.editor.delete_selection();
                     }
                 }
                 "v" if command => {
                     if let Some(value) = cx.read_from_clipboard().and_then(|c| c.text()) {
-                        self.remember();
+                        record = true;
                         self.editor.insert_string(&value, None);
                     }
                 }
@@ -284,6 +325,7 @@ impl TextInput {
                         self.undo.pop()
                     };
                     if let Some(next) = next {
+                        history_direction = Some(redo);
                         let old = std::mem::replace(&mut self.editor, next);
                         if redo {
                             self.undo.push(old);
@@ -293,6 +335,20 @@ impl TextInput {
                     }
                 }
                 _ => return,
+            }
+        }
+        let attempted = self.editor.clone();
+        if self.accept_edit(before.clone()) {
+            if record {
+                self.remember(before);
+            }
+        } else if let Some(redo) = history_direction {
+            if redo {
+                self.undo.pop();
+                self.redo.push(attempted);
+            } else {
+                self.redo.pop();
+                self.undo.push(attempted);
             }
         }
         self.changed(cx);
@@ -338,7 +394,7 @@ impl EntityInputHandler for TextInput {
     }
     fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         if self.marked.take().is_some() {
-            self.remember();
+            self.remember(self.editor.clone());
             self.changed(cx);
         }
     }
@@ -353,8 +409,15 @@ impl EntityInputHandler for TextInput {
             .map(|r| self.byte_range_for_utf16(r))
             .or(self.marked.clone())
             .unwrap_or_else(|| self.selection());
-        self.remember();
+        let before = self.editor.clone();
         self.replace(range, value);
+        if self.accept_edit(before.clone()) {
+            self.remember(before);
+        } else if let Some(original) = self.composition_start.take() {
+            // The IME has finalized; restore committed text instead of leaving
+            // rejected phonetic preedit behind as ordinary annotation text.
+            self.editor = original;
+        }
         self.marked = None;
         self.changed(cx);
     }
@@ -370,10 +433,15 @@ impl EntityInputHandler for TextInput {
             .map(|r| self.byte_range_for_utf16(r))
             .or(self.marked.clone())
             .unwrap_or_else(|| self.selection());
-        if self.composition_start.is_none() {
-            self.composition_start = Some(self.editor.clone());
-        }
+        let before = self.editor.clone();
         self.replace(range.clone(), value);
+        if !self.accept_edit(before.clone()) {
+            cx.notify();
+            return;
+        }
+        if self.composition_start.is_none() {
+            self.composition_start = Some(before);
+        }
         self.marked = (!value.is_empty()).then_some(range.start..range.start + value.len());
         if let Some(selection) = selection {
             let start = self.cursor_for(range.start + utf16_byte(value, selection.start));
@@ -412,6 +480,7 @@ impl Render for TextInput {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
         let focus = self.focus.clone();
+        let text_color = self.text_color;
         let caret = self.caret(self.editor.cursor());
         let selection = self.highlights(self.selection());
         let marked = self
@@ -481,7 +550,15 @@ impl Render for TextInput {
                             if focus.is_focused(window) {
                                 let mut r = caret;
                                 r.origin += bounds.origin;
-                                window.paint_quad(fill(r, rgba(theme::c().accent)));
+                                let accent = theme::c().accent;
+                                let caret_color = compute_caret_color(text_color, accent);
+                                // Subtle dark halo backing ensures contrast against white or busy desktop backgrounds
+                                let halo = Bounds::new(
+                                    point(r.origin.x - px(0.5), r.origin.y),
+                                    size(r.size.width + px(1.0), r.size.height),
+                                );
+                                window.paint_quad(fill(halo, rgba(0x00000088)));
+                                window.paint_quad(fill(r, rgba(caret_color)));
                             }
                         });
                     },
@@ -491,11 +568,115 @@ impl Render for TextInput {
     }
 }
 
+/// Pick a vibrant caret color that maximizes visual contrast against both the
+/// user's chosen text color and the active theme accent border color.
+fn compute_caret_color(text_color: u32, accent: u32) -> u32 {
+    let [tr, tg, tb, _] = text_color.to_be_bytes();
+    let candidates: [u32; 6] = [
+        0x00D8FFFF, // Vivid Cyan
+        0xFFDD00FF, // Bright Yellow
+        0xFF2D55FF, // Vivid Rose
+        0x30E880FF, // Spring Green
+        0xFFFFFFFF, // Pure White
+        0xA855F7FF, // Purple
+    ];
+    let distance = |c1: [u8; 4], c2: [u8; 4]| -> i32 {
+        let dr = c1[0] as i32 - c2[0] as i32;
+        let dg = c1[1] as i32 - c2[1] as i32;
+        let db = c1[2] as i32 - c2[2] as i32;
+        dr * dr + dg * dg + db * db
+    };
+    let t_rgb = [tr, tg, tb, 255];
+    let a_rgb = accent.to_be_bytes();
+    *candidates
+        .iter()
+        .max_by_key(|&&c: &&u32| {
+            let c_rgb = c.to_be_bytes();
+            distance(c_rgb, t_rgb).min(distance(c_rgb, a_rgb))
+        })
+        .unwrap_or(&0x00D8FFFF)
+}
+
 #[cfg(test)]
 mod tests {
     use super::TextInput;
     use cosmic_text::Edit;
     use gpui_kit::{Bounds, EntityInputHandler, TestAppContext, point, px, size};
+
+    #[gpui_kit::test]
+    fn text_input_rejects_overflow_without_hidden_text_or_history(cx: &mut TestAppContext) {
+        crate::annotation::text::with_test_font(|| {
+            let (input, cx) =
+                cx.add_window_view(|_, cx| TextInput::new(120., 24. * 1.35 * 2., 24., cx));
+            cx.update(|window, cx| {
+                input.update(cx, |s, cx| {
+                    s.focus(window, cx);
+                    s.replace_text_in_range(None, "one\ntwo", window, cx);
+                    assert!((s.layout_height() - s.limit).abs() < 0.01);
+                    let history_len = s.undo.len();
+                    s.replace_text_in_range(None, "\nthird", window, cx);
+                    assert_eq!(s.value(), "one\ntwo");
+                    assert_eq!(s.undo.len(), history_len);
+                    assert!(!s.set_font_size(48., cx));
+                    assert_eq!(s.font_size, 24.);
+                    assert!(f32::from(s.caret(s.editor.cursor()).bottom()) <= s.limit + 0.01);
+                })
+            });
+            cx.simulate_keystrokes("shift-enter");
+            cx.update(|_, cx| {
+                input.update(cx, |s, _| {
+                    assert_eq!(s.value(), "one\ntwo");
+                    assert_eq!(s.undo.len(), 1);
+                })
+            });
+            cx.update(|_, cx| {
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("W".repeat(200)))
+            });
+            cx.simulate_keystrokes("ctrl-v");
+            cx.update(|window, cx| {
+                input.update(cx, |s, cx| {
+                    assert_eq!(s.value(), "one\ntwo");
+                    assert_eq!(s.undo.len(), 1);
+                    s.replace_and_mark_text_in_range(None, "n", Some(1..1), window, cx);
+                    assert_eq!(s.marked_text_range(window, cx), Some(7..8));
+                    s.replace_and_mark_text_in_range(
+                        None,
+                        &"W".repeat(200),
+                        Some(200..200),
+                        window,
+                        cx,
+                    );
+                    assert_eq!(s.value(), "one\ntwon");
+                    assert_eq!(s.marked_text_range(window, cx), Some(7..8));
+                    s.replace_text_in_range(None, &"W".repeat(200), window, cx);
+                    assert_eq!(s.value(), "one\ntwo");
+                    assert!(s.marked.is_none());
+                    // Deletion/replacement remains usable at the boundary.
+                    s.replace_text_in_range(Some(0..7), "short", window, cx);
+                    s.replace_text_in_range(None, "\nline", window, cx);
+                    assert_eq!(s.value(), "short\nline");
+                })
+            });
+        });
+    }
+
+    #[gpui_kit::test]
+    fn soft_wrap_stops_before_a_partial_bottom_row(cx: &mut TestAppContext) {
+        crate::annotation::text::with_test_font(|| {
+            let (input, cx) = cx.add_window_view(|_, cx| TextInput::new(120., 80., 24., cx));
+            cx.update(|window, cx| {
+                input.update(cx, |s, cx| {
+                    for _ in 0..100 {
+                        s.replace_text_in_range(None, "W", window, cx);
+                    }
+                    assert!(s.value().len() > 1 && s.value().len() < 100);
+                    assert_eq!(s.undo.len(), s.value().len());
+                    assert!((s.layout_height() - 24. * 1.35 * 2.).abs() < 0.01);
+                    assert!(s.layout_height() < s.limit);
+                })
+            });
+        });
+    }
 
     #[gpui_kit::test]
     fn ime_preedit_replacement_and_utf16_ranges(cx: &mut TestAppContext) {

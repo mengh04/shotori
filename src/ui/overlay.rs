@@ -135,6 +135,11 @@ impl Overlay {
                 if let Some(editor) = &mut this.text_editing {
                     let a = this.session.read(cx).annotations();
                     if editor.sync_style(a.text_size(), a.color().0, cx) {
+                        let accepted_size = editor.font_size;
+                        this.session.update(cx, |s, cx| {
+                            s.edit_annotation_settings(|a| a.apply_size(accepted_size));
+                            cx.notify();
+                        });
                         this.refresh_text(cx);
                     }
                 }
@@ -276,17 +281,21 @@ impl Overlay {
     }
 
     fn start_text(&mut self, local: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(bounds) = self
-            .session
-            .read(cx)
-            .text_bounds(&self.capture.output_name, local)
+        let font_size = self.session.read(cx).annotations().text_size();
+        let Some(bounds) =
+            self.session
+                .read(cx)
+                .text_bounds(&self.capture.output_name, local, font_size)
         else {
             return;
         };
-        let font_size = self.session.read(cx).annotations().text_size();
         let color = self.session.read(cx).annotations().color().0;
-        let editor =
-            crate::ui::text_editor::TextEditor::new(bounds, local, font_size, color, window, cx);
+        let local = bounds.origin
+            - self
+                .session
+                .read(cx)
+                .screen_origin(&self.capture.output_name);
+        let editor = crate::ui::text_editor::TextEditor::new(bounds, local, font_size, color, cx);
         self.subscribe_text(editor.input(), window, cx);
         self.text_editing = Some(editor);
         self.refresh_text(cx);
@@ -307,10 +316,66 @@ impl Overlay {
             return;
         };
         editor.refresh(cx);
-        let (bounds, value) = (editor.bounds(), editor.value(cx));
+        let (bounds, value) = (editor.actual_bounds(), editor.value(cx));
         self.session.update(cx, |s, cx| {
             s.preview_text(bounds, value);
             cx.notify();
+        });
+        cx.notify();
+    }
+
+    fn start_edit_text(
+        &mut self,
+        ix: usize,
+        click_local: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (shape, local_origin, available) = {
+            let s = self.session.read(cx);
+            let screen_origin = s.screen_origin(&self.capture.output_name);
+            let Some(shape) = s.annotations().shape(ix).cloned() else {
+                return;
+            };
+            // Occupied bounds are for selection; editing can grow to the
+            // screenshot edge, just like a newly placed text annotation.
+            let local_origin = shape.bounds.origin - screen_origin;
+            let Some(available) =
+                s.text_bounds(&self.capture.output_name, local_origin, shape.width)
+            else {
+                return;
+            };
+            (shape, available.origin - screen_origin, available)
+        };
+        let text = shape.text.as_deref().unwrap_or("");
+        let font_size = shape.width;
+        let color = shape.color;
+        let editor = crate::ui::text_editor::TextEditor::new_with_text(
+            available,
+            local_origin,
+            font_size,
+            color,
+            text,
+            Some(click_local),
+            cx,
+        );
+        let started = self.session.update(cx, |s, cx| {
+            let started = s.begin_text_edit(ix);
+            if started {
+                cx.notify();
+            }
+            started
+        });
+        if !started {
+            return;
+        }
+        self.subscribe_text(editor.input(), window, cx);
+        self.text_editing = Some(editor);
+        self.refresh_text(cx);
+        cx.defer_in(window, |this, window, cx| {
+            if let Some(editor) = &this.text_editing {
+                editor.focus(window, cx);
+            }
         });
         cx.notify();
     }
@@ -320,13 +385,9 @@ impl Overlay {
             return;
         };
         self.text_subscription.take();
-        let value = editor.value(cx);
         self.session.update(cx, |s, cx| {
-            s.clear_text_preview();
-            s.set_blocked(false);
-            if commit {
-                s.edit_annotations(|a| a.add_text(editor.actual_bounds(), value));
-            }
+            s.preview_text(editor.actual_bounds(), editor.value(cx));
+            s.finish_text_edit(commit);
             cx.notify();
         });
         window.focus(&self.focus_handle, cx);
@@ -838,15 +899,16 @@ impl Render for Overlay {
                                 // (selected shape first) and repaint the
                                 // overlay so the thumb follows the pointer
                                 gpui_kit::base::slider::SliderEvent::Change(v) => {
-                                    this.session.update(cx, |s, _| {
-                                        s.edit_annotations(|a| a.apply_size(v.start()))
+                                    this.session.update(cx, |s, cx| {
+                                        s.edit_annotation_settings(|a| a.apply_size(v.start()));
+                                        cx.notify();
                                     });
                                     cx.notify();
                                 }
                                 // one history entry per drag
                                 gpui_kit::base::slider::SliderEvent::Release(_) => {
                                     this.session.update(cx, |s, _| {
-                                        s.edit_annotations(|a| a.end_size_drag())
+                                        s.edit_annotation_settings(|a| a.end_size_drag())
                                     });
                                 }
                             }
@@ -1358,9 +1420,35 @@ fn pointer_event_sink(input_view: WeakEntity<Overlay>) -> impl IntoElement {
                     if this.session.read(cx).blocked() {
                         return; // modal dialog: no new selections
                     }
+                    let p = this
+                        .session
+                        .read(cx)
+                        .to_global(&this.capture.output_name, event.position);
+                    // Double-click on an existing Text shape → inline edit.
+                    // Single-click falls through to session.pointer_down so
+                    // the normal click-select / drag-move path is preserved.
+                    if event.click_count >= 2 {
+                        let hit_text =
+                            this.session
+                                .read(cx)
+                                .annotations()
+                                .hit_test(p)
+                                .and_then(|ix| {
+                                    (this.session.read(cx).annotations().shape_kind(ix)
+                                        == Some(crate::annotation::ShapeKind::Text))
+                                    .then_some(ix)
+                                });
+                        if let Some(ix) = hit_text {
+                            this.start_edit_text(ix, event.position, window, cx);
+                            return;
+                        }
+                    }
                     if this.session.read(cx).annotations().tool()
                         == Some(crate::annotation::ShapeKind::Text)
+                        && this.session.read(cx).annotations().hit_test(p).is_none()
                     {
+                        // The first click of a double-click must select the
+                        // existing mark, not open an empty editor over it.
                         this.start_text(event.position, window, cx);
                         return;
                     }
@@ -2321,7 +2409,7 @@ mod multi_output_tests {
         cx.simulate_click(point(px(60.), px(60.)), Default::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.run_until_parked();
-        assert!(cx.debug_bounds("text-editor").unwrap().size.width <= px(2.));
+        assert!(cx.debug_bounds("text-editor").unwrap().size.width <= px(9.));
         assert!(cx.debug_bounds("tb-text").is_some());
         let color = cx.debug_bounds("tb-color-4").unwrap();
         cx.simulate_click(color.center(), Default::default());
@@ -2394,12 +2482,113 @@ mod multi_output_tests {
             assert_eq!(shapes[0].width, 32.);
             assert_ne!(s.crop("screen"), s.crop_original("screen"));
         });
+        // Reopening must retain the shape's style even when the next-tool
+        // presets differ, and must replace the original in the raster path.
+        let original = cx.update(|_, cx| session.read(cx).annotations().committed()[0].clone());
+        cx.update(|_, cx| {
+            session.update(cx, |s, cx| {
+                s.edit_annotations(|a| {
+                    a.deselect();
+                    a.set_tool_size(16.);
+                    a.set_color(1);
+                });
+                cx.notify();
+            })
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_click(point(px(65.), px(65.)), Default::default());
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                gpui_kit::PlatformInput::MouseDown(gpui_kit::MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: point(px(65.), px(65.)),
+                    click_count: 2,
+                    ..Default::default()
+                }),
+                cx,
+            );
+        });
+        cx.simulate_mouse_up(
+            point(px(65.), px(65.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            let editor = view.read(cx).text_editing.as_ref().unwrap();
+            assert_eq!(editor.font_size, original.width);
+            assert_eq!(editor.color, original.color);
+        });
+        cx.simulate_keystrokes("ctrl-a");
+        cx.simulate_input("replacement text");
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert_eq!(
+                session.read(cx).annotations().committed()[0]
+                    .text
+                    .as_deref(),
+                Some("replacement text")
+            );
+            assert_ne!(session.read(cx).crop("screen").unwrap(), live_pixels);
+        });
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        cx.update(|_, cx| assert_eq!(&session.read(cx).annotations().committed()[0], &original));
+
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_click(point(px(65.), px(65.)), Default::default());
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                gpui_kit::PlatformInput::MouseDown(gpui_kit::MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: point(px(65.), px(65.)),
+                    click_count: 2,
+                    ..Default::default()
+                }),
+                cx,
+            );
+        });
+        cx.simulate_mouse_up(
+            point(px(65.), px(65.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        cx.run_until_parked();
+        cx.simulate_keystrokes("ctrl-a");
+        cx.simulate_input("a long replacement which must grow beyond the old text width");
+        cx.simulate_keystrokes("shift-enter");
+        cx.simulate_input("another line");
+        cx.update(|_, cx| {
+            session.update(cx, |s, cx| {
+                s.edit_annotation_settings(|a| a.apply_size(40.));
+                cx.notify();
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let color = cx.debug_bounds("tb-color-2").unwrap();
+        cx.simulate_click(color.center(), Default::default());
+        cx.run_until_parked();
+        let edited_pixels = cx.update(|_, cx| {
+            let editor = view.read(cx).text_editing.as_ref().unwrap();
+            assert_eq!(editor.font_size, 40.);
+            assert_eq!(editor.color, crate::ui::theme::c().annotation_colors[2]);
+            session.read(cx).crop("screen").unwrap()
+        });
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert!(view.read(cx).text_editing.is_none());
+            assert_eq!(session.read(cx).crop("screen").unwrap(), edited_pixels);
+        });
+        cx.simulate_keystrokes("ctrl-z");
+        cx.update(|_, cx| assert_eq!(&session.read(cx).annotations().committed()[0], &original));
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.simulate_keystrokes("ctrl-z");
         cx.update(|_, cx| assert!(session.read(cx).annotations().visible().next().is_none()));
         cx.simulate_keystrokes("ctrl-y");
         cx.update(|_, cx| assert_eq!(session.read(cx).annotations().visible().count(), 1));
-        cx.simulate_click(point(px(90.), px(90.)), Default::default());
+        cx.simulate_click(point(px(60.), px(230.)), Default::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.simulate_input("discard");
         cx.simulate_keystrokes("escape");
@@ -2410,7 +2599,7 @@ mod multi_output_tests {
             assert_eq!(session.read(cx).annotations().visible().count(), 1);
         });
         // Empty confirmation must not add an invisible history entry.
-        cx.simulate_click(point(px(90.), px(90.)), Default::default());
+        cx.simulate_click(point(px(60.), px(230.)), Default::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
@@ -2418,7 +2607,7 @@ mod multi_output_tests {
             assert!(view.read(cx).text_editing.is_none());
             assert_eq!(session.read(cx).annotations().visible().count(), 1);
         });
-        cx.simulate_click(point(px(90.), px(90.)), Default::default());
+        cx.simulate_click(point(px(60.), px(230.)), Default::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.simulate_input("click outside");
         cx.simulate_click(point(px(540.), px(290.)), Default::default());
@@ -2777,6 +2966,9 @@ mod multi_output_tests {
         assert!(cx.debug_bounds("tb-undo").is_none());
         assert!(cx.debug_bounds("tb-redo").is_none());
         // Settings clicks must not strand keyboard focus on a transient button.
+        // This test changes the next-stroke preset; editing the selected
+        // shape would correctly add its own undoable style change.
+        cx.update(|_, cx| session.update(cx, |s, _| s.edit_annotations(|a| a.deselect())));
         {
             let button = cx.debug_bounds("tb-color-3").unwrap();
             cx.simulate_click(button.center(), Default::default());
