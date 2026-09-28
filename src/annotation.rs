@@ -53,25 +53,9 @@ impl Shape {
         }
         let center = self.bounds.origin + offset + point(px(rx), px(ry));
         let mut path = PathBuilder::fill();
-        let mut contour = |rx: f32, ry: f32, direction: f32| {
-            let step = direction * std::f32::consts::TAU / 8.;
-            let k = 4. / 3. * (step / 4.).tan();
-            let at = |x, y| center + point(px(rx * x), px(ry * y));
-            path.move_to(at(1., 0.));
-            for i in 0..8 {
-                let (s0, c0) = (i as f32 * step).sin_cos();
-                let (s1, c1) = ((i + 1) as f32 * step).sin_cos();
-                path.cubic_bezier_to(
-                    at(c1, s1),
-                    at(c0 - k * s0, s0 + k * c0),
-                    at(c1 + k * s1, s1 - k * c1),
-                );
-            }
-            path.close();
-        };
-        contour(rx, ry, 1.);
+        ellipse_contour(&mut path, center, rx, ry, 1.);
         if rx > self.width && ry > self.width {
-            contour(rx - self.width, ry - self.width, -1.);
+            ellipse_contour(&mut path, center, rx - self.width, ry - self.width, -1.);
         }
         path.build().ok()
     }
@@ -142,7 +126,7 @@ impl Shape {
     /// Selection highlight: a thin stroke tracing the shape's own
     /// visual outline — capsule rim, ellipse ring, arrowhead, badge
     /// circle; never a filled blob over the content. Corner handles
-    /// come from [`Shape::visual_bounds`] on the overlay side.
+    /// come from [`Shape::handle_points`] on the overlay side.
     pub(crate) fn hilite_paths(&self, offset: Point<Pixels>) -> Vec<Path<Pixels>> {
         match self.kind {
             ShapeKind::Line
@@ -175,32 +159,24 @@ impl Shape {
         }
     }
 
-    /// The shape's on-screen footprint for corner-handle placement:
-    /// point clouds derive from points, region kinds from bounds,
-    /// inflated past the stroke width.
-    pub(crate) fn visual_bounds(&self) -> Bounds<Pixels> {
-        let base = if matches!(
-            self.kind,
-            ShapeKind::Line
-                | ShapeKind::Arrow
-                | ShapeKind::Polyline
-                | ShapeKind::Pencil
-                | ShapeKind::Highlighter
-        ) && !self.points.is_empty()
-        {
-            let mut min = self.points[0];
-            let mut max = self.points[0];
-            for p in &self.points[1..] {
-                min.x = min.x.min(p.x);
-                min.y = min.y.min(p.y);
-                max.x = max.x.max(p.x);
-                max.y = max.y.max(p.y);
-            }
-            Bounds::new(min, size(max.x - min.x, max.y - min.y))
-        } else {
-            self.bounds
-        };
-        inflate(&base, px(self.width / 2. + 2.))
+    /// Handle anchors for the selection chrome — the points where a
+    /// grab makes sense for geometry editing: the two endpoints of a
+    /// line/arrow, every vertex of a polyline, the four corners of
+    /// rectangles/ellipses. Freehand strokes and content shapes
+    /// (badges, text, filters) have no per-point editing semantics and
+    /// get the outline alone.
+    pub(crate) fn handle_points(&self) -> Vec<Point<Pixels>> {
+        match self.kind {
+            ShapeKind::Line | ShapeKind::Arrow => self.points.iter().take(2).cloned().collect(),
+            ShapeKind::Polyline => self.points.clone(),
+            ShapeKind::Rectangle | ShapeKind::Ellipse => vec![
+                point(self.bounds.left(), self.bounds.top()),
+                point(self.bounds.right(), self.bounds.top()),
+                point(self.bounds.right(), self.bounds.bottom()),
+                point(self.bounds.left(), self.bounds.bottom()),
+            ],
+            _ => Vec::new(),
+        }
     }
 
     pub(crate) fn strokes(&self) -> [Bounds<Pixels>; 4] {
@@ -473,9 +449,11 @@ impl Annotations {
     /// edit); otherwise it steps the active tool's preset — the value
     /// the NEXT stroke will take.
     pub(crate) fn step_size(&mut self, up: bool) -> bool {
-        if let Some(ix) = self.selected
-            && self.shapes.get(ix).is_some()
-        {
+        // invariant: `selected` is a valid index or None — every path
+        // that mutates `shapes` (undo/redo/reset/record_add) or leaves
+        // edit mode (begin/toggle) clears it
+        debug_assert!(self.selected.is_none_or(|ix| self.shapes.get(ix).is_some()));
+        if let Some(ix) = self.selected {
             return self.step_selected_size(ix, up);
         }
         let cur = match self.tool {
@@ -1004,20 +982,18 @@ fn rect_stroke(b: Bounds<Pixels>, offset: Point<Pixels>) -> Option<Path<Pixels>>
     builder.build().ok()
 }
 
-/// A 1 px stroke tracing an ellipse's perimeter (the bounds box; a
-/// circle is the square-bounds case). Eight cubic arcs, the same
-/// approximation ellipse_path uses.
-fn ellipse_stroke(b: Bounds<Pixels>, offset: Point<Pixels>) -> Option<Path<Pixels>> {
-    let rx = f32::from(b.size.width) / 2.;
-    let ry = f32::from(b.size.height) / 2.;
-    if rx <= 0. || ry <= 0. {
-        return None;
-    }
-    let c = b.origin + offset + point(px(rx), px(ry));
-    let mut builder = PathBuilder::stroke(px(1.));
-    let step = std::f32::consts::TAU / 8.;
+/// Append one eight-arc cubic ellipse contour to a builder (either
+/// fill or stroke mode). `direction` flips the winding to cut holes.
+fn ellipse_contour(
+    builder: &mut PathBuilder,
+    center: Point<Pixels>,
+    rx: f32,
+    ry: f32,
+    direction: f32,
+) {
+    let step = direction * std::f32::consts::TAU / 8.;
     let k = 4. / 3. * (step / 4.).tan();
-    let at = |x: f32, y: f32| c + point(px(rx * x), px(ry * y));
+    let at = |x, y| center + point(px(rx * x), px(ry * y));
     builder.move_to(at(1., 0.));
     for i in 0..8 {
         let (s0, c0) = (i as f32 * step).sin_cos();
@@ -1025,10 +1001,28 @@ fn ellipse_stroke(b: Bounds<Pixels>, offset: Point<Pixels>) -> Option<Path<Pixel
         builder.cubic_bezier_to(
             at(c1, s1),
             at(c0 - k * s0, s0 + k * c0),
-            at(c1 + k * s1, s1 + k * c1),
+            at(c1 + k * s1, s1 - k * c1),
         );
     }
     builder.close();
+}
+
+/// A 1 px stroke tracing an ellipse's perimeter (the bounds box; a
+/// circle is the square-bounds case).
+fn ellipse_stroke(b: Bounds<Pixels>, offset: Point<Pixels>) -> Option<Path<Pixels>> {
+    let rx = f32::from(b.size.width) / 2.;
+    let ry = f32::from(b.size.height) / 2.;
+    if rx <= 0. || ry <= 0. {
+        return None;
+    }
+    let mut builder = PathBuilder::stroke(px(1.));
+    ellipse_contour(
+        &mut builder,
+        b.origin + offset + point(px(rx), px(ry)),
+        rx,
+        ry,
+        1.,
+    );
     builder.build().ok()
 }
 
@@ -1106,7 +1100,7 @@ fn line_endpoint(
 
 #[cfg(test)]
 mod tests {
-    use super::Annotations;
+    use super::{Annotations, ShapeKind};
     use gpui_kit::{Bounds, point, px, size};
 
     fn selection() -> Bounds<gpui_kit::Pixels> {
@@ -1165,6 +1159,29 @@ mod tests {
             Some(super::ShapeKind::Ellipse)
         );
         assert!(a.hit_test(point(px(64.), px(80.))).is_none());
+
+        // handle anchors follow the shape's own editing semantics:
+        // two endpoints for a line, four corners for regions, none for
+        // freehand strokes
+        a.toggle(super::ShapeKind::Pencil);
+        a.begin(point(px(5.), px(5.)), selection());
+        a.drag_to(point(px(60.), px(50.)), selection(), false);
+        a.end();
+        let handles = |a: &Annotations| -> Vec<(ShapeKind, usize)> {
+            a.committed()
+                .iter()
+                .map(|s| (s.kind, s.handle_points().len()))
+                .collect()
+        };
+        assert_eq!(
+            handles(&a),
+            vec![
+                (ShapeKind::Rectangle, 4),
+                (ShapeKind::Line, 2),
+                (ShapeKind::Ellipse, 4),
+                (ShapeKind::Pencil, 0),
+            ]
+        );
     }
 
     #[test]

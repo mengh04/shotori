@@ -1154,20 +1154,17 @@ impl Render for Overlay {
                         for path in shape.hilite_paths(viewport.origin) {
                             window.paint_path(path, accent);
                         }
-                        // corner handles, sized between the selection's
-                        // HANDLE_VIS (8) and annotation marks' scale so
-                        // small shapes keep visible corners
-                        let mut b = shape.visual_bounds();
-                        b.origin += viewport.origin;
+                        // handles at the shape's own anchor points —
+                        // endpoints for lines, vertices for polylines,
+                        // corners for rects/ellipses; 6 px, between the
+                        // selection's HANDLE_VIS (8) and annotation scale
                         let vis = px(6.);
-                        for (x, y) in [
-                            (b.left(), b.top()),
-                            (b.right(), b.top()),
-                            (b.right(), b.bottom()),
-                            (b.left(), b.bottom()),
-                        ] {
+                        for p in shape.handle_points() {
                             let h = Bounds::new(
-                                point(x - vis / 2., y - vis / 2.),
+                                point(
+                                    p.x + viewport.origin.x - vis / 2.,
+                                    p.y + viewport.origin.y - vis / 2.,
+                                ),
                                 size(vis, vis),
                             );
                             window.paint_quad(fill(h, rgba(0xFFFFFFFF)));
