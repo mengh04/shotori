@@ -41,50 +41,24 @@ impl ShapeKind {
 }
 
 /// A tool family's continuous size model (issue #3, phase 2): a
-/// clamped min/max range plus the three legacy preset values as
-/// clickable detents on the slider. One spec per family — the wheel,
-/// the slider and the detents all read the same numbers.
+/// clamped min/max range. One spec per family — the wheel and the
+/// slider both read the same numbers.
 pub(crate) struct SizeSpec {
     pub(crate) min: f32,
     pub(crate) max: f32,
-    pub(crate) detents: [f32; 3],
 }
 
 /// The size semantics of a shape kind: stroke widths, brush widths,
 /// filter strengths, badge diameters or font sizes, each with its own
-/// range and the old S/M/L rungs as detents.
+/// range.
 pub(crate) fn size_spec(kind: ShapeKind) -> SizeSpec {
     match kind {
-        ShapeKind::Highlighter => SizeSpec {
-            min: 8.,
-            max: 60.,
-            detents: [12., 20., 32.],
-        },
-        ShapeKind::Mosaic | ShapeKind::Blur => SizeSpec {
-            min: 4.,
-            max: 48.,
-            detents: [8., 16., 24.],
-        },
-        ShapeKind::Eraser | ShapeKind::EraserRect => SizeSpec {
-            min: 8.,
-            max: 96.,
-            detents: [16., 32., 48.],
-        },
-        ShapeKind::Number => SizeSpec {
-            min: 16.,
-            max: 64.,
-            detents: [24., 32., 40.],
-        },
-        ShapeKind::Text => SizeSpec {
-            min: 12.,
-            max: 72.,
-            detents: [16., 24., 32.],
-        },
-        _ => SizeSpec {
-            min: 1.,
-            max: 20.,
-            detents: [1., 3., 5.],
-        },
+        ShapeKind::Highlighter => SizeSpec { min: 8., max: 60. },
+        ShapeKind::Mosaic | ShapeKind::Blur => SizeSpec { min: 4., max: 48. },
+        ShapeKind::Eraser | ShapeKind::EraserRect => SizeSpec { min: 8., max: 96. },
+        ShapeKind::Number => SizeSpec { min: 16., max: 64. },
+        ShapeKind::Text => SizeSpec { min: 12., max: 72. },
+        _ => SizeSpec { min: 1., max: 20. },
     }
 }
 
@@ -661,7 +635,9 @@ impl Annotations {
         self.shapes.push(shape.clone());
         self.history.push(HistoryEntry::Add(shape));
         self.redo.clear();
-        self.selected = None;
+        // freshly placed marks select themselves: wheel-resize or
+        // drag-tune right after release without a second click
+        self.selected = Some(self.shapes.len() - 1);
     }
 
     pub(crate) fn undo(&mut self) {
