@@ -94,7 +94,6 @@ fn own_icon(path: &'static str) -> Svg {
 /// this module only renders.
 pub(crate) struct SizeSlider {
     pub(crate) state: Entity<SliderState>,
-    pub(crate) spec: crate::annotation::SizeSpec,
     /// The value's 0..1 position on the track, for the thumb.
     pub(crate) percentage: f32,
     pub(crate) current: f32,
@@ -369,11 +368,7 @@ pub(crate) fn selection_toolbar(
                     );
                 }
                 if let Some(sc) = &size_slider {
-                    options = options.child(separator()).child(size_control(
-                        &settings_focus,
-                        &session,
-                        sc,
-                    ));
+                    options = options.child(separator()).child(size_control(sc));
                 }
                 return options;
             }
@@ -433,7 +428,7 @@ pub(crate) fn selection_toolbar(
             }
 
             if let Some(sc) = &size_slider {
-                options = options.child(size_control(&settings_focus, &session, sc));
+                options = options.child(size_control(sc));
             }
             if eraser_tool {
                 return options;
@@ -481,7 +476,7 @@ pub(crate) fn selection_toolbar(
 /// legacy presets as clickable detents on the track. Behavior comes
 /// from the base primitives (track click-to-position, thumb drag);
 /// this is presentation only.
-fn size_control(focus: &FocusHandle, session: &Entity<ScreenshotSession>, sc: &SizeSlider) -> Div {
+fn size_control(sc: &SizeSlider) -> Div {
     /// track length; the thumb travels TRACK_W - THUMB inside it
     const TRACK_W: f32 = 108.;
     const THUMB: f32 = 12.;
@@ -525,41 +520,7 @@ fn size_control(focus: &FocusHandle, session: &Entity<ScreenshotSession>, sc: &S
                         .bg(rgba(theme::c().toolbar_text))
                         .border_1()
                         .border_color(rgba(theme::c().toolbar_bg)),
-                )
-                // detents: the three legacy presets, clickable dots on
-                // the track line (jump to the preset)
-                .children((0..3usize).map(|ix| {
-                    let d = sc.spec.detents[ix];
-                    let center = (d - sc.spec.min) / (sc.spec.max - sc.spec.min)
-                        * (TRACK_W - THUMB)
-                        + THUMB / 2.;
-                    let session = session.clone();
-                    control(
-                        format!("tb-size-detent-{ix}"),
-                        format!("Preset size: {d:.0} px"),
-                        focus.clone(),
-                        move |_, cx| {
-                            session.update(cx, |s, cx| {
-                                s.edit_annotation_settings(|a| a.set_tool_size(d));
-                                cx.notify();
-                            })
-                        },
-                    )
-                    .absolute()
-                    .left(px(center - 5.))
-                    .top(px(5.))
-                    .size(px(10.))
-                    .rounded_full()
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(3.5))
-                            .top(px(6.5))
-                            .size(px(3.))
-                            .rounded_full()
-                            .bg(rgba(theme::c().toolbar_text)),
-                    )
-                })),
+                ),
         )
         .child(
             div()

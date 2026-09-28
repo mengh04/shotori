@@ -89,7 +89,7 @@ CI 强制 `cargo fmt --all --check` 和
 `cargo clippy --all-targets -- -D warnings`，推送前请先本地跑一遍。
 
 - 模块结构：[`src/lib.rs`](src/lib.rs) 文件头
-- 实现笔记：[ROADMAP.md](ROADMAP.md)
+- 决策与踩坑记录：[ROADMAP.md](ROADMAP.md)
 
 ## License
 
