@@ -11,6 +11,8 @@
 //! - `export` — crop + both PNG encode tiers + disk write on live pixels
 //! - `warm-window` — 1st vs 2nd overlay in one GUI process: the delta is
 //!   the wgpu/renderer init a resident process would amortize away
+//! - `resident` — what the tray launcher holds while idle (it spawns a
+//!   fresh gui process per shot, so this is today's standing cost)
 //!
 //! Every run also reports the measured binary's own size — the header
 //! line says exactly which file the numbers apply to.
@@ -27,7 +29,7 @@ use gpui_kit::*;
 
 pub const PERF_ARG: &str = "--perf";
 
-const SUITES: &[&str] = &["startup", "capture", "export", "warm-window"];
+const SUITES: &[&str] = &["startup", "capture", "export", "warm-window", "resident"];
 const CHILD_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// One measured quantity: a label, N samples, and how to print them.
@@ -392,6 +394,54 @@ fn suite_warm_window(json: bool) -> anyhow::Result<serde_json::Value> {
     Ok(rows_to_json(&rows))
 }
 
+/// The tray is a launcher: it holds a StatusNotifierItem and spawns a
+/// fresh gui process per shot (see tray.rs) — no wgpu, no captures. This
+/// suite measures what such a resident launcher holds while idle, i.e.
+/// the standing cost of today's tray architecture.
+fn suite_resident(json: bool) -> anyhow::Result<serde_json::Value> {
+    info(json, "[perf] resident: idle tray launcher footprint…");
+    let exe = std::env::current_exe()?;
+    let mut child = Command::new(&exe)
+        .arg("tray")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    // let the icon register and allocations settle
+    std::thread::sleep(Duration::from_millis(3000));
+    if let Some(status) = child.try_wait()? {
+        anyhow::bail!(
+            "tray exited early ({status}) — is a StatusNotifierItem host running?"
+        );
+    }
+    let status = std::fs::read_to_string(format!("/proc/{}/status", child.id()))?;
+    let get = |field: &str| {
+        status
+            .lines()
+            .find(|l| l.starts_with(field))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|v| v.parse::<f64>().ok())
+    };
+
+    let _ = child.kill();
+    child.wait()?;
+
+    let mut rows = vec![
+        Row::new("idle tray launcher RSS", "MB"),
+        Row::new("peak RSS since start", "MB"),
+    ];
+    if let Some(kb) = get("VmRSS") {
+        rows[0].push(kb / 1024.0);
+    }
+    if let Some(kb) = get("VmHWM") {
+        rows[1].push(kb / 1024.0);
+    }
+    if !json {
+        print_rows(&rows);
+    }
+    Ok(rows_to_json(&rows))
+}
+
 /// Entry: `shotori --perf [suite...] [--runs N] [--json]`
 pub fn perf_main() -> i32 {
     let mut suites: Vec<String> = Vec::new();
@@ -459,6 +509,7 @@ pub fn perf_main() -> i32 {
             "capture" => suite_capture(runs, json),
             "export" => suite_export(runs, json),
             "warm-window" => suite_warm_window(json),
+            "resident" => suite_resident(json),
             other => unreachable!("validated above: {other}"),
         };
         match result {
