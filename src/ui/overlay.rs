@@ -61,6 +61,7 @@ impl Overlay {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        crate::boot_mark("overlay constructed (window created)");
         crate::ui::theme::follow_system(window.appearance());
         let frozen =
             image_util::rgba_to_render_image(capture.rgba.clone(), capture.width, capture.height);
@@ -746,6 +747,10 @@ async fn ocr_to_clipboard(
 
 impl Render for Overlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Closest observable proxy for "layer mapped & selectable": the
+        // first scene paint commits right after this returns (~1 frame).
+        static FIRST: std::sync::Once = std::sync::Once::new();
+        FIRST.call_once(|| crate::boot_mark("overlay first render"));
         // THE cursor derivation point: every repaint stores the style the
         // handles canvas pushes during paint. Deriving here — instead of
         // at every event and action site — means any state flip lands
