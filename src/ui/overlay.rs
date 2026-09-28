@@ -445,6 +445,7 @@ impl Overlay {
         });
 
         WindowOptions {
+            app_id: Some(crate::APP_ID.into()),
             titlebar: None,
             window_background: WindowBackgroundAppearance::Transparent,
             focus: true,

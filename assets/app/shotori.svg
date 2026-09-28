@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1254" height="1254" viewBox="0 0 1254 1254">
+  <title>Shotori</title>
+  <defs>
+    <!-- One silhouette keeps the ribbon's color joins free of gaps. -->
+    <clipPath id="ribbon">
+      <path d="M713 302
+        C730 294 750 294 766 302
+        L839 345 C856 355 866 365 866 380
+        V433 C866 449 863 458 856 463
+        L819 489 C811 495 803 496 792 496
+        H570 L826 640 C854 655.75 866 676 866 706
+        V758 C866 782 862 793 853 803
+        C848 808 841 811 833 814
+        L548 935 C529 943.066667 510 946 492 938
+        L410 890 C391 878.878049 387 872 387 852
+        V802 C387 784 389 776 400 768
+        L429 748 C441 739.724138 447 738 467 738
+        H646 L418 609.75 C395 596.8125 387 582 387 562
+        V483 C387 460 395 448 414 439
+        Z"/>
+    </clipPath>
+    <path id="capture-corner" d="M244 185 H390
+      Q407 185 407 202 V215 Q407 232 390 232
+      H254 Q237 232 237 249 V381
+      Q237 398 220 398 H207 Q190 398 190 381
+      V246 Q190 185 244 185 Z"/>
+    <path id="capture-corner-bottom" d="M190 870
+      Q190 851 207 851 H220 Q237 851 237 868
+      V986 Q237 1004 254 1004 H390
+      Q407 1004 407 1021 V1035 Q407 1052 390 1052
+      H244 Q190 1052 190 995 Z"/>
+  </defs>
+  <rect width="1254" height="1254" fill="#FCFCFC"/>
+  <!-- Horizontal and vertical runs are exact; corners retain the soft profile. -->
+  <path fill="#1C2026" d="M320 22 H934
+    C1124 22 1232 130 1232 320 V934
+    C1232 1124 1124 1232 934 1232 H320
+    C130 1232 22 1124 22 934 V320
+    C22 130 130 22 320 22 Z"/>
+  <g fill="#FB7319">
+    <use href="#capture-corner"/>
+    <use href="#capture-corner" transform="translate(1254 0) scale(-1 1)"/>
+    <use href="#capture-corner-bottom"/>
+    <use href="#capture-corner-bottom" transform="translate(1254 0) scale(-1 1)"/>
+  </g>
+  <g clip-path="url(#ribbon)">
+    <rect x="380" y="290" width="495" height="660" fill="#F66314"/>
+    <path fill="#FC7919" d="M0 0 H1254 V880.75 L0 175.375 Z"/>
+    <path fill="#FC791A" d="M0 374.625 L1254 1080 V1254 H0 Z"/>
+  </g>
+</svg>
