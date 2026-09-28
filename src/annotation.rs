@@ -40,6 +40,54 @@ impl ShapeKind {
     }
 }
 
+/// A tool family's continuous size model (issue #3, phase 2): a
+/// clamped min/max range plus the three legacy preset values as
+/// clickable detents on the slider. One spec per family — the wheel,
+/// the slider and the detents all read the same numbers.
+pub(crate) struct SizeSpec {
+    pub(crate) min: f32,
+    pub(crate) max: f32,
+    pub(crate) detents: [f32; 3],
+}
+
+/// The size semantics of a shape kind: stroke widths, brush widths,
+/// filter strengths, badge diameters or font sizes, each with its own
+/// range and the old S/M/L rungs as detents.
+pub(crate) fn size_spec(kind: ShapeKind) -> SizeSpec {
+    match kind {
+        ShapeKind::Highlighter => SizeSpec {
+            min: 8.,
+            max: 60.,
+            detents: [12., 20., 32.],
+        },
+        ShapeKind::Mosaic | ShapeKind::Blur => SizeSpec {
+            min: 4.,
+            max: 48.,
+            detents: [8., 16., 24.],
+        },
+        ShapeKind::Eraser | ShapeKind::EraserRect => SizeSpec {
+            min: 8.,
+            max: 96.,
+            detents: [16., 32., 48.],
+        },
+        ShapeKind::Number => SizeSpec {
+            min: 16.,
+            max: 64.,
+            detents: [24., 32., 40.],
+        },
+        ShapeKind::Text => SizeSpec {
+            min: 12.,
+            max: 72.,
+            detents: [16., 24., 32.],
+        },
+        _ => SizeSpec {
+            min: 1.,
+            max: 20.,
+            detents: [1., 3., 5.],
+        },
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Shape {
     pub(crate) kind: ShapeKind,
@@ -189,12 +237,12 @@ enum HistoryEntry {
 pub(crate) struct Annotations {
     tool: Option<ShapeKind>,
     color_ix: usize,
-    width_ix: usize,
-    number_size_ix: usize,
-    text_size_ix: usize,
-    filter_strength_ix: usize,
-    eraser_width_ix: usize,
-    highlighter_width_ix: usize,
+    stroke_width: f32,
+    number_size: f32,
+    text_size: f32,
+    filter_strength: f32,
+    eraser_width: f32,
+    highlighter_width: f32,
     highlighter_color_ix: usize,
     shapes: Vec<Shape>,
     history: Vec<HistoryEntry>,
@@ -212,12 +260,12 @@ impl Default for Annotations {
         Self {
             tool: None,
             color_ix: 0,
-            width_ix: 1,
-            number_size_ix: 1,
-            text_size_ix: 1,
-            filter_strength_ix: 1,
-            eraser_width_ix: 1,
-            highlighter_width_ix: 1,
+            stroke_width: 3.,
+            number_size: 32.,
+            text_size: 24.,
+            filter_strength: 16.,
+            eraser_width: 32.,
+            highlighter_width: 20.,
             highlighter_color_ix: 2,
             shapes: Vec::new(),
             history: Vec::new(),
@@ -255,23 +303,41 @@ impl Annotations {
             crate::ui::theme::PALETTE_NAMES[ix],
         )
     }
+    /// The active tool's drawing width (stroke / brush / filter /
+    /// eraser — not the font or badge sizes; see [`tool_size`]).
     pub(crate) fn width(&self) -> f32 {
-        if matches!(self.tool, Some(ShapeKind::Mosaic | ShapeKind::Blur)) {
-            [8., 16., 24.][self.filter_strength_ix]
-        } else if matches!(self.tool, Some(ShapeKind::Eraser | ShapeKind::EraserRect)) {
-            [16., 32., 48.][self.eraser_width_ix]
-        } else if self.tool == Some(ShapeKind::Highlighter) {
-            [12., 20., 32.][self.highlighter_width_ix]
-        } else {
-            [1., 3., 5.][self.width_ix]
+        match self.tool {
+            Some(ShapeKind::Mosaic | ShapeKind::Blur) => self.filter_strength,
+            Some(ShapeKind::Eraser | ShapeKind::EraserRect) => self.eraser_width,
+            Some(ShapeKind::Highlighter) => self.highlighter_width,
+            _ => self.stroke_width,
         }
     }
     pub(crate) fn text_size(&self) -> f32 {
-        [16., 24., 32.][self.text_size_ix]
+        self.text_size
     }
-    pub(crate) fn set_text_size(&mut self, ix: usize) {
-        if ix < 3 {
-            self.text_size_ix = ix;
+    /// The active tool's current size — whatever that means for the
+    /// tool (width, strength, diameter or font size); one continuous
+    /// value the slider shows.
+    pub(crate) fn tool_size(&self) -> f32 {
+        match self.tool {
+            Some(ShapeKind::Text) => self.text_size,
+            Some(ShapeKind::Number) => self.number_size,
+            _ => self.width(),
+        }
+    }
+    /// Set the active tool's size, clamped to its [`SizeSpec`].
+    pub(crate) fn set_tool_size(&mut self, v: f32) {
+        let Some(tool) = self.tool else { return };
+        let spec = size_spec(tool);
+        let v = v.clamp(spec.min, spec.max);
+        match tool {
+            ShapeKind::Text => self.text_size = v,
+            ShapeKind::Number => self.number_size = v,
+            ShapeKind::Mosaic | ShapeKind::Blur => self.filter_strength = v,
+            ShapeKind::Eraser | ShapeKind::EraserRect => self.eraser_width = v,
+            ShapeKind::Highlighter => self.highlighter_width = v,
+            _ => self.stroke_width = v,
         }
     }
     pub(crate) fn draft_generation(&self) -> u64 {
@@ -324,12 +390,7 @@ impl Annotations {
         });
     }
     pub(crate) fn number_size(&self) -> f32 {
-        [24., 32., 40.][self.number_size_ix]
-    }
-    pub(crate) fn set_number_size(&mut self, ix: usize) {
-        if ix < 3 {
-            self.number_size_ix = ix;
-        }
+        self.number_size
     }
     pub(crate) fn next_number(&self) -> u32 {
         self.shapes
@@ -362,23 +423,10 @@ impl Annotations {
             }
         }
     }
-    pub(crate) fn set_width(&mut self, ix: usize) {
-        if ix < 3 {
-            if matches!(self.tool, Some(ShapeKind::Mosaic | ShapeKind::Blur)) {
-                self.filter_strength_ix = ix;
-            } else if matches!(self.tool, Some(ShapeKind::Eraser | ShapeKind::EraserRect)) {
-                self.eraser_width_ix = ix;
-            } else if self.tool == Some(ShapeKind::Highlighter) {
-                self.highlighter_width_ix = ix;
-            } else {
-                self.width_ix = ix;
-            }
-        }
-    }
-    /// Step a size preset one notch. With a live selection this targets
-    /// the SELECTED shape's stroke width (recorded as a reversible
-    /// edit); otherwise it steps the active tool's preset — the value
-    /// the NEXT stroke will take.
+    /// Nudge a size by one unit (the wheel). With a live selection this
+    /// targets the SELECTED shape's size (recorded as a reversible
+    /// edit); otherwise it steps the active tool's size — the value the
+    /// NEXT stroke will take. Continuous within the tool's [`SizeSpec`].
     pub(crate) fn step_size(&mut self, up: bool) -> bool {
         // invariant: `selected` is a valid index or None — every path
         // that mutates `shapes` (undo/redo/reset/record_add) or leaves
@@ -387,26 +435,16 @@ impl Annotations {
         if let Some(ix) = self.selected {
             return self.step_selected_size(ix, up);
         }
-        let cur = match self.tool {
-            Some(ShapeKind::Text) => self.text_size_ix,
-            Some(ShapeKind::Number) => self.number_size_ix,
-            Some(ShapeKind::Mosaic | ShapeKind::Blur) => self.filter_strength_ix,
-            Some(ShapeKind::Eraser | ShapeKind::EraserRect) => self.eraser_width_ix,
-            Some(ShapeKind::Highlighter) => self.highlighter_width_ix,
-            Some(_) => self.width_ix,
-            None => return false,
+        let Some(tool) = self.tool else {
+            return false;
         };
-        let next = if up { cur + 1 } else { cur.saturating_sub(1) };
-        if next == cur || next >= 3 {
+        let spec = size_spec(tool);
+        let cur = self.tool_size();
+        let next = if up { cur + 1. } else { cur - 1. };
+        if next == cur || next < spec.min || next > spec.max {
             return false;
         }
-        match self.tool {
-            // set_width re-dispatches on the tool, which is unchanged
-            // since the read above — it lands in the same slot
-            Some(ShapeKind::Text) => self.set_text_size(next),
-            Some(ShapeKind::Number) => self.set_number_size(next),
-            _ => self.set_width(next),
-        }
+        self.set_tool_size(next);
         true
     }
 
@@ -940,16 +978,15 @@ mod tests {
         rectangle(&mut a); // committed at width 3 (M)
         assert!(click(&mut a, point(px(10.), px(25.))));
 
-        assert!(a.step_size(true)); // 3 → 5 on the SHAPE
-        assert_eq!(a.selected().map(|s| s.width), Some(5.));
+        assert!(a.step_size(true)); // 3 → 4 on the SHAPE
+        assert_eq!(a.selected().map(|s| s.width), Some(4.));
         assert_eq!(a.width(), 3.); // tool preset untouched
-        assert!(!a.step_size(true)); // already at L
 
         // deselected, the same wheel steps the preset again
         let _ = a.cancel(); // consumed by dropping the selection
         assert!(a.enabled());
         assert!(a.step_size(false));
-        assert_eq!(a.width(), 1.);
+        assert_eq!(a.width(), 2.);
     }
 
     #[test]
@@ -958,8 +995,8 @@ mod tests {
         a.toggle(super::ShapeKind::Rectangle);
         rectangle(&mut a); // committed at width 3 (M)
         assert!(click(&mut a, point(px(10.), px(25.))));
-        assert!(a.step_size(true)); // 3 → 5
-        assert_eq!(a.visible().next().unwrap().width, 5.);
+        assert!(a.step_size(true)); // 3 → 4
+        assert_eq!(a.visible().next().unwrap().width, 4.);
 
         a.undo(); // Edit reversed
         assert_eq!(a.visible().next().unwrap().width, 3.);
@@ -968,7 +1005,7 @@ mod tests {
         a.redo(); // Add replayed
         assert_eq!(a.visible().next().unwrap().width, 3.);
         a.redo(); // Edit replayed
-        assert_eq!(a.visible().next().unwrap().width, 5.);
+        assert_eq!(a.visible().next().unwrap().width, 4.);
     }
 
     #[test]
@@ -997,7 +1034,7 @@ mod tests {
     fn freehand_number_text_and_filter_shapes_select_and_step() {
         let mut a = Annotations::default();
 
-        // pencil: visual-polygon hit on the stroke, stroke ladder M→L
+        // pencil: visual-polygon hit on the stroke, +1 per notch
         a.toggle(super::ShapeKind::Pencil);
         a.begin(point(px(5.), px(5.)), selection());
         for p in [(20., 20.), (40., 30.), (60., 50.)] {
@@ -1007,10 +1044,10 @@ mod tests {
         assert!(click(&mut a, point(px(40.), px(30.))));
         assert_eq!(a.selected().map(|s| s.kind), Some(super::ShapeKind::Pencil));
         assert!(a.step_size(true));
-        assert_eq!(a.selected().map(|s| s.width), Some(5.));
+        assert_eq!(a.selected().map(|s| s.width), Some(4.));
 
         // number badge: circle hit, miss outside; wheel grows the
-        // DIAMETER (32 → 40) around the center, undo restores
+        // DIAMETER (32 → 33) around the center, undo restores
         a.toggle(super::ShapeKind::Number);
         a.begin(point(px(30.), px(50.)), selection());
         a.end();
@@ -1021,7 +1058,7 @@ mod tests {
         let center = point(b.left() + b.size.width / 2., b.top() + b.size.height / 2.);
         assert!(a.step_size(true));
         let b = a.selected().unwrap().bounds;
-        assert_eq!(f32::from(b.size.width), 40.);
+        assert_eq!(f32::from(b.size.width), 33.);
         assert_eq!(
             point(b.left() + b.size.width / 2., b.top() + b.size.height / 2.),
             center
@@ -1035,7 +1072,7 @@ mod tests {
             .unwrap();
         assert_eq!(f32::from(badge.bounds.size.width), 32.);
 
-        // text: solid-bounds hit; wheel steps the font ladder (24 → 32)
+        // text: solid-bounds hit; wheel steps the font size (24 → 25)
         a.toggle(super::ShapeKind::Text);
         a.add_text(
             Bounds::new(point(px(0.), px(60.)), size(px(50.), px(20.))),
@@ -1044,9 +1081,9 @@ mod tests {
         assert!(click(&mut a, point(px(25.), px(70.))));
         assert_eq!(a.selected().map(|s| s.kind), Some(super::ShapeKind::Text));
         assert!(a.step_size(true));
-        assert_eq!(a.selected().map(|s| s.width), Some(32.));
+        assert_eq!(a.selected().map(|s| s.width), Some(25.));
 
-        // mosaic: solid-bounds hit; wheel steps filter strength (16 → 24)
+        // mosaic: solid-bounds hit; wheel steps filter strength (16 → 17)
         a.toggle(super::ShapeKind::Mosaic);
         a.begin(point(px(-10.), px(10.)), selection());
         a.drag_to(point(px(20.), px(40.)), selection(), false);
@@ -1054,7 +1091,7 @@ mod tests {
         assert!(click(&mut a, point(px(5.), px(25.))));
         assert_eq!(a.selected().map(|s| s.kind), Some(super::ShapeKind::Mosaic));
         assert!(a.step_size(true));
-        assert_eq!(a.selected().map(|s| s.width), Some(24.));
+        assert_eq!(a.selected().map(|s| s.width), Some(17.));
     }
 
     #[test]
@@ -1084,44 +1121,44 @@ mod tests {
     }
 
     #[test]
-    fn wheel_steps_size_presets_per_tool_and_clamps_at_ends() {
+    fn wheel_steps_sizes_continuously_and_clamps_at_spec_ends() {
         let mut a = Annotations::default();
 
         // no active tool → nothing to step
         assert!(!a.step_size(true));
 
-        // pencil drives the generic stroke width (S=1, M=3, L=5)
+        // pencil: stroke range 1..20, ±1 per wheel notch
         a.toggle(super::ShapeKind::Pencil);
         assert_eq!(a.width(), 3.);
         assert!(a.step_size(true));
-        assert_eq!(a.width(), 5.);
-        assert!(!a.step_size(true)); // already L
+        assert_eq!(a.width(), 4.);
         assert!(a.step_size(false));
         assert_eq!(a.width(), 3.);
-        assert!(a.step_size(false));
-        assert_eq!(a.width(), 1.);
-        assert!(!a.step_size(false)); // already S
+        // clamp at both spec ends
+        a.set_tool_size(1.);
+        assert!(!a.step_size(false)); // already at min
+        a.set_tool_size(20.);
+        assert!(!a.step_size(true)); // already at max
 
-        // mosaic drives filter strength (8/16/24); pencil keeps its own ix
+        // mosaic: filter strength keeps its own slot; pencil unchanged
         a.toggle(super::ShapeKind::Mosaic);
         assert_eq!(a.width(), 16.);
         assert!(a.step_size(true));
-        assert_eq!(a.width(), 24.);
+        assert_eq!(a.width(), 17.);
         a.toggle(super::ShapeKind::Pencil);
-        assert_eq!(a.width(), 1.);
+        assert_eq!(a.width(), 20.);
 
-        // text drives the font preset (16/24/32)
+        // text drives the font size (range 12..72)
         a.toggle(super::ShapeKind::Text);
         assert_eq!(a.text_size(), 24.);
         assert!(a.step_size(false));
-        assert_eq!(a.text_size(), 16.);
+        assert_eq!(a.text_size(), 23.);
 
-        // number drives the badge preset (24/32/40)
+        // number drives the badge diameter (range 16..64)
         a.toggle(super::ShapeKind::Number);
         assert_eq!(a.number_size(), 32.);
         assert!(a.step_size(true));
-        assert_eq!(a.number_size(), 40.);
-        assert!(!a.step_size(true));
+        assert_eq!(a.number_size(), 33.);
     }
 
     #[test]
@@ -1132,7 +1169,7 @@ mod tests {
         assert_eq!(a.color().1, "Yellow");
         assert_eq!(a.width(), 20.);
         a.set_color(4);
-        a.set_width(2);
+        a.set_tool_size(32.);
         a.begin(point(px(10.), px(30.)), selection());
         a.drag_to(point(px(60.), px(30.)), selection(), false);
         a.end();
@@ -1183,7 +1220,7 @@ mod tests {
     fn pencil_click_exports_round_dot_at_fractional_scales() {
         let mut a = Annotations::default();
         a.toggle(super::ShapeKind::Pencil);
-        a.set_width(2);
+        a.set_tool_size(5.);
         a.begin(point(px(20.), px(20.)), selection());
         a.end();
         assert_eq!(a.visible().count(), 1);
@@ -1215,7 +1252,7 @@ mod tests {
         rectangle(&mut a);
         let first_color = a.visible().next().unwrap().color;
         a.set_color(1);
-        a.set_width(2);
+        a.set_tool_size(5.);
         rectangle(&mut a);
         assert_eq!(a.visible().count(), 2);
         a.undo();
@@ -1527,7 +1564,7 @@ mod tests {
     fn number_drag_and_size_stay_inside_selection_and_tiny_regions_do_not_count() {
         let mut a = Annotations::default();
         a.toggle(super::ShapeKind::Number);
-        a.set_number_size(2);
+        a.set_tool_size(40.);
         a.begin(point(px(-19.), px(1.)), selection());
         a.drag_to(point(px(300.), px(300.)), selection(), false);
         a.end();

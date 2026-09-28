@@ -69,7 +69,7 @@ mod tests {
                 let marked = render(&a);
                 assert_ne!(marked, original);
                 a.toggle(kind);
-                a.set_width(2);
+                a.set_tool_size(24.);
                 a.begin(at(40., 40.), selection);
                 a.drag_to(at(60., 60.), selection, false);
                 let preview = render(&a);

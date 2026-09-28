@@ -1,9 +1,21 @@
-# Shotori — Architecture Decisions & Roadmap
+# Shotori — Decision Log & Pitfall Archive
 
-Archive of conclusions from the research phase (before any code was written).
+Conclusions from the research phase plus every pitfall and load-bearing
+design decision recorded since. Organized by theme; entries keep their
+dates. What the code does lives in the code (`src/lib.rs` header for the
+module map); this file records **why** it is that way and which paths
+were tried and rejected.
+
 Principle: **trust live wayland-info probes over docs and over memory.**
 
-## Environment (measured 2026-09-25)
+How to use: read the sections touching your task before changing code.
+When a change carries non-obvious findings, add a dated entry to the
+matching section. `AGENTS.md` cites several entries here by name — keep
+those phrases searchable when editing.
+
+## Research phase (2026-09-25, before any code)
+
+### Environment (measured)
 
 - Arch Linux + niri 26.04 (zwlr_layer_shell_v1 v5, zwlr_screencopy_manager_v1
   v3, both old and new foreign-toplevel, virtual-pointer, data-control — all
@@ -14,7 +26,7 @@ Principle: **trust live wayland-info probes over docs and over memory.**
   without window capture at that) — 26.04 **does not have it**. The official
   wiki documents main; don't be fooled.
 
-## Capture backend matrix (origin of the CaptureBackend trait)
+### Capture backend matrix (origin of the CaptureBackend trait)
 
 | Path | Protocol | Fits | Notes |
 |------|----------|------|-------|
@@ -25,18 +37,18 @@ Principle: **trust live wayland-info probes over docs and over memory.**
 Window geometry: foreign-toplevel gives a list but no coordinates →
 prototyping used the `niri msg --json windows` backdoor.
 
-## Overlay (settled in lecture #2)
+### Overlay decisions
 
 - A plain xdg window as an overlay is a disaster under a tiling compositor
   → layer-shell or nothing
-- **gpui-pre 0.3.6 has `WindowKind::LayerShell(LayerShellOptions)`** (nobody
+- gpui-pre 0.3.6 has `WindowKind::LayerShell(LayerShellOptions)` (nobody
   in the gpui-kit ecosystem had used it; we went first — spike #1 verified)
 - The toolbar must live inside the overlay window (layering deadlock: a
   normal window would be buried under its own dim layer)
 - Pin (floating image) = a `Layer::Top` layer-shell window (Wayland has no
   "keep normal window on top" protocol)
 
-## Spike #1 verification points
+### Spike #1 verification points
 
 1. Can a layer-shell window open on niri at all (protocol handshake)
 2. Is `WindowBackgroundAppearance::Transparent` actually transparent (EGL
@@ -47,1058 +59,126 @@ prototyping used the `niri msg --json windows` backdoor.
 5. Do four-edge anchors + configure cover the whole output (including a
    1.25-scale screen)
 
-## Findings log
+## Pitfalls — Wayland & the compositors
+
+### The Root/CSD poisoning case (2026-09-25)
+
+base::Root's WindowState plugin (component) paints a themed background
+onto layer-shell windows (white wall → gray haze 76 = 0.3×255),
+WindowBorder calls set_client_inset(20) (window grows by +40), plus
+inward padding. **Overlays must always use a bare cx.open_window; normal
+windows can use Root.**
+
+### The placement lottery, a.k.a. "the 240Hz invisibility case" (2026-09-25)
+
+Nothing to do with the refresh rate — the real culprit was
+**layer-surface placement**. When gpui doesn't pin a layer surface to an
+output, niri picks one (the focused screen); the overlay sometimes landed
+on DP-2 (720×1280) while grim photographed HDMI — hence "invisible". The
+60Hz test windows happened to land on HDMI, manufacturing the
+"refresh-rate-related" illusion. Fix: pass `display_id` when opening the
+window to pin it to the captured screen (WindowOptions.display_id →
+wl_outputs match → get_layer_surface(output)). **Lesson: in a
+mixed-scale multi-monitor setup, when "some screen can't be captured",
+check placement before rendering.**
+
+### displays() is always empty during synchronous startup (2026-09-25)
+
+zed#46378: all screens appear only after the first event-loop pass (first
+cx.spawn update). Workaround: move window opening into a spawn'd async
+task; first shot gets it. display_id matching: bounds size == capture
+size (exact at scale=1; mixed-scale matching needs the vendor to expose
+output names — backlog).
+
+### A portal dialog cannot coexist with the overlay (2026-09-26)
+
+The overlays are layer-shell surfaces on the Overlay layer with exclusive
+keyboard — a regular toplevel (the dialog) renders below them and gets no
+input. **The overlays must be unmapped first** (the save flow does).
+
+### cx.quit() does not unmap wayland surfaces (2026-09-26)
+
+It stops the run loop; the window-destroy requests may still be sitting
+unflushed in the wayland connection buffer. With the process exiting
+immediately nobody notices — the socket close cleans up. With the process
+alive waiting on a dialog (or a tray), frozen frames stay mapped on
+screen forever. Fix: `QuitMode::Explicit`, remove every window, then quit
+from a 150 ms timer so the loop gets a few iterations to flush. Also
+known: removing the last window auto-quits gpui on Linux
+(`QuitMode::Default == LastWindowClosed` off macOS).
+
+### Implicit grab: the gesture belongs to the press window (2026-09-27)
+
+Three consecutive user reports, one root behavior — Wayland's implicit
+grab delivers the whole gesture (including the release) to the window
+where the press happened:
+
+1. **Cross-screen release** dropped the chrome on the floor. The label
+   and toolbar render only on `active_output`'s overlay, but only
+   `pointer_down` ever re-hosts — a move/resize released over the seam
+   left `active_output` on the press screen: old screen no longer
+   intersects the selection, new one is not "active" — blank everywhere.
+   Fix: `follow_selection_host()` after every finalized landing,
+   re-hosting to the output holding the selection's largest intersection,
+   STICKY (the incumbent wins ties, so an ambiguous straddle never churns
+   the chrome).
+2. **The cursor must not depend on a per-window pointer.** The window
+   that physically holds the pointer receives no events at all under
+   implicit grab, so its per-window pointer cache was stale exactly when
+   a state flip landed chrome under a window the pointer never moved
+   over. Fix: the pointer's GLOBAL desktop position is session state
+   (`pointer_global`), recorded at the entry of every pointer event by
+   whoever receives it; `cursor_style` derives from it via `pointer_in`.
+   **Rule: pointer position is desktop-global truth shared by all
+   windows.**
+3. **The dropped press under stale pointer focus.** After the grab ends,
+   niri keeps the pointer's surface focus on the press window until the
+   next MOTION — a click resting on the new screen is delivered to the
+   OLD window with OUT-OF-BOUNDS local coordinates, and element-level
+   `on_mouse_down` hit-testing drops out-of-bounds positions silently.
+   Fix: the left down is registered in the window-level
+   `pointer_event_sink` beside move/up (element handlers that should own
+   a press stop propagation during the bubble phase, which also skips the
+   root listener). The session converts via the RECEIVING window's
+   origin, so it doesn't matter which window delivered the event.
+
+### niri's zwlr_virtual_pointer appears dead (2026-09-25)
+
+motion_absolute/motion/button all vanish (WAYLAND_DEBUG confirmed
+requests go on the wire, zero client events; with output/without,
+absolute/relative — all the same). No GUI click automation on niri for
+now (keyboard side untested). Worth reporting upstream. `tools/vptr`
+exists as the injector for compositors where it works.
+
+### wl_shm format is an ordinal (2026-09-25)
+
+xrgb8888=1 — not a DRM fourcc; the format name describes the word's byte
+order (MSB→LSB), little-endian memory is reversed.
+
+### Transform semantics, measured (2026-09-26)
+
+niri's "90° counter-clockwise" (Transform::_90) actually fills the panel
+by rotating the buffer **clockwise** 90° — opposite of the protocol
+wording. rotate_rgba was calibrated against grim; the Flipped family is
+rare and unhandled.
 
-### Closed cases (2026-09-25)
-- **The Root/CSD poisoning case**: base::Root's WindowState plugin
-  (component) paints a themed background onto layer-shell windows (white
-  wall → gray haze 76 = 0.3×255), WindowBorder calls set_client_inset(20)
-  (window grows by +40), plus inward padding. Overlays must always use a
-  bare cx.open_window; normal windows can use Root.
-- **The 240Hz invisibility case (final ruling, late 2026-09-25)**: nothing
-  to do with the refresh rate — the real culprit was **layer-surface
-  placement lottery**. When gpui doesn't pin a layer surface to an output,
-  niri picks one (the focused screen); the overlay sometimes landed on DP-2
-  (720×1280) while grim photographed HDMI — hence "invisible". The 60Hz
-  test windows happened to land on HDMI, manufacturing the
-  "refresh-rate-related" illusion. Fix: pass `display_id` when opening the
-  window to pin it to the captured screen (the upstream pipeline already
-  existed: WindowOptions.display_id → wl_outputs match →
-  get_layer_surface(output)). **Lesson: in a mixed-scale multi-monitor
-  setup, when "some screen can't be captured", check placement before
-  rendering.**
-- **The true shape of empty displays() at startup (zed#46378)**: always
-  empty during synchronous startup, but all 3 screens appear after the
-  first event-loop pass (first cx.spawn update). Workaround: move window
-  opening into a spawn'd async task; first shot gets it. display_id
-  matching: bounds size == capture size (exact at scale=1; mixed-scale
-  matching needs the vendor to expose output names — backlog).
-- **scale_factor() misreports across monitors**: window pinned to HDMI
-  (rendering at 1.0) while `window.scale_factor()` reports 1.5 (DP-2's).
-  Cropping instead computes "captured physical width ÷ window logical
-  width", naturally consistent with rendering.
-- **niri's zwlr_virtual_pointer appears dead**: motion_absolute/motion/button
-  all vanish (WAYLAND_DEBUG confirmed requests go on the wire, zero client
-  events; with output/without, absolute/relative — all the same). The lab's
-  vinput test bench is therefore unusable; no GUI click automation for now
-  (keyboard side untested). Worth reporting upstream.
-- **The RenderImage contract**: BGRA bytes (Vulkan backend); feeding memory
-  directly requires swap(0,2); the PNG path is RGBA.
-- **wl_shm format is an ordinal** (xrgb8888=1), not a DRM fourcc; the
-  format name describes the word's byte order (MSB→LSB), little-endian
-  memory is reversed.
-- **Multi-monitor output selection**: upstream zed#46378 (displays() empty
-  at startup), fix PR #61578 stuck in review; when vendoring, consider
-  taking the roundtrip patch along.
+**Wallpaper rotation destroys comparison testing** — a photo wallpaper
+changes orientation; cross-time grim comparisons correlate as badly as
+0.54. Verification posture: grim→screencap→grim within a one-second
+window, three-way compare.
 
-### Debug backdoors
-- `SHOTORI_DEBUG_SELECTION=x,y,w,h`: inject a ready-made selection (for
-  automated selection-UI verification)
-- `SHOTORI_DEBUG_ACTION=copy|quit|save|ocr|ocrsetup`: fire the action 1.5s
-  after startup — the only entry point for headless e2e (recipe:
-  `SHOTORI_DEBUG_TARGET=HDMI-A-1 SHOTORI_DEBUG_SELECTION=...
-  SHOTORI_DEBUG_ACTION=copy ./shotori & sleep 4; wl-paste --type
-  image/png | size assertion`)
-- `SHOTORI_DEBUG_TARGET=<output name>`: restrict the backdoor to one
-  overlay (multiple overlays all firing fight each other)
+### Hyprland IPC: three live-measured protocol traps (2026-09-26)
 
-## v0.3 multi-monitor support (2026-09-26 early AM)
-
-### Features
-- capture_all_outputs(): one connection captures every output (three
-  screens ~350ms including encoding); one Capture per screen
-- **One overlay window per output** (display_id pinning), selection/crop/
-  copy independent; Enter/Esc act on "the screen you're interacting with"
-  (niri's exclusive-layer keyboard focus follows the focused output —
-  **user-verified live**)
-- The self-computed crop scale naturally handles per-screen scales
-  (eDP 2.0 / DP-2 1.5 / HDMI 1.0)
-- screencap --all: one debug image per screen
-
-### Closed record (multi-monitor)
-- **gpui display bounds coordinates = output logical position ÷ wl_output
-  integer scale** (the backend does the division; measured by comparison:
-  eDP 1920,0→960,0; DP-2 -720,-100→-360,-50). Display matching must use
-  the same algorithm.
-- **wl_output.scale is an integer**: a 1.5x screen reports 2 (ceil); the
-  true value needs the fractional protocol (unavailable per-output). Size
-  matching is therefore infeasible — match on position (layout origins are
-  unique).
-- **Transform semantics, measured**: niri's "90° counter-clockwise"
-  (Transform::_90) actually fills the panel by rotating the buffer
-  **clockwise** 90° — opposite of the protocol wording. rotate_rgba was
-  calibrated against grim; the Flipped family is rare and unhandled.
-- **Lesson: wallpaper rotation destroys comparison testing** — DP-2's photo
-  wallpaper changes orientation; cross-time grim comparisons correlate as
-  badly as 0.54. Verification posture: grim→screencap→grim within a
-  one-second window, three-way compare.
-- Remaining limits: selections can't span screens; rotation+flip combos
-  (Flipped90 etc.) unimplemented; keyboard behavior of multiple Exclusive
-  overlays on non-niri compositors unknown.
-
-## v0.2.1 clipboard copy (2026-09-25, late night)
-
-### Features
-- Enter / Ctrl+C / toolbar [Copy]: selection → PNG → clipboard → exit; no
-  selection = full screen
-- Ctrl+S / toolbar [Save]: to disk (the original Enter behavior); toolbar
-  becomes [Copy][Save][Cancel] (pin button deferred)
-- **Resident-offer model** (same as wl-copy): copy = re-exec ourselves as
-  a `--clipboard-daemon` twin, PNG bytes via stdin; the twin serves pastes
-  as a `zwlr_data_control` source and exits on `cancelled` when replaced
-- wayland-rs pitfall: the compositor creates new objects inside
-  data_offer events on the client's behalf; the parent interface must
-  specialize `event_created_child` (default panics; the
-  `event_created_child!` macro fixes it in one line)
-- Fully automated e2e verified: byte-exact read-back / repeated pastes /
-  old-new twin replacement / full chain (600×400 exact after display
-  pinning)
-
-### Fixed along the way (details above)
-- Overlay/pin display_id pinning (the placement-lottery bug, the "240Hz
-  invisibility" culprit)
-- Self-computed crop scale (scale_factor() multi-monitor misreport)
-- Toolbar button clicks still unverified by a real mouse (vinput dead) —
-  propagation-chain analysis says fine; pending day-to-day confirmation
-
-## v0.2 basics cleanup (2026-09-25)
-
-### Modularization
-overlay.rs (408 lines) split into: `selection.rs` (state machine, pure
-logic + tests), `export.rs` (crop/PNG/disk, pure functions + tests),
-`toolbar.rs`, `image_util.rs` (BGRA contract in one place, deduped for
-pin). overlay keeps only assembly. First 12 unit tests (no compositor
-needed).
-
-### Behavior fixes (v0.1 → v0.2)
-- Dragging up-left produced negative-width "invisible selections"
-  (`Bounds::from_corners` doesn't normalize) — a latent bug the tests
-  flushed out; fixed
-- In-place click (<2px) = clear selection; no more 0×0 selection +
-  toolbar weirdness
-- Two-stage Esc: while dragging = abandon this drag; after release = exit
-- Enter with no selection = save full screen
-- Save failures no longer panic: print the error, stay in the overlay for
-  retry
-- Filenames `Shotori_<date>_<time>.png`, same-second conflicts get
-  `_2`/`_3`
-- Toolbar only appears after release (no flicker while dragging)
-
-### Suspended: pin (floating image)
-Dragging to edges has a bug (suspects: ① moving reference frame in
-window-relative coordinates ② niri clamping out-of-bounds margins ③
-whether implicit grab keeps delivering once the cursor leaves the small
-window). Test bench ready: the lab's `vinput` (zwlr_virtual_pointer,
-can fully automate drags). When resuming: the user's remote mouse will
-fight the virtual mouse.
-
-### Pending manual acceptance (user back at the screen)
-- Two-stage Esc feel, click-to-clear, Enter-full-screen, new filenames
-- Toolbar button clicks (the earlier virtual-pointer "pin" click didn't
-  trigger; coordinates corrected to the button text cluster center
-  x≈298 — to re-verify)
-
-## v0.3.1 refactor: anti-big-ball-of-mud (2026-09-26 early AM)
-
-- capture.rs (449 lines) split into capture/{mod,wayland,pixels}:
-  orchestration / event state machine / pure pixels
-- display.rs created: display matching moved out of main.rs; the match
-  predicate unit-locks "gpui coords = position ÷ integer scale"
-- hud.rs created: dim_strips/selection_chrome/hint_bar moved out of
-  overlay.rs
-- overlay.rs backdoors split into debug_targeted/debug_selection/
-  spawn_debug_action private functions
-- **A unit test caught a real bug**: rotated_size's _180 fell into the
-  catch-all (180° would wrongly swap width/height; it had fake-passed via
-  unwritten memory) — fixed + four-corner assertions locked
-- pin_selection cropping switched to the self-computed scale (a leftover
-  of the scale_factor() misreport path)
-- Dead code capture_first_output removed; tests 12 → 21
-
-## Release route (2026-09-26)
-
-- **Local install**: `cargo install --path . --bin shotori` →
-  ~/.cargo/bin (no blockers)
-- **crates.io**: three blockers ① publish=false ② [patch.crates-io] local
-  paths (forbidden on crates.io) ③ set_layer_margin unmerged upstream.
-  Route: gate pin behind a feature → drop the patch in patchless builds →
-  publishable
-- **AUR / GitHub Release**: more realistic for Arch users; a PKGBUILD can
-  carry the vendor patch
-- User context: niri `Mod+Shift+S` was originally bound to the old shotori;
-  this project took over the binding
-
-## v0.4.0 renamed shotori + cancel/Esc fix (2026-09-26)
-
-- Project renamed saccade → shotori (the user kept the old tool's name;
-  the old ~/Projects/shotori source stays untouched, the cargo bin just
-  gets overwritten)
-- **Fixed: Cancel button / Esc doing nothing** — located with a real user
-  mouse + probe logs: the button click chain works end-to-end (container
-  intercept → on_click → dispatch_action → overlay handler), but a
-  dispatch_action inside a gpui window **stops at the end of the focus
-  path and does not bubble to App::on_action** — the exit logic was riding
-  on an app-level backstop and had been dead since the toolbar was born.
-  Fix: two-stage Esc handled right in the overlay handler (dragging =
-  cancel drag, otherwise quit)
-- Backdoor upgrade: SHOTORI_DEBUG_ACTION=copy|quit (quit goes through the
-  real dispatch_action pipeline, making exit e2e-testable)
-
-## v0.5.0 pin removed to unlock publishing (2026-09-26)
-
-- pin moved wholesale to the `pin` branch (including the vendored
-  set_layer_margin patch dependency)
-- main drops [patch.crates-io] (upstream gpui-pre), publish=false, and
-  gains crates.io metadata (license/repository pending user confirmation)
-- `cargo publish --dry-run --allow-dirty` passed: no path deps, packaging
-  compliant
-- Real publish: `cargo login` → `cargo publish`
-
-## v0.6.0 selection OCR (2026-09-26)
-
-### Features
-- Ctrl+O: selection → PP-OCRv6 small (rapidocr-core + ort/ONNX Runtime) →
-  text to clipboard
-- First use auto-downloads models from ModelScope (4 files, ~31MB) to
-  `~/.local/share/shotori/ocr-models/`; subsequent calls are instant
-  (engine stays resident via OnceLock<Mutex>)
-- feature gate: `--features ocr`; default build has zero added weight
-  (crates.io publish unburdened by heavy deps)
-- Clipboard daemon generalized: `--clipboard-daemon <MIME>`;
-  copy_image/copy_text share the twin framework; text offers
-  `text/plain;charset=utf-8` with a `text/plain` fallback
-
-### Choice record (why rapidocr-core)
-- Candidates: rapidocr-core (ONNX/ort) vs rusto-rs (MNN) vs paddle-ocr-rs
-- rusto-rs's mnn-sys build chain is three-strategy
-  (vendor/prebuilt/source) + bindgen/cmake — fragile
-- rapidocr-core: `run_image(&RgbImage)` takes in-memory pixels directly;
-  mature model-cache machinery (ModelCache + SHA256 verification); ort
-  auto-downloads a prebuilt libonnxruntime at build time, statically
-  linked
-- Accuracy: PP-OCRv6 small is solid on mixed Chinese/English; text under
-  ~16px on a 1080p screen struggles (HiDPI screens do better — more
-  physical pixels)
-
-### e2e verification record
-- First run: models auto-downloaded ✓ → full-screen OCR → clipboard text
-  read back (terminal content, mixed CN/EN transcribed) ✓
-- Second run: instant, complete logs ✓
-- Exact selection 1500x800 → 32 lines, 612 chars ✓ (line structure
-  preserved)
-- Image copy regression 600x400 ✓ (daemon rework broke nothing)
-- Real user Ctrl+O acceptance: file sidebar 631x328 → 14 lines ✓
-- Known niggles: stdout redirected to a file is fully buffered — SIGTERM
-  kills drop the last log lines (no impact in foreground use); missing
-  first characters are usually selection edges cutting glyphs, not model
-  issues
-
-### Notes
-- SHOTORI_DEBUG_* env vars don't leak between `opencode run` shells
-- No GUI preview of OCR results in v1 (straight to clipboard); floating
-  preview/edit is a candidate
-
-## v0.6.1 OCR implementation review (2026-09-26)
-
-### Review findings, fixed
-- **🔴 Corrupt model bricked OCR forever**: rapidocr-core's download_asset
-  writes straight to the target file (no temp+rename); an interrupted
-  download leaves a truncated file → every later sha256 check fails →
-  permanent error. Fix: wipe the model cache dir when initialization
-  fails; the next attempt re-downloads from scratch (tested: plant a
-  garbage file → sha mismatch error → dir cleaned → rerun auto-
-  re-downloads successfully)
-- **🔴 init via panic behaves unpredictably**: get_or_init + expect on
-  failure paths (first run offline, unwritable dir) panics through gpui's
-  background executor. Fix: init_engine returns Result, failures are not
-  cached (OnceLock stays unset) → the overlay prints the error and stays
-  usable; the next Ctrl+O retries. Tested: XDG_DATA_HOME pointed at an
-  unwritable path → clean error, process alive, Esc works
-- **Self-inflicted bug**: during the refactor I dropped the ENG.set() —
-  download + engine construction succeeded and then got thrown away,
-  reporting "vanished after init". Caught by e2e (the retry-success
-  path); fixed
-- **🟡 hint bar / keybinding feature gating**: non-ocr builds no longer
-  advertise or bind Ctrl+O (OCR later became a default feature; the gate
-  remains as the slim-build exit)
-- **🟡 text paste compatibility**: text mode now also offers
-  UTF8_STRING/STRING (old xwayland apps); the Send handler writes on any
-  offered-MIME hit
-- **🟢 first-download feedback**: prints "downloading PP-OCRv6 small
-  models…" before starting
-- **🟢 the real reason for the dedicated download thread**:
-  reqwest::blocking cannot run in an async context (gpui's background
-  executor is one) — comment corrected
-
-### Design change: OCR became a default feature
-- `default = ["ocr"]`: crates.io/AUR users get full functionality on a
-  bare install; OCR is no longer a hidden feature
-- Slim-build exit: `--no-default-features`
-- Rationale: product identity = screenshots + OCR; next to the gpui dep
-  tree, ort+reqwest are a rounding error
-
-### Review methodology notes
-- Failure paths (offline / corrupt files / retries) are mandatory testing
-  for lazy-loading designs; success-path e2e is not enough
-- "wl-paste -l suddenly lost MIMEs" → suspect yourself first, then the
-  compositor, and last remember the user is also using the computer
-  (their copies replace test state)
-
-## v0.6.2 toolbar OCR button + full English codebase (2026-09-26)
-
-### Features
-- Toolbar gains [OCR]: [Copy][Save][OCR][Cancel], same dispatch_action
-  pipeline as the keyboard; compiles away without the feature
-  (`.children(Option)`)
-- Hint bar / buttons / logs all English (UI faces international
-  crates.io/AUR users)
-
-### English-conversion scope & principles
-- All 16 files under src/: doc comments, inline comments, string
-  literals, test function names
-- Translation preserved all the war stories (the wayland-rs pits, the
-  gpui pits, the grim calibration, …) — language changed, content kept
-- Both feature combos build/test/clippy green; OCR/copy e2e regressions
-  pass
-
-### Pit notes
-- `#[cfg]` cannot hang in the middle of a method chain (an attribute on
-  a `.child()` link isn't legal Rust) — absorb via `.children(Option<E>)`
-  (children takes an IntoIterator; Option is one)
-- gpui-kit doesn't implement IntoElement for Option<impl IntoElement>
-  (upstream gpui does), nor for Infallible — the non-ocr stub returning
-  Option<&'static str> is the cheapest way out
-
-## v0.6.3 OCR speedup: prewarm + skip re-hashing (2026-09-26)
-
-### Problem
-- One-shot process × in-process engine cache = full cold start on every
-  Ctrl+O (read 31MB from disk + build 3 ort sessions + sha256-hash 31MB);
-  measured OCR net time 1464ms (release, 800x400 selection, 34 lines)
-- Diagnostic methodology: debug builds run the pure-Rust pre/post
-  processing 10-100× slower (10.8s) — benchmark with the release install
-  (3.36s full chain)
-
-### Fixes
-- **A. Prewarm**: the overlay warmups in the background on open (own
-  thread, only when models are already cached — a first-ever run must not
-  surprise-download 31MB during a plain screenshot). The init hides
-  inside the user's 2-5s of drawing a selection
-- **B. Skip the repeated sha256**: when all model files exist, skip
-  `ensure_*` entirely (it re-hashes all 31MB per call); corruption
-  detection is instead covered by "engine init fails → clean cache"
-- Effect: worst-case (debug hook) OCR net time 1464ms → 890ms; in real
-  use (2-5s drawing) Ctrl+O leaves only inference, ~300-500ms
-
-### Self-healing upgrade (unexpected bonus)
-- A corrupt model file is now silently digested by the warmup thread:
-  warmup hits the corruption → init fails → cache cleaned; the subsequent
-  real OCR finds the cache empty → auto re-downloads → the user never
-  sees it (v0.6.1 required an explicit error + manual retry)
-
-### Notes
-- `let _ = engine()` trips the let_underscore_lock lint (even for
-  deliberately dropping a lock) — explicit `drop(engine())` states the
-  intent
-
-## v0.6.4 first-download: confirm dialog + progress bar + cancel (2026-09-26)
-
-### Features
-- Ctrl+O with no models: centered confirm card ("OCR needs models",
-  showing ~31MB, ModelScope source, storage path) → [Download] / [Cancel]
-- While downloading: byte-accurate progress bar (total = Σ
-  content-length, growing as each file starts), current file name +
-  (2/4) + MB readout; Esc/[Cancel] aborts anytime
-- Failure card [Retry]/[Close]; on success the selection snapshot frozen
-  at Ctrl+O time is fed to OCR automatically
-- Model location: ~/.local/share/shotori/ocr-models/ (XDG_DATA_HOME
-  respected). Reset for testing: `rm -rf ~/.local/share/shotori/ocr-models`
-
-### Implementation
-- src/ocr_setup.rs (new): Stage state machine (Confirm/Downloading/
-  Failed) + card rendering; actions OcrSetupConfirm/OcrSetupCancel ride
-  the same pipeline as keyboard actions
-- ocr.rs: own downloader replaces ensure (progress/cancel hooks), writes
-  via **temp + atomic rename** (half-written models become impossible) +
-  post-download sha256 verification (sha2)
-- overlay: the dialog is modal (Enter/Ctrl+S/copy/new selections all
-  blocked), Esc = cancel; an 80ms poll loop drives the bar via the Entity
-  handle + notify; completion handover goes through entity.update
-- warmup unaffected (it already skips when models are missing)
-- reqwest/sha2 both under the ocr feature; slim build unchanged
-
-### Pit records
-- window_handle.update's closure receives an AnyView (can't touch the
-  concrete view's fields) — touching view state from async requires the
-  Entity handle's entity.update
-- gpui-kit's Entity::update return = the closure's return passed through
-  (not zed's Result wrapping); returning () trips clippy's
-  let_unit_value
-- Almost put #[cfg] mid-chain again (render layer ⑥) — precompute an
-  Option<AnyElement> and .children() unconditionally is the idiom
-
-### e2e
-- ocrsetup backdoor: 1.5s opens the dialog → 6s auto-[Download] →
-  download → OCR → clipboard (verified after deleting models; no .part
-  leftovers)
-- The old headless path (DEBUG_ACTION=ocr) remains: still downloads
-  inline; regression passes
-
-## v0.6.5 desktop notifications (2026-09-26)
-
-### Features (verified live against noctalia / org.freedesktop.Notifications)
-- Save success → "Saved 500×300 → ~/Pictures/Shotori/…png" (the path is
-  the real need; stdout is lost when launched from a keybinding — the
-  notification is the only feedback)
-- OCR success → "N lines → clipboard + preview"; OCR failure → error
-  summary (no in-UI error display yet; the notification covers the
-  keybinding case)
-- Image copy also notifies (user's call: all three exits give uniform
-  feedback — Copied WxH → clipboard)
-
-### Architecture: notification child process (the clipboard-twin pattern)
-- `shotori --notify <summary> <body>`: the parent spawns it and exits
-  immediately; **the detached child outlives the parent** — a plain
-  background thread would be killed by the process::exit after
-  cx.quit(), cutting the notification mid-send
-- notify-rust 4 (zbus/D-Bus); the child fails quietly (one stderr line);
-  a missing daemon never affects screenshots
-
-### Notes
-- debug backdoor gains a save action (for notification-path e2e)
-- Known phenomenon reconfirmed: stdout full buffering on the quit path
-  can swallow the last log line (notifications go through the child and
-  are unaffected)
-
-## v0.6.6 notification image previews (2026-09-26)
-
-### Features
-- Copy/save notifications carry a screenshot thumbnail (image-path hint +
-  file:// URL; noctalia renders it ✓ — probed the spec support with a raw
-  busctl call before writing any code)
-- OCR notifications stay plain text (the preview IS the content)
-
-### Implementation
-- notify::send_with_preview(w, h, rgba): raw pixels → image::imageops
-  thumbnail (≤256px) → ~/.cache/shotori/preview-<ts>.png → child gets
-  the path
-- The preview file must outlive the notification: lazy cleanup (each
-  send removes previews older than 24h)
-- notify child argv extended: --notify <summary> <body> [image]
-- Thumbnail-write failure → silently degrades to a plain text
-  notification
-
-### Lesson
-- The pkill in an e2e script must happen after the action (the 1.5s
-  backdoor) fires — otherwise you kill a process that hasn't done its
-  work yet; this round's "copy had no preview" was a test race, not a
-  code bug (wait for foreground exit before checking)
-
-## v0.6.7 white-line fix + OCR busy badge (2026-09-26)
-
-### 🔴 The white-line bug (pixel-level forensics + fix)
-- Symptom: an occasional 1px full-width pure white line just under the
-  selection's bottom edge (reported by the user with a screenshot; "only
-  at certain positions")
-- Forensic chain: pasted-image pixel analysis (the white line is
-  sandwiched between two dimmed regions) → orange-rectangle geometry
-  reconstruction (line = selection bottom + 1 row; toolbar top = bottom +
-  8 ✓ matching the code) → mechanism identified
-- Mechanism: remote mice produce fractional selection coordinates →
-  dim_strips (4 dim bands) and selection_chrome (border) each round
-  independently inside gpui → at certain fractional phases the two
-  roundings diverge → a 1px row covered by neither → raw content bleeds
-  through (pure white on light backgrounds, invisible on dark — hence
-  "only at certain positions")
-- Fix: round_px() — all four edges rounded once each (round(l)+round(w) ≠
-  round(r); edges must be rounded independently), dim bands / border /
-  toolbar share the same integer bounds; the rounding ambiguity is gone
-- Verification: a 10-phase fractional sweep (.0-.9) of boundary rows —
-  zero leak rows ✅
-
-### OCR busy badge (spinner)
-- During inference a spinner badge shows at the selection's center
-  ("OCR…" + an orbiting dot)
-- gpui with_animation (respects reduce_motion automatically; max_fps 15
-  caps redraws)
-- ocr_busy flipped via the Entity handle (cleared on both success and
-  failure — no eternal spinner)
-- Burst verification: absent at 1.6s (not yet triggered) → present at
-  1.75s/1.9s (19574 chip pixels) ✅
-
-### Pit records
-- Test probes must adapt: after the fix the boundary rounds to 301; a
-- hardcoded x=300 orange-line self-check went all false-negative — prove
-  "the overlay is up" before probing the target, and don't hardcode
-  coordinates in the check itself
-- #[cfg] mid-method-chain, third offense (busy_el again) — the dual cfg
-  let binding is the only correct posture; burn it into muscle memory
-- Capturing animations with grim needs burst frames (a single frame
-  misses 0.3s-scale windows)
-
-## v0.6.8 size label stacking vertically (2026-09-26)
-
-- Symptom: on narrow selections (e.g. 22px wide) the "W × H" label wraps
-  one character per line into a vertical tower
-- Root cause: the label div was a child of the selection border box; its
-  auto width was clamped to the selection's width (Taffy clamps the
-  fit-content of absolute children to the parent's content box) — a
-  narrow selection leaves ~22px of usable width → per-character wrapping
-- Fix: selection_chrome now emits two window-anchored elements (border
-  box + label); the label is absolutely positioned against the overlay
-  root, content-sized, independent of the selection's width
-- Verified: a 22×140 selection renders a normal 64×32 horizontal chip ✅;
-  border verticals 44/44 ✅
-
-## v0.7.0 release-ready (2026-09-26)
-
-- Version 0.6.0 → 0.7.0 (aggregates: the full OCR suite + notifications/
-  previews + the download confirm UI + white-line/label fixes + the
-  spinner badge; a major step over the 0.5.x line)
-- cargo publish --dry-run passes; the actual publish is done by the user
-  (ceremony preserved)
-- Repo fully anglicized for publication (ROADMAP included); default
-  README in English, Chinese README at README.zh-CN.md
-- Outstanding confirmation before publishing: the repository link points
-  at a not-yet-created GitHub repo (create it or drop the line)
-
-## Pre-publish snags: reqwest 0.13 / sha2 patch (2026-09-26)
-
-- A stray bump to reqwest 0.13 → the `rustls-tls` feature was renamed to
-  `rustls` in 0.13; immediate error. **Decision: stay on 0.12** —
-  rapidocr-core also uses 0.12; upgrading would compile two full
-  hyper/tokio/rustls trees for the sake of one GET
-- Knock-on: the lock re-resolution bumped sha2 to the hybrid-array
-  version whose finalize() output no longer implements LowerHex — digest
-  formatting is now manual and version-agnostic
-
-## v0.7.0 addendum: screencap removed (2026-09-26)
-
-- The spike-era debug front end (`screencap --all`) is gone from the
-  package: the user prefers a single-purpose crate, and it had no runtime
-  role. Its calibration history (grim cross-checks) stays recorded above.
-- README restructured to the standard layout (badges, features,
-  requirements, install, usage, OCR notes, build, license); Chinese
-  README mirrors it.
-
-## v0.8.0-dev: save via the system file picker (2026-09-26)
-
-`Ctrl+S` no longer writes to a fixed path — it opens the desktop's native
-"save as" dialog (xdg-desktop-portal FileChooser via rfd 0.17 / ashpd, the
-`xdg-portal` feature, no GTK link time; zenity fallback if the portal is
-dead). Suggested name pre-filled (`Shotori_<date>_<time>.png`, default dir
-`~/Pictures/Shotori`), extension re-appended if dropped while renaming.
-
-Flow: the overlay action crops, stashes RGBA pixels in a static slot and
-tears the overlays down; after the run loop returns, the main thread runs
-the dialog (blocking), writes the PNG and fires the thumbnail notification.
-Headless e2e keeps working via `SHOTORI_DEBUG_SAVE_PATH=<file>` (skips the
-dialog).
-
-Three measured gotchas along the way, all worth remembering:
-
-1. **A portal dialog cannot coexist with the overlay.** The overlays are
-   layer-shell surfaces on the Overlay layer with exclusive keyboard — a
-   regular toplevel (the dialog) renders below them and gets no input. The
-   overlays must be unmapped first.
-2. **`cx.quit()` does not unmap surfaces.** It stops the run loop; the
-   window-destroy requests may still be sitting unflushed in the wayland
-   connection buffer. With the process exiting immediately (every other
-   action path) nobody notices — the socket close cleans up. With the
-   process alive waiting on the dialog, frozen frames stay mapped on
-   screen forever. Fix: `QuitMode::Explicit`, remove every window, then
-   quit from a 150 ms timer so the loop gets a few iterations to flush.
-3. **`handle.update()` on the window currently running an action handler
-   is a no-op** (gpui takes the window out of the map during its update,
-   so the nested update finds nothing). The current window must remove
-   itself through its own `window` reference; `close_overlays` therefore
-   takes both.
-
-Also: removing the last window auto-quits gpui on Linux
-(`QuitMode::Default == LastWindowClosed` off macOS) — irrelevant now that
-we set Explicit, but good to know. The fixed-path `export::next_path`
-machinery and its collision-suffix logic were deleted (the dialog asks
-before overwriting).
-
-### Addendum: superseding the atomic fixed-path writer (2026-09-26)
-
-Between the dialog work starting and landing, a parallel change introduced
-millisecond timestamps + an atomic `create_new` collision-suffix writer for
-the fixed-path flow (concurrent instances racing on the same second).
-Merged resolution: the millisecond stamp lives on in the dialog's suggested
-name (`..._%3f`), while the atomic writer itself has no caller anymore —
-with a picker in front, overwrite confirmation is the dialog's business and
-`save_png` writes the chosen path plainly.
-
-## Label / toolbar: never off-screen (2026-09-26)
-
-A selection touching the top and bottom of the screen had nowhere to put
-the size label (below) or the toolbar (below/above) — both ran off-screen
-(user-reported with screenshots). Both now have a third fallback state:
-drawn INSIDE the selection box, pinned to its top edge. Geometry extracted
-into pure anchor functions (`label_anchor`, `toolbar_anchor`) with unit
-tests for all three states plus horizontal clamping (which also gained a
-max() guard against a clamp(min, max) panic on very narrow windows).
-
-## Label / toolbar placement v2: two disjoint zones (2026-09-26)
-
-The v1 fallback chain (label above→below→inside, toolbar below→above→inside)
-kept colliding as user reports rolled in: overlap when both flipped to the
-same side, a label that visibly "reserved room" for a toolbar that only
-exists after release, and elements glued flush to the screen edge at
-exactly-zero margin.
-
-An intermediate fix computed both Y anchors in one six-state matrix —
-correct, but the label↔toolbar coupling was the drag-jump bug in disguise,
-and the matrix only grew.
-
-Final scheme (user-designed, and better): **two disjoint zones**.
-- Label: ABOVE the box; if the box hugs the screen top, inside its
-  TOP-LEFT corner.
-- Toolbar: BELOW the box; if the box reaches the screen bottom, inside its
-  BOTTOM-LEFT corner.
-
-No overlap is possible by construction (the zones cannot intersect), the
-label is toolbar-independent (drag-stable), and off-screen is impossible.
-Inside corners carry a 12 px horizontal / 8 px vertical inset; the
-below-fit decision keeps 12 px of breathing room at the screen edge
-(zero-margin still looks glued on — measured). Anchors stay pure and
-unit-tested, including a grid sweep asserting the disjoint-and-on-screen
-invariant over 35 selection geometries.
-
-## Window snapping: what the compositor will and won't tell you (2026-09-26)
-
-Goal: hover a window → outline it; click → select it. On Wayland this
-needs the compositor's help: clients are isolated and no standard
-protocol exposes other clients' geometry (ext-foreign-toplevel-list is
-deliberately minimal — title and app-id only). Screen geometry is public
-(xdg-output), window geometry is private. Per-compositor IPC is the only
-door.
-
-**niri (source-verified on 26.04):** the IPC's
-`tile_pos_in_workspace_view` is populated for floating windows only —
-`tiles_with_ipc_layouts` never fills it for tiled windows, whose
-positions additionally depend on the unexposed workspace scroll offset.
-Upstream knows: issue #2381 asks for it, PR #4147 proposes exposing the
-view offset (unreviewed for months at the time of writing). Consequence:
-**floating windows snap exactly; tiled windows cannot snap at all** until
-upstream moves. The backend interface already carries rects, so tiled
-support lights up with a field-fill the day it merges.
-
-**Pixel detection was prototyped and rejected.** Frozen-frame template
-matching (known window sizes from the IPC + boundary-edge strength)
-looked promising, but real captures showed content edges inside windows
-scoring as strongly as genuine window boundaries (a ghostty pane border
-at x=232 scored 149 vs 150 for the true edge) — every extra
-discriminator (gap-band pairs, shadow gradients, structural voting)
-added new failure modes. A snap that occasionally grabs a wrong region
-is worse than no snap; silently degrading won. The full experiment log
-lives in the session that shipped this.
-
-**sway / Hyprland backends** were written from their IPC docs (i3
-`GET_TREE` rect space; `j/clients` + `j/monitors` active-workspace
-filtering) but have not been exercised on live sessions — fixture-tested
-only. Reports from users on those compositors are welcome.
-
-## Repo reorganization: model / ui / platform (2026-09-26)
-
-A code audit (5.6k lines, 23 files) found the structure sound — every
-module documented, pure logic separated and tested, zero clippy debt —
-but three structural smells: `overlay.rs` had grown to 783 lines holding
-window assembly + three feature flows + OCR orchestration + render + the
-e2e debug backdoors; the four shared actions were defined inside it,
-creating the codebase's only import cycle (toolbar ↔ overlay); and the
-two-zone placement contract was split across `hud.rs` and `toolbar.rs`
-with a cross-module `TB_H` borrow.
-
-Surgery, in one commit on top of `git mv` (history preserved):
-
-- `actions.rs` — the action vocabulary + `bind_keys`; main, toolbar and
-  overlay all consume it, nothing depends on overlay for types anymore
-  → the cycle is gone
-- `model/placement.rs` — `label_anchor`, `toolbar_anchor`, their
-  constants and the grid-sweep invariant test; single source of truth
-  for the chrome layout contract
-- `ui/e2e.rs` — the `SHOTORI_DEBUG_*` backdoors out of the production
-  assembly file
-- directories: `model/` (selection, session, export, placement — pure
-  logic and state), `ui/` (overlay, hud, toolbar, theme, ocr_setup,
-  image_util, e2e), `platform/` (capture, display, windowsnap);
-  clipboard / notify / ocr / save_dialog stay at the root as the four
-  post-selection exits. `core` was rejected as a directory name (bare
-  `core::` path collisions).
-
-Dependency direction now documented in lib.rs: ui → model, model →
-platform, never back up. OCR's download orchestration (~120 lines) stays
-in overlay for now — it is entangled with the Overlay entity state and
-moving it is risk without payoff. overlay.rs: 783 → 709 lines.
-
-## Draggable toolbar (2026-09-27, later)
-
-The toolbar is no longer nailed to its anchor: a matte grip strip at
-each edge of row one (a bare 3×7 dot matrix, low-alpha — deliberately
-NOT a button: no pill, no hover background; the open/closed hand cursor
-is the affordance) drags the whole toolbar anywhere on its layer.
-First cut used three rounded bars + a hover pill — user-rejected for
-reading as "just a dashed line" and a 15th button.
-
-### Where the state lives — and what resets it
-
-`session.toolbar_pos` (window-local override of the anchor) +
-`toolbar_drag` (grab offset + pre-drag restore). One geometry source:
-`session.toolbar_bounds()` — render, the cursor hit-test AND the drag
-clamp all read it, so they cannot drift (the cursor's toolbar rect used
-to be recomputed in overlay; that duplication is gone). placement grew
-`toolbar_bounds()` (anchor + width clamp) and took in `round_px`;
-TB_W 492 → 512 to make room for the grips.
-
-Reset semantics: a NEW selection (`begin`, `cycle_select_all`,
-`select_all`) re-anchors; a change of host window re-anchors (the
-override is local — the same coordinates mean somewhere else entirely
-on another screen); moving/resizing the CURRENT selection keeps the
-user's placement (they put it there deliberately). Esc mid-drag
-reverts to the pre-drag position — one Esc, one thing (`cancel_drag`
-returns before touching the selection).
-
-### Event plumbing
-
-The grip's `on_mouse_down` starts the drag and stops propagation (the
-toolbar root also stops it — the canvas never sees the press, so no
-move/resize of the selection underneath). Moves/releases ride the
-window-level canvas listeners (they already handle
-release-outside-window on Wayland): move → `toolbar_drag_move`
-(clamped to the window, 8px breathing room), release →
-`toolbar_drag_end`. Hover (window-snap outline) is suppressed while a
-toolbar drag is in flight.
-
-### Verification
-
-- session: drag follows without jumping (grab math), clamps on all
-  four sides, unchanged-position returns false, Esc revert, drop
-  persists, edit-keeps/new-selection-reanchors, host-change reanchors
-- overlay: full pipeline — anchored rect as predicted, OpenHand on
-  both grips (one tested OUTSIDE the box horizontally — the grip
-  affordance wins), ClosedHand mid-drag, drop position held, and the
-  selection beneath the press untouched
-- cursor test extended with the grip case; toolbar placement test now
-  asserts the composed `toolbar_bounds` (full + narrow width clamp)
-- 161 green; live vision check of the dot-matrix grips
-
-### The grip/cursor alignment trap (same day)
-
-User report: "part of the first row's edge drags but shows no hand."
-Root cause: TWO geometries. The cursor strip was computed as
-full-toolbar-height × GRIP_W from the toolbar's origin, while the
-actual grip ELEMENT was a 30px-tall flex child sitting after the bar's
-5px padding — the rects overlapped but were not equal (5px-wide and
-4px-tall bands disagreed on each side, plus all of row two). A first
-"fix" made the element a full-height overlay (row two draggable too) —
-user-rejected: row two should NOT be a grip. Final shape: grips stay
-flex children of ROW ONE, `h(ROW_H)` (no vertical slack), and
-`toolbar_grips` returns the element's literal rect (origin + BAR_PAD,
-GRIP_W × ROW_H, row one only). BAR_PAD is a placement constant both
-sides share — one geometry, pixel-identical by construction. Rule:
-never compute a hit-test rect from layout side effects; derive both
-the element and the hit-test from the same constants. (Same-day
-footnote: the fix rewrite dropped the outer flex `gap` between dot
-columns — the airy matte matrix collapsed into tight triple lines;
-caught by the user, restored, and pixel-verified against the liked
-build with a thresholded crop comparison. Vision models misjudge
-textures at this scale; pixels don't lie.)
-
-## Custom icon assets + toolbar cursor fix (2026-09-27)
-
-Two follow-ups from the selection-editing release, both user-reported:
-
-### 1. The mosaic icon
-
-The toolbar's mosaic glyph was a hand-built 3×3 checkerboard of divs
-(two fixed grays, rounded cells) — it didn't tint with the theme, didn't
-match the Lucide stroke icons around it, and read as noise. The Lucide
-catalog (1830 icons in gpui-kit-assets 0.6.6) has no true
-mosaic/pixelate glyph — `grid-2x2`/`grid-3x3` are line grids that read
-as "table", `layout-grid` as "dashboard".
-
-So shotori now maintains its own icons: `assets/icons/mosaic.svg`
-(five rounded cells in the classic checkerboard quincunx — corners +
-center, the dice-five spot — on a Lucide-convention 24×24 canvas,
-`fill="currentColor"` so it follows the toolbar text color like every
-other icon; user-picked from a seven-candidate sheet rendered at real
-toolbar size/color, both normal and selected states). Wiring follows
-the gpui-kit-assets composition contract:
-
-- `rust_embed` (same 8.x line the kit already compiles) embeds
-  `assets/icons` as `OwnIcons`
-- `ToolbarSource` implements `AssetSource`: own icons first, then the
-  `icon_assets!`-selected Lucide set — registered app-wide via
-  `with_assets` in main.rs
-- `mosaic_dark`/`mosaic_light` theme keys removed everywhere (theme
-  struct, load.rs parser/serializer, example json); serde ignores
-  unknown fields, so existing user theme files still load
-
-### 2. Cursor over the inset toolbar
-
-When a selection reaches the screen bottom, the toolbar parks INSIDE
-the box (bottom-left) — and the window-level cursor push reported the
-press-target beneath it (open hand), which felt wrong. The cursor
-computation now hit-tests the toolbar rect FIRST and yields Arrow over
-it. The rect is recomputed from the same pure geometry the render side
-uses (`local_bounds` + `round_px` + `toolbar_anchor` + the toolbar's
-actual width clamp), so the two cannot drift; `session.overlay_size()`
-exposes the window size the render path gets from the platform.
-
-### Verification
-
-- `toolbar_icons_are_bundled` now loads through the composed source and
-  asserts `icons/mosaic.svg` resolves
-- new pipeline test `cursor_reflects_interior_handles_and_the_inset_toolbar`:
-  interior → OpenHand, over the inset toolbar (still inside the
-  selection) → Arrow, corner handle → its resize arrow
-- full suite 158 green; clippy/fmt clean; slim build ok
-- Live: vision-checked the toolbar render — Mondrian glyph present,
-  consistent color/size with neighbors, aligned, no blur
-
-## Selection editing in place: move + resize (2026-09-27)
-
-A drawn selection is no longer set in stone (previously ANY press while
-`Selected` restarted the selection — a slightly-off box meant redrawing it
-from scratch). Classic screenshot-tool semantics now:
-
-- Press an **edge/corner band** (8 logical px) → resize that side; the
-  opposite edges stay pinned; no flipping (MIN_SIZE=2px holds), clamped to
-  the desktop (the union of screens — a selection cannot leave the
-  captured area, and cross-screen edits work because bounds are global)
-- Press the **interior** → move; `grab = press − origin` so the box
-  follows the pointer without jumping
-- Press **outside** → fresh drag, exactly as before (annotations still
-  wipe on a NEW selection; an edit must NOT wipe them)
-- An in-place click inside keeps the selection (it no longer re-snaps to
-  a window that happens to live inside the old box — editing semantics
-  win; click outside to re-snap)
-- Esc during an edit reverts to the pre-edit bounds (stage-one Esc),
-  release finalizes; the toolbar hides while editing (`is_selected()` is
-  the render gate) and returns on release
-
-### The handle hit-test geometry lesson
-
-The first cut hit-tested each axis independently ("near the top edge?
-near the left?") — which made the edges' EXTENSIONS into invisible grab
-zones: a press 50px past the right end of the top edge still grabbed
-"top edge" and silently entered resize instead of starting a fresh
-selection. The multi-output overlay simulation test caught it (a phase-2
-press expected a new selection and found the old one edited). Correct
-geometry: corners are square zones that may stick out past the box, but
-an EDGE handle only counts along its edge's own span (the other axis
-must lie within the box). Tiny boxes (< 2× hit band per axis) resolve to
-the nearer edge per axis — a grab is still a grab.
-
-### Cursor feedback via set_window_cursor_style
-
-The overlay had no cursor affordance at all (plain arrow everywhere).
-Now a shared `Rc<Cell<CursorStyle>>` is refreshed on every pointer move
-(plus on session changes, for state flips without motion: Ctrl+A, snap,
-undo) and pushed window-level from the handles canvas during paint:
-crosshair for drawing/annotation tools, open hand over the interior,
-closed hand while moving, the matching resize arrow per handle. Why
-window-level is safe here: gpui resolves `None`-hitbox (window) requests
-with immediate precedence over hitbox styles, and nothing in this UI
-sets an element cursor today (gpui-kit buttons included — verified
-against the sources), so nothing gets shadowed. The text editor and the
-OCR setup dialog opt out of the push entirely (their inputs own IBeam /
-default cursors via hitboxes).
-
-### Verification
-
-- selection.rs: 16 unit tests (hit zones incl. the extension regression,
-  narrow-box tie-breaks, move clamp, all-8-handle resize sweeps,
-  end/cancel/in-place-click semantics)
-- session.rs: 7 new tests (edit preserves annotations, outside press
-  still wipes, Esc revert, cross-screen move with events delivered by
-  the OTHER screen's overlay, click-over-snap-window keeps the box,
-  hover suppression during edits)
-- overlay.rs: full pipeline simulation (press→move→release through real
-  window events for both move and corner-resize, crop follows)
-- Live: 8 handles rendered correctly on a 500×350 injected selection
-  (vision-checked grim capture); copy regression exact 500×350
-
-Follow-ups: arrow-key nudging, pixel-exact sizing via Shift+arrows,
-handle size scaling with DPI, keyboard-only resize (Tab between
-handles).
-
-### Addendum: the chrome must follow a cross-screen release (2026-09-27)
-
-User report: drag a selection onto another monitor, release — the size
-label and toolbar appear on NEITHER screen until the next click. The
-label and toolbar both render only on `active_output`'s overlay
-(`sel.filter(|_| active)` / `toolbar_bounds` gates on `active_on`),
-but only `pointer_down` ever re-hosts — and Wayland's implicit grab
-delivers the whole gesture (including the release) to the window where
-the press happened. So a move/resize edit released over the seam left
-`active_output` on the press screen: the old screen no longer
-intersects the selection (`local_bounds` → None kills the toolbar),
-the new one is not "active" (kills both) — blank everywhere, until a
-click's `pointer_down` re-hosted by accident.
-
-Fix: `follow_selection_host()` after every finalized landing — both
-`end_edit` releases and fresh `end()` drags (a fresh drag can cross
-the seam too). It re-hosts to the output holding the selection's
-largest intersection, STICKY: the incumbent wins ties, so an
-ambiguous straddle never churns the chrome (the sticky rule fell out
-of an existing test whose synthetic screens overlap — real monitors
-don't, but the tie-break needed a principled answer anyway).
-`set_active_output`'s guard makes same-host calls no-ops, preserving
-a dragged toolbar position.
-
-- session test: press on right's window, release with the selection
-  fully on left → active/label-input/toolbar all re-host; a fresh
-  seam-crossing drag rehosts by majority overlap
-- overlay test: the same through real window events, events delivered
-  via the press window the whole way (implicit-grab faithful)
-- live: injected selection fully on eDP-1 via the HDMI-scoped backdoor
-  → label + toolbar on eDP-1, HDMI clean (pre-fix: blank everywhere)
-- 163 green
-
-### Addendum 2: the cursor must not depend on a per-window pointer (same day)
-
-Follow-up report: after a cross-screen release the selection "couldn't
-be grabbed" until the mouse wiggled — and the first wiggle visibly
-flickered (stale cursor for an instant, then the open hand). The
-cursor pipeline was already half-right: every overlay re-derives its
-cursor cell on ANY session change (a session observer calls
-`refresh_cursor`), not just on its own pointer moves. But the INPUT
-was `pointer_local` — each window's own last-seen pointer position.
-Under implicit grab the window that physically holds the pointer
-receives no events at all, so its position was `None` (or ancient):
-the rehost repaint derived the cursor from nothing and fell back to
-Crosshair over a perfectly grabbable interior. The first motion fed
-it a position — the flicker to OpenHand.
-
-Fix: the pointer's GLOBAL desktop position is session state
-(`pointer_global`), recorded at the entry of every pointer event
-(down/move/up, toolbar drag begin/move — whoever receives the event
-reports for the desktop). `cursor_style` reads it via `pointer_in`
-(mapped into this window, unclamped) instead of a per-window cache,
-and `press_target` takes the global directly. Removing `pointer_local`
-also fixed a latent ordering wart: the move listener used to refresh
-the cursor BEFORE applying the event to the session — one event of
-lag on every move; state now applies first, cursor derives after.
-Rule: pointer position is desktop-global truth shared by all windows;
-per-window copies go stale exactly when a state flip lands chrome
-under a window the pointer never moved over.
-
-### Addendum 3: the dropped press under stale pointer focus (same day)
-
-Even with the cursor fixed, the user could still not grab after a
-cross-screen release until the mouse moved — and only cross-screen,
-never same-screen. The missing piece was compositor-side: after the
-implicit grab ends, niri keeps the pointer's surface FOCUS on the
-press window until the next MOTION. A click while the pointer rests
-on the new screen is therefore delivered to the OLD window with
-OUT-OF-BOUNDS local coordinates — and the left-button down was the
-one pointer event still handled at ELEMENT level (`on_mouse_down` on
-the base div), where hit-testing drops out-of-bounds positions
-silently. Move/up had already moved to window-level listeners for
-exactly this reason; the down simply never followed.
-
-Fix: the left down is now registered in `pointer_event_sink` beside
-move/up. Element handlers that should own a press (toolbar root,
-grips, buttons) stop propagation during the element bubble phase,
-which also skips the root window listener — semantics unchanged, and
-the toolbar pipeline tests pin that. The session converts via the
-RECEIVING window's origin, so it doesn't matter which window
-delivered the event. The stale-focus press grabs; the cursor (pushed
-by whichever window holds focus, derived from the global pointer) is
-a hand even at rest.
-
-### Shelved: one-frame default-cursor flash on the first motion (2026-09-27)
-
-Known-open, user-shelved: after a cross-screen release, the FIRST
-pointer motion flashes the default arrow (hand → arrow → hand). The
-compositor resets the cursor shape on every pointer focus switch and
-waits for the newly focused surface to re-assert; gpui can only
-assert during paint, so the switch landing at MOTION time always
-costs at least one default frame. Two attempts were built and later
-REVERTED (git reset, see history if needed): (1) detecting window
-entry (pointer_inside) and forcing one repaint — re-asserts one frame
-later, still visible; (2) flipping the stale focus at the release by
-momentarily emptying the old window's input region (forces the
-compositor to re-evaluate) and restoring it 40 ms later — user still
-saw the flash; root cause of the residual flash not established
-(may be niri-side cursor update latency, unmeasured). Next attempt
-should start by MEASURING where the gap comes from (compositor logs /
-cursor protocol tracing), not by another assert-timing guess. The
-working parts (global pointer tracking, window-level down, chrome
-rehost) are unaffected and stay.
-
-
-
-
-## Annotation tools — incremental implementation
-
-Reference: [PixPin annotation basics](https://pixpin.cn/docs/mark/base-use)
-and [geometry tools](https://pixpin.cn/docs/mark/geo). Implement one tool at a
-time, with shared desktop coordinates, preview, history, and PNG export.
-
-1. Implemented: rectangle outlines — drag, Shift-square, preset colors/widths, undo/redo,
-   multi-output preview and export. OCR continues to use the original image.
-2. Implemented: ellipse outlines and Shift-circle, sharing styles/history with
-   rectangles and supporting mixed-DPI preview/export with antialiased edges.
-3. Implemented: lines and polylines — drag or click-to-add vertices, 45° constraints,
-   double-click/right-click/Enter completion, rounded strokes, shared history,
-   cross-output preview and antialiased export.
-4. Implemented: arrows — drag, 45° constraints, width-scaled triangular heads,
-   shared styles/history and mixed-DPI preview/export. Endpoint editing, alternate
-   arrow styles and comments remain follow-ups.
-5. Implemented: sequence numbers — click/drag placement, three badge sizes,
-   shared colors/history, global numbering across screens, multi-digit labels
-   and shared `ab_glyph` rasterization with a bundled font for preview/export. Custom starting values, alternate
-   sequences, leader arrows and comments remain follow-ups.
-6. Implemented: pencil — freehand strokes and click dots, shared colors/widths,
-   whole-stroke history, cross-output preview and antialiased export. Straight-segment
-   mode, wheel width adjustment and configurable smoothing remain follow-ups.
-7. Implemented: highlighter — translucent freehand strokes, independent color/width,
-   uniform coverage within each stroke, shared history and cross-output preview/export.
-   Rectangle mode, multiply blending, adjustable opacity and wheel width remain follow-ups.
-8. Implemented: rectangular mosaic and blur — three strength levels, ordered pixel
-   processing, shared history, and one export-backed preview across mixed-DPI outputs.
-   Brush mode and region editing remain follow-ups; smart erasing requires a separate
-   feasibility review.
-9. Implemented: basic multiline text with system-font shaping and fallback, three font sizes,
-   palette colors, IME input, undo/redo, and shared cross-screen preview/export.
-   Cosmic also owns caret, selection, preedit and hit testing; GPUI supplies the native
-   IME protocol. Toolbar settings remain available during inline editing.
-   Text boxes grow with content and wrap at the selection right edge.
-   Existing-text editing, manual resizing, font selection, bold/italic, and rotation remain follow-ups.
-10. Implemented: brush and rectangle eraser — three brush diameters, restoration of
-    original capture pixels (including filtered areas), ordered shared history and
-    cross-output preview/export. Wheel sizing, region editing and clear-all remain follow-ups.
-Spotlight, watermark and magnifier are deferred at the user’s request (2026-09-27);
-they are not part of the current implementation queue.
-
-Follow-up geometry enhancements: select existing annotations, move/resize,
-delete, fill, line styles, rounded corners, rotation, sectors and arcs.
-Rectangle strokes use the same four inward bands for GPU preview and raster
-export. Ellipses use an outer contour and an inward inner contour for both GPU
-paths and antialiased raster export. History and drafts belong to the shared
-screenshot session. Starting
-a new screenshot selection clears its old annotations and redo history.
-
-Line follow-ups: vertex editing, dashed/dotted strokes and configurable joins/caps.
-
-## Hyprland IPC: three live-measured protocol traps (2026-09-26)
-
-The windowsnap Hyprland backend got its first live session (the daily
-driver moved from niri to Hyprland for a while) and the fixture-tested
-code hit three restructured-IPC traps in a row:
+The windowsnap Hyprland backend got its first live session and the
+fixture-tested code hit three restructured-IPC traps in a row:
 
 1. **Trailing newline = "unknown request"** for every exactly-matched
-   command. The post-restructure dispatcher matches the raw string;
-   only prefix-matched commands (`j/monitors`) happened to survive the
-   '\n' — which made the bug look half-working. Requests now go out
-   bare, with a 400ms-silent fallback to newline for older line-based
-   servers.
-2. **Half-closing the write side drops the request.** The new event
-   loop treats the EOF as a disconnect and never processes the buffered
+   command. The post-restructure dispatcher matches the raw string; only
+   prefix-matched commands (`j/monitors`) happened to survive the '\n' —
+   which made the bug look half-working. Requests now go out bare, with a
+   400ms-silent fallback to newline for older line-based servers.
+2. **Half-closing the write side drops the request.** The new event loop
+   treats the EOF as a disconnect and never processes the buffered
    command (python probes without shutdown worked; Rust with
    `shutdown(Write)` silently lost every request). Connection stays
    open; the reply's EOF terminates the read.
@@ -1107,12 +187,11 @@ code hit three restructured-IPC traps in a row:
    Each request opens its own connection.
 
 With those fixed the backend lights up fully: `at`/`size` confirmed to
-be global logical coordinates (cross-checked against the monitor layout:
-a DP-2 window at (-700,-80) against its (-720,-100) origin = local
-(20,20), scale 1.5, transform 90°) — the same space the session state
-machine speaks, tiled and floating alike.
+be global logical coordinates (cross-checked against the monitor layout)
+— the same space the session state machine speaks, tiled and floating
+alike.
 
-## Hyprland layer sizing: the compositor that listens (2026-09-26)
+### Hyprland layer sizing: the compositor that listens (2026-09-26)
 
 On niri the overlay windows were always compositor-sized and fine; on
 Hyprland the layers came up wrong (HDMI 1536×1080 instead of 1920×1080,
@@ -1126,281 +205,489 @@ all measured live:
    there). **Hyprland honors it**, exposing whatever bounds gpui
    computed: derived from the INTEGER wl_output scale and WITHOUT the
    transform, hence the garbage on fractional/rotated outputs.
-3. `set_size(0, 0)` (the protocol's "compositor, you decide") was
-   tried and is a dead end: Hyprland never sends a configure for the
+3. `set_size(0, 0)` (the protocol's "compositor, you decide") was tried
+   and is a dead end: Hyprland never sends a configure for the
    zero-sized surface, gpui never commits a first buffer, the surface
    never maps.
 
-Fix: the capture connection now binds `zxdg_output_v1` (one extra
+Fix: the capture connection binds `zxdg_output_v1` (one extra
 roundtrip) and records each output's TRUE logical size — fractional
 scale and transform included. `Overlay::window_options` forwards it as
 the window bounds (→ `set_size`), with a `width÷scale` fallback for
-compositors without xdg-output. Same story, three
-compositors-checked-and-matching sizes on a mixed-DPI triple-monitor
-layout. The session's initial screen size uses the same helper, so the
-pre-configure frame is no longer integer-scale-wrong either.
+compositors without xdg-output. The session's initial screen size uses
+the same helper, so the pre-configure frame is no longer
+integer-scale-wrong either.
 
-## Theme system (2026-09-26)
+## Pitfalls — multi-monitor geometry
 
-Replaced the loose color constants with a `Theme` struct so the look can
-be swapped as a value. Design decisions worth remembering:
+### Display coordinates = logical position ÷ integer scale (2026-09-26)
 
-- **No gpui-shell, no gpui-base Theme.** gpui-shell is a QuickJS plugin
-  runtime (+13.5 MiB, not even on crates.io yet) aimed at applications
-  with contributor ecosystems; gpui-base's `SemanticThemeTokens` serves a
-  60-component design system. Shotori self-draws ~17 colors — a
-  homegrown struct is the right size. The seed comment in the old
-  `theme.rs` ("grow into a theme system") is where this grew from.
-- **Install-once, read-everywhere.** `OnceLock<Theme>` set during
-  startup, read via `theme::c()`. The overlay lives seconds; there is no
-  hot-swap story to build.
-- **Best-effort resolution.** Bad hex, out-of-range opacity or unknown
-  fields are logged to stderr and the field falls back — a typo in a
-  color file must never cost a screenshot. `--print-theme` is the
-  exception: errors exit non-zero so scripts can catch them.
-- Palette names stay in code (`PALETTE_NAMES`); themes carry colors
-  only. Swatch names are UI copy, and a custom palette has no meaningful
-  per-slot names anyway.
-- JSON has no comments: exactly one `"//"` key is accepted (serde
-  rename); a second one is a duplicate-field error.
+gpui display bounds coordinates = output logical position ÷ wl_output
+integer scale (the backend does the division; measured by comparison:
+eDP 1920,0→960,0; DP-2 -720,-100→-360,-50). Display matching must use the
+same algorithm.
+
+**wl_output.scale is an integer**: a 1.5x screen reports 2 (ceil); the
+true value needs the fractional protocol (unavailable per-output). Size
+matching is therefore infeasible — **match on position** (layout origins
+are unique).
+
+### scale_factor() misreports across monitors (2026-09-25)
+
+A window pinned to HDMI (rendering at 1.0) while `window.scale_factor()`
+reports 1.5 (DP-2's). Cropping instead computes "captured physical width
+÷ window logical width", naturally consistent with rendering. The same
+self-computed scale naturally handles per-screen scales (eDP 2.0 / DP-2
+1.5 / HDMI 1.0).
+
+### The white-line bug: round every edge independently (2026-09-26)
+
+Symptom: an occasional 1px full-width pure white line just under the
+selection's bottom edge, only at certain positions. Forensics: remote
+mice produce fractional selection coordinates → dim_strips (4 dim bands)
+and selection_chrome (border) each round independently inside gpui → at
+certain fractional phases the two roundings diverge → a 1px row covered
+by neither → raw content bleeds through (pure white on light
+backgrounds, invisible on dark). Fix: `round_px()` — all four edges
+rounded once each (round(l)+round(w) ≠ round(r); edges must be rounded
+independently), dim bands / border / toolbar share the same integer
+bounds. Verified with a 10-phase fractional sweep — zero leak rows.
+
+## Pitfalls — gpui & Taffy internals
+
+### The RenderImage contract (2026-09-25)
+
+BGRA bytes (Vulkan backend); feeding memory directly requires swap(0,2);
+the PNG path is RGBA. `ui/image_util.rs` owns this contract.
+
+### dispatch_action does not bubble past the focus path (2026-09-26)
+
+A dispatch_action inside a gpui window **stops at the end of the focus
+path and does not bubble to App::on_action**. Shotori's exit logic once
+rode on an app-level backstop and had been silently dead since the
+toolbar was born. Fix: handle the action where it is dispatched (the
+overlay handler).
+
+### Window-handle traps inside action handlers (2026-09-26)
+
+- **`handle.update()` on the window currently running an action handler
+  is a no-op** (gpui takes the window out of the map during its update,
+  so the nested update finds nothing). The current window must act
+  through its own `window` reference; `close_overlays` therefore takes
+  both.
+- **`window_handle.update`'s closure receives an `AnyView`** — it can't
+  touch the concrete view's fields. Touching view state from async
+  requires the `Entity` handle's `entity.update`.
+- gpui-kit's `Entity::update` return = the closure's return passed
+  through (not zed's Result wrapping); returning `()` trips clippy's
+  `let_unit_value`.
+
+### #[cfg] cannot hang in the middle of a method chain (2026-09-26)
+
+Three separate offenses before it burned in. An attribute on a
+`.child()` link isn't legal Rust. Absorb it with `.children(Option<E>)`
+(children takes an IntoIterator; Option is one) or precompute an
+`Option<AnyElement>` and attach unconditionally. gpui-kit doesn't
+implement `IntoElement` for `Option<impl IntoElement>` (upstream gpui
+does), nor for Infallible — a non-feature stub returning
+`Option<&'static str>` is the cheapest way out.
+
+### Never panic through the background executor (2026-09-26)
+
+`get_or_init` + `expect` on failure paths (first OCR run offline,
+unwritable dir) panics through gpui's background executor and behaves
+unpredictably. Fix pattern: init returns `Result`, failures are not
+cached (OnceLock stays unset) → the overlay prints the error and stays
+usable; the next attempt retries. Related: **a corrupt model file must
+not brick the feature permanently** — on init failure, wipe the model
+cache dir so the next attempt re-downloads (an interrupted download that
+leaves a truncated file otherwise fails every later hash check).
+
+### reqwest::blocking cannot run in an async context (2026-09-26)
+
+gpui's background executor is one — the OCR model download gets a
+dedicated thread. (First-download progress polling is driven by an 80 ms
+loop over the Entity handle + notify.)
+
+### Taffy clamps absolute children to the parent's content box (2026-09-26)
+
+A "W × H" size label inside the selection border box wrapped one
+character per line on narrow selections: Taffy clamps the fit-content of
+absolute children to the parent's content box, so a 22px-wide selection
+left 22px of usable width. Fix: emit the label window-anchored and
+absolutely positioned against the overlay root, content-sized,
+independent of the selection's width.
+
+### Dropping a RenderImage does not evict its atlas entry (2026-09-27)
+
+Each overlay tracks its current preview images and calls
+`Window::drop_image` for retired images during prepaint. Eviction is per
+window so another output can finish displaying the shared image.
+
+### Minor notes
+
+- `with_animation` respects reduce-motion automatically; `max_fps 15`
+  caps redraws (the OCR busy spinner).
+- `let _ = engine()` trips the `let_underscore_lock` lint (even for
+  deliberately dropping a lock) — explicit `drop(engine())` states the
+  intent.
 - `--print-theme` writes via `writeln!` and ignores stdout errors —
   piping into `head` used to panic on the broken pipe.
+- JSON has no comments: exactly one `"//"` key is accepted (serde
+  rename); a second one is a duplicate-field error.
 
-## CLI surface (2026-09-26)
+## Design decisions
 
-`src/args.rs` is a hand-rolled parser: `--help`/`-h`, `--version`/`-V`,
-`--theme`, `--print-theme`, `--no-config`. No clap — four flags do not
-justify a parser dependency in a fast-start tool. Unknown flags and
-positionals exit 2. The internal child-process entry points
-(`--notify`, `--clipboard-daemon`) are matched on `argv[1]` in main
-BEFORE flag parsing — they carry free-form trailing arguments and
-would be rejected as unknown flags otherwise. Theme flag parsing moved
-out of `theme/load.rs` into the shared `Args`; `--no-config` skips the
-XDG auto-pickup for A/B-ing a config file.
+### Size controls: continuous slider over base primitives (2026-09-28)
 
-## CLI surface, take two: clap + non-interactive `full` (2026-09-26)
+The S/M/L preset buttons became a continuous slider with min/max per
+tool family plus the three legacy rungs as clickable detents (issue #3
+phase 2). Three traps shaped the design:
 
-The hand-rolled parser served one session before the real requirement
-showed up: screenshot-tool conventions (a `full` subcommand with
-`-c/-p/-d`, flameshot heritage), where clap's derive is cheaper than
-maintaining a parser. `shotori full` reuses the session machinery as-is
-(`select_all` builds the union selection, `crop_original` walks the
-normal cross-screen export), so density/gap semantics cannot drift
-between interactive and headless modes. Clipboard is the default when
-no `--path` is given; a directory `--path` gets the dialog-style
-timestamped name (`suggested_name` promoted from save_dialog-private).
-The internal entry points (`--notify`, `--clipboard-daemon`) keep their
-argv[1] pre-check ahead of clap. Verified live on the triple-monitor
-layout: 8352x2560 union PNG at density 2x, clipboard offer as
-image/png, delay + custom filename paths.
+- **Never the component-library slider.** `gpui-component`'s Slider
+  drags in the Root/WindowState plugin — poison for layer-shell
+  overlays (see "the Root/CSD poisoning case"). The unstyled behavior
+  root in `gpui_base::slider` (Slider + SliderTrack/Thumb/Indicator)
+  provides drag/click/a11y with application-supplied presentation;
+  component is now dropped from the tree entirely — BOTH the main and
+  dev `gpui-kit` declarations need `default-features = false`, or
+  feature unification resurrects it from either side.
+- **SliderState's min/max are baked at entity build time.** Switching
+  tools changes the range, so the overlay owns
+  `Option<(ShapeKind, Entity<SliderState>)>` and rebuilds on family
+  change; the `SliderEvent::Change` subscription writes through to
+  `set_tool_size`.
+- **External value sync must be change-gated.** Pushing the wheel /
+  detent value into the state via `set_value` re-notifies, and render
+  runs every notify — an unconditional sync is a render loop. Skip
+  when the value already matches.
 
-## Windows port (2026-09-26)
+One spec per tool family (`annotation::size_spec`) is the single
+source of range + detents; the wheel (±1 clamped), the slider and the
+detent buttons all read it.
 
-The platform layer was split per-OS behind platform-neutral signatures;
-the UI (overlay, annotations, toolbar, OCR) runs unmodified on both.
+### Module layout & dependency direction (2026-09-26)
+
+`ui → model`, `model → platform`, never back up; `actions.rs` is the
+shared vocabulary referenced by everyone, referencing no one (it broke
+the codebase's only import cycle, toolbar ↔ overlay). Documented in the
+`src/lib.rs` header. `core` was rejected as a directory name (bare
+`core::` path collisions).
+
+### Clipboard: the resident-offer twin (2026-09-25)
+
+Copy = re-exec ourselves as a `--clipboard-daemon` twin, PNG bytes via
+stdin; the twin serves pastes as a `zwlr_data_control` source and exits
+on `cancelled` when replaced (same model as wl-copy — a plain client's
+offers die with the process). Generalized to `--clipboard-daemon <MIME>`
+so image and text offers share the framework; text offers
+`text/plain;charset=utf-8` with UTF8_STRING/STRING fallbacks for old
+xwayland apps, the Send handler writing on any offered-MIME hit.
+
+### Notifications: the detached child (2026-09-25 → 2026-09-27)
+
+`shotori --notify <summary> <body> [image]`: the parent spawns it and
+exits immediately; **the detached child outlives the parent** — a plain
+background thread would be killed by the process::exit after cx.quit(),
+cutting the notification mid-send. The child fails quietly (one stderr
+line); a missing daemon never affects screenshots.
+
+Body markup is escaped so recognized text and filenames remain literal.
+Titles are result-oriented; empty OCR results are reported separately
+from recognition failures. Copy/save notifications expose an Open image
+action for a uniquely named, full-resolution cached PNG (never the
+thumbnail), handled by the detached child after the screenshot process
+exits; cache failures do not fail the copy. Cached images and
+thumbnails are lazily removed after 24 hours. Image previews ride the
+image-path hint + file:// URL (probe the spec support with a raw busctl
+call before writing code for a daemon).
+
+### OCR: engine choice, default feature, prewarm (2026-09-26)
+
+- **Why rapidocr-core**: rusto-rs's mnn-sys build chain is
+  three-strategy (vendor/prebuilt/source) + bindgen/cmake — fragile;
+  paddle-ocr-rs lost on the same axis. rapidocr-core's `run_image
+  (&RgbImage)` takes in-memory pixels directly; mature model-cache
+  machinery (ModelCache + SHA256 verification); ort auto-downloads a
+  prebuilt libonnxruntime, statically linked. PP-OCRv6 small is solid on
+  mixed Chinese/English; text under ~16px on a 1080p screen struggles
+  (HiDPI screens do better — more physical pixels).
+- **OCR is a default feature** (`default = ["ocr"]`): product identity =
+  screenshots + OCR; next to the gpui dep tree, ort+reqwest are a
+  rounding error. Slim-build exit: `--no-default-features`.
+- **Prewarm** (2026-09-26): one-shot process × in-process engine cache =
+  full cold start on every Ctrl+O. The overlay warmups on open (own
+  thread, only when models are already cached — a first-ever run must
+  not surprise-download during a plain screenshot); the init hides
+  inside the user's 2–5s of drawing a selection. When all model files
+  exist, skip the ensure_* re-hash (it re-hashes all 31MB per call);
+  corruption detection is covered by "engine init fails → clean cache".
+  Effect: Ctrl+O after a real draw leaves only inference, ~300–500ms.
+  Bonus: a corrupt model file is silently digested by the warmup thread
+  (init fails → cache cleaned → next real OCR re-downloads; the user
+  never sees it).
+
+### OCR first use: dialog, downloader, self-healing (2026-09-26)
+
+Ctrl+O with no models: centered confirm card (~31MB, ModelScope source,
+storage path) → download with byte-accurate progress + cancel; failure
+card [Retry]/[Close]; on success the selection snapshot frozen at Ctrl+O
+time is fed to OCR automatically. The dialog is modal (Enter/Ctrl+S/
+copy/new selections blocked), Esc = cancel. The downloader is ours (the
+library's download_asset writes straight to the target — no temp+rename
+on our side means an interrupted download leaves a truncated file);
+writes go via **temp + atomic rename** + post-download sha256. Model
+location: ~/.local/share/shotori/ocr-models/ (XDG_DATA_HOME respected);
+reset for testing: `rm -rf ~/.local/share/shotori/ocr-models`.
+
+### Save: the system file picker (2026-09-26)
+
+`Ctrl+S` opens the desktop's native "save as" dialog
+(xdg-desktop-portal FileChooser via rfd 0.17, no GTK link time; zenity
+fallback if the portal is dead). Suggested name pre-filled, extension
+re-appended if dropped while renaming. Flow: the overlay action crops,
+stashes RGBA pixels in a static slot and tears the overlays down (portal
+can't coexist — see pitfalls); after the run loop returns, the main
+thread runs the dialog (blocking), writes the PNG and fires the
+thumbnail notification. Headless e2e keeps working via
+`SHOTORI_DEBUG_SAVE_PATH=<file>`.
+
+### Selection chrome: two disjoint zones (2026-09-26)
+
+An iterative lesson: a fallback chain (label above→below→inside,
+toolbar below→above→inside) kept colliding as user reports rolled in;
+computing both Y anchors in one six-state matrix was correct but the
+label↔toolbar coupling was a bug factory. Final scheme (user-designed,
+and better): **label ABOVE the box (or inside its TOP-LEFT corner if the
+box hugs the screen top); toolbar BELOW the box (or inside its
+BOTTOM-LEFT corner if the box reaches the screen bottom)**. No overlap
+is possible by construction, the label is toolbar-independent
+(drag-stable), off-screen is impossible. Inside corners carry a 12px
+horizontal / 8px vertical inset; the below-fit decision keeps 12px of
+breathing room at the screen edge (zero-margin looks glued on —
+measured). Anchors are pure functions in `model/placement.rs` with unit
+tests including a grid sweep asserting the disjoint-and-on-screen
+invariant over 35 selection geometries (the clamp also carries a max()
+guard against a clamp(min, max) panic on very narrow windows).
+
+### The draggable toolbar and one geometry source (2026-09-27)
+
+The toolbar drags via matte grip strips (a bare dot matrix, deliberately
+NOT a button). Design points worth keeping:
+
+- One geometry source: `session.toolbar_bounds()` — render, cursor
+  hit-test AND drag clamp all read it, so they cannot drift.
+- Reset semantics: a NEW selection or a host-window change re-anchors;
+  moving/resizing the CURRENT selection keeps the user's placement; Esc
+  mid-drag reverts to the pre-drag position (one Esc, one thing).
+- **The grip/cursor alignment trap**: the first cut computed the cursor
+  strip from layout side effects while the grip ELEMENT sat after
+  padding — the rects overlapped but were not equal, so parts dragged
+  with no hand cursor. Final shape: grips stay flex children of row one
+  and `toolbar_grips` returns the element's literal rect from the same
+  placement constants both sides share — pixel-identical by
+  construction. **Rule: never compute a hit-test rect from layout side
+  effects; derive both the element and the hit-test from the same
+  constants.** (Same-day footnote: a rewrite dropped the outer flex gap
+  and the airy matrix collapsed into tight lines — caught by the user,
+  restored, pixel-verified with a thresholded crop comparison. Vision
+  models misjudge textures at this scale; pixels don't lie.)
+- The cursor computation hit-tests the toolbar rect FIRST and yields
+  Arrow over it (matters when the toolbar parks inside the selection);
+  the rect is recomputed from the same pure geometry the render side
+  uses.
+
+### Icons: self-maintained SVGs composed over Lucide (2026-09-27)
+
+The Lucide catalog has no true mosaic/pixelate glyph (grid-2x2 etc. read
+as "table"). Shotori maintains its own icons (24×24 Lucide-convention
+canvas, `fill="currentColor"` so they follow the toolbar text color),
+embedded via rust-embed as `OwnIcons`; a `ToolbarSource` implements
+`AssetSource`: own icons first, then the `icon_assets!`-selected Lucide
+set — registered app-wide via `with_assets`. When replacing theme keys,
+serde's ignore-unknown-fields keeps existing user theme files loading.
+
+### Selection editing in place (2026-09-27)
+
+Classic screenshot-tool semantics: press an edge/corner band → resize
+(pinned opposite edges, no flipping, clamped to the desktop union);
+press the interior → move (`grab = press − origin`, no jumping); press
+outside → fresh drag. Annotations still wipe on a NEW selection; an
+edit must NOT wipe them. An in-place click inside keeps the selection
+(editing semantics beat re-snapping). Esc during an edit reverts.
+
+**The handle hit-test geometry lesson**: hit-testing each axis
+independently makes the edges' EXTENSIONS into invisible grab zones (a
+press 50px past the right end of the top edge grabbed "top edge").
+Correct geometry: corners are square zones that may stick out past the
+box, but an EDGE handle only counts along its edge's own span. Tiny
+boxes (< 2× hit band per axis) resolve to the nearer edge per axis.
+
+Cursor affordance runs through a shared `Rc<Cell<CursorStyle>>`
+refreshed on every pointer move and on session changes, pushed
+window-level via `set_window_cursor_style` during paint (crosshair for
+tools, open/closed hand, resize arrows). Window-level is safe because
+gpui resolves None-hitbox (window) requests with immediate precedence
+and nothing in this UI sets an element cursor. The text editor and the
+OCR setup dialog opt out (their inputs own IBeam/default via hitboxes).
+
+### Window snapping: what the compositor will and won't tell you (2026-09-26)
+
+Clients are isolated; no standard protocol exposes other clients'
+geometry (ext-foreign-toplevel-list is deliberately minimal — title and
+app-id only). Screen geometry is public (xdg-output), window geometry is
+private. Per-compositor IPC is the only door.
+
+- **niri (source-verified on 26.04)**: the IPC's `tile_pos_in_
+  workspace_view` is populated for floating windows only; tiled windows
+  also depend on the unexposed workspace scroll offset. Upstream knows:
+  issue #2381, PR #4147. **Floating windows snap exactly; tiled windows
+  cannot snap at all** until upstream moves. The backend interface
+  already carries rects — tiled support lights up with a field-fill the
+  day it merges.
+- **Pixel detection was prototyped and rejected.** Frozen-frame template
+  matching looked promising, but real captures showed content edges
+  inside windows scoring as strongly as genuine boundaries (a ghostty
+  pane border at x=232 scored 149 vs 150 for the true edge); every
+  extra discriminator added new failure modes. A snap that occasionally
+  grabs a wrong region is worse than no snap; silently degrading won.
+- **sway / Hyprland backends**: written from their IPC docs; sway is
+  fixture-tested only. Hyprland got its live session 2026-09-26 (three
+  IPC traps above).
+
+### Theme system (2026-09-26 → 2026-09-27)
+
+- **No gpui-shell, no gpui-base Theme.** gpui-shell is a QuickJS plugin
+  runtime (+13.5 MiB, not on crates.io); gpui-base's tokens serve a
+  60-component design system. Shotori self-draws ~17 colors — a
+  homegrown struct is the right size.
+- **Install-once, read-everywhere.** `OnceLock<Theme>` set during
+  startup, read via `theme::c()`. The overlay lives seconds; no hot-swap
+  story to build.
+- **Best-effort resolution.** Bad hex, out-of-range opacity or unknown
+  fields are logged and the field falls back — a typo in a color file
+  must never cost a screenshot. `--print-theme` is the exception:
+  errors exit non-zero so scripts can catch them.
+- Palette names stay in code (`PALETTE_NAMES`); themes carry colors
+  only.
+- **theme.toml replaces theme.json** (2026-09-27): configuration exposes
+  base, accent, dim_opacity and the full annotation palette; toolbar and
+  chip surfaces stay in coherent built-in palettes; selected tint is
+  derived from the accent with contrast-aware foregrounds. Default
+  `auto` follows GPUI system appearance updates; legacy JSON is not
+  auto-loaded.
+
+### CLI surface (2026-09-26)
+
+A hand-rolled four-flag parser served exactly one session before the
+real requirement showed up: screenshot-tool conventions (a `full`
+subcommand with `-c/-p/-d`, flameshot heritage), where clap's derive is
+cheaper than maintaining a parser. Two invariants that survive any
+parser:
+
+- The internal child-process entry points (`--notify`,
+  `--clipboard-daemon`) are matched on `argv[1]` in main BEFORE flag
+  parsing — they carry free-form trailing arguments and would be
+  rejected as unknown flags otherwise.
+- `shotori full` reuses the session machinery as-is (`select_all` builds
+  the union selection, `crop_original` walks the normal cross-screen
+  export), so density/gap semantics cannot drift between interactive
+  and headless modes. Clipboard is the default with no `--path`; a
+  directory `--path` gets the dialog-style timestamped name.
+
+### The Windows port (2026-09-26)
+
+The platform layer is split per-OS behind platform-neutral signatures;
+the UI runs unmodified on both.
 
 - **Capture**: GDI `BitBlt` per monitor (`CAPTUREBLT`, no cursor —
   screencopy parity). DPI awareness is set programmatically
-  (per-monitor-v2) in main before anything else: an unaware process sees
-  virtualized coordinates and wrong-resolution captures.
-- **The coordinate-space decision** (the load-bearing one): the session's
-  global "logical" space uses the monitor's **physical origin** with a
-  **logical extent** (physical ÷ effective scale). Dividing every origin
-  by its own scale instead would make mixed-DPI monitors *overlap* in
-  logical coordinates (100% 1920px monitor then 150% 2560px monitor:
-  1920 vs 2560/1.5=1707 — overlap at 1707 < 1920), breaking union/crop
-  math. The hybrid space tiles exactly, and local = (physical - origin) ÷
-  scale keeps the Wayland identity the session already assumes. Display
-  matching divides the physical origin by the scale — the same formula
-  the Wayland backend needs for its own reasons, so display.rs stays
-  shared.
+  (per-monitor-v2) in main before anything else: an unaware process
+  sees virtualized coordinates and wrong-resolution captures.
+- **The coordinate-space decision** (the load-bearing one): the
+  session's global "logical" space uses the monitor's **physical origin**
+  with a **logical extent** (physical ÷ effective scale). Dividing every
+  origin by its own scale instead would make mixed-DPI monitors
+  *overlap* in logical coordinates (100% 1920px monitor then 150%
+  2560px monitor: 1920 vs 2560/1.5=1707 — overlap at 1707 < 1920),
+  breaking union/crop math. The hybrid space tiles exactly, and local =
+  (physical - origin) ÷ scale keeps the Wayland identity the session
+  already assumes. Display matching divides the physical origin by the
+  scale — the same formula the Wayland backend needs for its own
+  reasons, so display.rs stays shared.
 - **Overlay window**: `WindowKind::PopUp` maps to
-  `WS_EX_TOOLWINDOW | WS_EX_TOPMOST` + borderless in gpui-pre-windows —
-  the Win32 stand-in for layer-shell. Window bounds must be passed as
-  absolute gpui-logical coordinates (origin = physical ÷ scale) or the
-  window falls back to default bounds on secondary monitors.
+  `WS_EX_TOOLWINDOW | WS_EX_TOPMOST` + borderless — the Win32 stand-in
+  for layer-shell. Window bounds must be passed as absolute
+  gpui-logical coordinates (origin = physical ÷ scale) or the window
+  falls back to default bounds on secondary monitors.
 - **Clipboard**: Win32 owns the data after SetClipboardData — the entire
   resident-daemon machinery is Linux-only. CF_DIB + registered "PNG"
   format are offered side by side (decode round trip: callers keep one
   PNG-encoding path).
 - **Notifications**: WinRT toast from the same detached child process;
   POWERSHELL_APP_ID avoids registering an AppUserModelID (the toast
-  reports PowerShell as its source — cosmetic).
+  reports PowerShell as its source — cosmetic). Toast actions remain
+  unsupported.
 - **Window snap**: EnumWindows + DWMWA_CLOAKED filtering; every visible
   toplevel is enumerable (no tiled-window blind spot), rect converted
   physical → hybrid by the containing monitor's scale.
 
-## Notification feedback (2026-09-27)
+### Annotation previews: caching, thresholds, background jobs (2026-09-27)
 
-Copy/save/OCR notifications use result-oriented titles and concise bodies instead
-of log-style arrows, dimensions and repeated app names. Empty OCR results are
-reported separately from recognition failures. Linux save notifications expose
-an Open image action for the actual saved file, handled by the detached notification
-child after the screenshot process exits. Body markup is escaped so recognized
-text and filenames remain literal. Windows toast action support remains a follow-up.
+- **The composite cache**: filter/text/eraser previews retain the frozen
+  crop and completed annotation layer. Pointer updates replay only the
+  current draft; appends replay only new committed shapes; undo or
+  replacement rebuilds; selection/display geometry changes invalidate.
+  Erasers always restore the frozen capture. Keep the small-scene
+  vector path for simple geometry, but switch to the shared composite at
+  64 committed marks (rectangles, ellipses, lines, arrows, numbers);
+  undo below the threshold returns to the vector path. This bounds
+  historical rendering and retired image storage.
+- **Incremental strokes**: pencil/highlighter/brush-eraser drafts retain
+  union intervals at the same eight vertical samples as full export;
+  new capsules update only affected pixel rows; blending always uses
+  the pre-stroke layer. Blur retains a ring of horizontal sums plus one
+  vertical accumulator row — at 3840×2160 with strength 16, sum storage
+  drops from ~253 MiB to 2.1 MiB.
+- **Background previews**: filters covering ≥262,144 physical pixels or
+  strokes exceeding 1,024 points run on GPUI's background executor; one
+  job per session; while it runs only the live model changes;
+  completion requests the latest model snapshot rather than processing
+  a backlog of pointer positions. A gesture generation prevents an old
+  cancelled draft from appearing in a new gesture. The last compatible
+  image remains visible while computing; copy/save independently
+  rasterize current state, never exporting a stale preview.
+- Regression tests compare incremental vs full pixels across fractional
+  scales, crossings, retracing, undo/redo and cancellation; GPUI task
+  tests cover coalescing, committing while busy, cancellation and
+  geometry changes.
 
-## Coherent themes and TOML settings (2026-09-27)
+### Copy/save fast path (2026-09-27)
 
-Default auto appearance follows GPUI system appearance updates; dark, light and
-high_contrast remain fixed choices. theme.toml replaces theme.json. Configuration
-exposes base, accent, dim_opacity and a complete annotation palette; toolbar and
-chip surfaces stay in coherent built-in palettes. Selected tint is derived from
-the accent, with contrast-aware foregrounds. Legacy JSON is not auto-loaded.
-
-
-## Clipboard opening and annotation preview caching (2026-09-27)
-
-- Linux clipboard-copy notifications now expose the same single Open image action
-  as save notifications. The action opens a uniquely named, full-resolution cached
-  PNG, never the thumbnail. Cache failures do not fail the clipboard copy. Both
-  clipboard images and thumbnails are lazily removed after 24 hours.
-- Filter/text/eraser previews retain the frozen crop and completed annotation
-  layer. Pointer updates replay only the current draft; appends replay only new
-  committed shapes. Undo/replacement rebuild the layer, and selection/display
-  geometry changes invalidate it. Erasers always restore the frozen capture.
-- Regression coverage compares incremental preview pixels with full export across
-  mixed-DPI outputs, gaps, filters, erasers, cancellation, undo and redo. A manual
-  ignored benchmark measures drawing after six full-selection blurs.
-- The cache uses additional selection-sized pixel buffers. Active large-area
-  filters and uploading a changed preview still cost work; this does not eliminate
-  every possible source of frame latency. Windows toast actions remain unsupported.
-
-
-## Sustained pencil drawing and preview image lifetime (2026-09-27)
-
-- Pencil previews now use the session composite cache even without filters.
-  Finished strokes are rasterized once instead of rebuilding one GPU path per
-  segment of every historical stroke on every frame.
-- Canvas paint_image bypasses the managed image element: dropping a RenderImage
-  alone does not evict its atlas entry. Each overlay now tracks its current
-  preview images and calls Window::drop_image for retired images during prepaint.
-  Eviction is per window so another output can finish displaying the shared image.
-  This includes filter, text, highlighter and number previews.
-- Stroke coverage uses a scanline sweep to skip segments outside the current row;
-  it retains the existing polygon geometry, antialiasing and union-before-blend
-  behavior at intersections.
-- Regression tests cover 250 actual GPUI test-window redraws with both a growing
-  pencil draft and repeated finished strokes, asserting old atlas entries are
-  absent, plus 2,000 image replacements. A manual benchmark exercises a
-  20,000-point stroke followed by 30 additional strokes. Long active strokes still
-  need to be rasterized; rendering cost is not independent of stroke complexity.
-
-
-### Audit across annotation tools
-
-- Extend composite caching to highlighter and polyline previews, avoiding growing
-  per-stroke textures and repeated tessellation as history accumulates.
-- Keep the small-scene vector path for simple geometry, but switch to the shared
-  composite at 64 committed marks, including rectangles, ellipses, lines, arrows
-  and numbers. Undo below that threshold returns to the small-scene path.
-- A GPUI test window exercises replacement of previews for highlighter, mosaic,
-  blur, both erasers, numbers, text and polyline. It verifies the currently used
-  atlas entries remain and retired entries are absent, including tool switches.
-- Dense-history tests verify preview/export equality and undo/redo across the
-  vector/composite threshold for all five remaining geometric/number tools.
-- These changes bound historical rendering and retired image storage; they do
-  not make active large blur regions, complex long strokes or text layout free.
-
-
-## Incremental strokes and background previews (2026-09-27)
-
-- Pencil, highlighter and brush eraser drafts retain union intervals at the same
-  eight vertical samples as full export. New capsules update only affected pixel
-  rows; blending always uses the pre-stroke layer, including original capture
-  pixels for erasure. A final release point is incorporated before promoting the
-  draft into the committed cache. Style, geometry, history and gesture changes
-  invalidate the appropriate cache.
-- Blur retains a ring of horizontal sums plus one vertical accumulator row,
-  rather than an entire area of horizontal sums. Alpha weighting and clipping
-  remain unchanged. At 3840×2160 with strength 16, sum storage drops from about
-  253 MiB to 2.1 MiB (excluding input/output pixels).
-- Preview jobs for filters covering at least 262,144 physical pixels or strokes
-  exceeding 1,024 points use GPUI's background executor. One job runs per session;
-  while it runs only the live model changes. Completion requests the latest model
-  snapshot rather than processing a backlog of pointer positions. The cache moves
-  between jobs so incremental coverage and committed layers are retained.
-- The last compatible image remains visible while computing, including mouse
-  release. Selection/display changes invalidate old results; a gesture generation
-  prevents an old cancelled draft from appearing in a new gesture. Copy/save
-  independently rasterize current state, never exporting a stale preview.
-- Tests compare incremental and full pixels across fractional scales, crossings,
-  retracing, style changes, shortened/reversed paths and erasure. Blur reference
-  tests include strengths larger than the image region. GPUI task tests cover
-  coalescing, committing while busy, cancellation, undo, new gestures and display
-  geometry changes. Manual benchmarks cover 4K blur and extending 20,000-point
-  strokes. GPU uploads and whole-image preview conversion still have a cost;
-  background previews may lag behind pointer movement during expensive work.
-
-
-## Pin review fixes (2026-09-27)
-
-- The Close command removes the active window directly, then closes its sibling surfaces;
-  it no longer tries to update the active window through its unavailable handle.
-- Every output lays out the entire image at the same global size and offset,
-  clipped by the fullscreen surface. Borders follow the full image rectangle,
-  without introducing an extra border or shrinking the image at output seams.
-- Pin placement uses the crop's actual global logical bounds, including native
-  pixel rounding, clipping and mixed-DPI composition. It does not divide the
-  composite by the toolbar-host display's scale.
-- Drag and zoom choose the nearest position with a grabbable area on a real
-  output. Desktop gaps are not treated as visible screen area. Mouse release
-  applies its final position before clearing the drag.
-- Regression coverage: multi-window Close, cross-output image layout and hidden
-  outputs, mixed-DPI crop geometry, fractional rounding, edge zooming, staggered
-  output gaps and release without a final move event. The Pin icon is now bundled.
-
-### Pin context menu
-
-- Right-click opens a themed Close menu, clamped inside the current output.
-- Escape only dismisses the menu. Shift+F10 opens it and Enter activates Close.
-- Menu clicks outside the image remain reachable; outside clicks dismiss it.
-- Linux/Wayland pins now share one scene across processes and output surfaces.
-  New pins and clicked pins move to the end of the paint order; native windows
-  are not recreated. Stable pin IDs keep drag, menu and close targets correct.
-- A private Unix socket per Wayland display transfers bounded RGBA payloads.
-  File locking elects one owner and allows stale socket recovery after a crash.
-  Sender overlays close only after scene acceptance; transfer failures keep the
-  selection available. Socket work runs outside the UI thread.
-- Closing a pin removes only that image. Surface windows close with the last pin.
-  Menus dismiss across outputs, and input regions cover the union of visible pins.
-- Tests cover overlap targeting after raising, cross-output order and geometry,
-  independent closing, menu dismissal, IPC acknowledgements, invalid payloads
-  and owner recovery. Windows cross-process ownership and live display-layout
-  changes remain follow-ups.
-
-## Copy/save fast path (2026-09-27)
-
-The Enter/Ctrl+C and `shotori full` copy path spent its whole budget on the
-main thread: a balanced-tier PNG encode (the quality/size choice for files on
-disk) plus the clipboard handoff, before the overlay could quit. The disk
-tier is kept for `--path` saves; the clipboard gets a fast tier, the work
-moves off the UI thread, and the notification thumbnail renders in the
-detached child instead of the parent.
-
-### Changes
+The copy path spent its whole budget on the main thread: a balanced-tier
+PNG encode (the quality/size choice for files on disk) plus the
+clipboard handoff, before the overlay could quit. Resolution: the disk
+tier is kept for `--path` saves; the clipboard gets a fast tier, the
+work moves off the UI thread, and the notification thumbnail renders in
+the detached child instead of the parent.
 
 - Two-tier PNG: `encode_png` (balanced, disk) and `encode_png_fast`
-  (fdeflate, clipboard) share `encode_png_with`. Clipboard bytes go through
-  the resident daemon's pipe, so speed matters more than size there.
+  (fdeflate, clipboard) share `encode_png_with`. Clipboard bytes go
+  through the resident daemon's pipe, so speed matters more than size
+  there.
 - `copy_selection` crops on the main thread, then spawns encode +
-  clipboard handoff on the background executor and quits once it lands. The
-  daemon spawn (blocking I/O) rides the same task. The overlay no longer
-  freezes for the duration of a large encode.
-- `copy_image(w, h, rgba, png)` takes the pixels the caller already has:
-  Windows builds CF_DIB directly from them (`dib_from_rgba`, preallocated +
-  in-place swizzle) instead of decoding its own PNG; Linux still hands the
-  bytes to the resident daemon.
-- Notification thumbnails render inside the detached `--notify` child
-  (`render_preview` loads the full-resolution PNG, downscales, caches). The
-  copy parent only byte-copies the full-res file for the Open action; the
-  save parent does nothing at all.
-- Capture-side u32 swizzles (`convert_to_rgba`, `rgba_to_render_image`)
-  replace per-byte loops on the aligned fast path; 180°/flipped-180 rotation
-  is a row reversal instead of a per-pixel copy.
-- In-binary `--bench` harness (fixed-seed LCG inputs, release-only) so the
-  numbers below are reproducible with `shotori --bench all`.
+  clipboard handoff on the background executor and quits once it lands.
+  The daemon spawn (blocking I/O) rides the same task.
+- `copy_image(w, h, rgba, png)` takes the pixels the caller already
+  has: Windows builds CF_DIB directly (`dib_from_rgba`, preallocated +
+  in-place swizzle) instead of decoding its own PNG.
+- Capture-side u32 swizzles replace per-byte loops on the aligned fast
+  path; 180°/flipped-180 rotation is a row reversal instead of a
+  per-pixel copy.
+- In-binary `--bench` harness (fixed-seed LCG inputs, release-only,
+  `shotori --bench all`) so the numbers are reproducible.
 
-### Measured (release, 16-core; `--bench`, mean of ≥300 ms sampling)
+Measured (release, 16-core; mean of ≥300 ms sampling):
 
 | workload | before | after |
 | --- | --- | --- |
@@ -1411,24 +698,90 @@ detached child instead of the parent.
 | rotate1080p-180 | 3.1 ms | 1.2 ms — 2.6× |
 | dib4k (Windows DIB build) | (PNG decode, main thread) | 6.0 ms (direct, off-thread) |
 
-Balanced-tier numbers are unchanged by design (the disk tier is preserved).
-Filter workloads are unchanged — they are the preview path, not the copy path.
+E2E wall clock (niri, eDP-1 2560×1600 @ 1.75; `SHOTORI_DEBUG_ACTION=copy`)
+is dominated by the fixed 1.5 s debug-action delay (full screen 1.76 s →
+1.65 s); the real change is that encode + clipboard no longer block the
+overlay's main thread.
 
-### E2E (niri, eDP-1 2560×1600 @ 1.75; `SHOTORI_DEBUG_ACTION=copy`)
+### Pin: one scene shared across processes (2026-09-27)
 
-| selection | before | after |
-| --- | --- | --- |
-| full screen (2558×1599) | 1.76 s | 1.65 s |
-| medium (1200×900 logical) | 1.73 s | 1.64 s |
+- Every output lays out the entire image at the same global size and
+  offset, clipped by the fullscreen surface; borders follow the full
+  image rectangle (no extra border or shrink at output seams).
+- Placement uses the crop's actual global logical bounds, including
+  native pixel rounding and mixed-DPI composition — never a division by
+  the toolbar-host display's scale. Drag and zoom choose the nearest
+  position with a grabbable area on a real output; desktop gaps are not
+  visible screen area; release applies its final position before
+  clearing the drag.
+- **The Close command removes the active window directly, then closes
+  its sibling surfaces** — it must not try to update the active window
+  through its unavailable handle (see the window-handle pitfalls).
+- Cross-process sharing: Wayland pins share one scene across processes
+  and output surfaces; new/clicked pins move to the end of the paint
+  order without recreating native windows; stable pin IDs keep drag,
+  menu and close targets correct. A private Unix socket per Wayland
+  display transfers bounded RGBA payloads; file locking elects one
+  owner and allows stale socket recovery after a crash; sender overlays
+  close only after scene acceptance; socket work runs outside the UI
+  thread.
 
-The E2E wall clock is dominated by the fixed 1.5 s debug-action delay, so the
-visible delta is small; the real change is that the encode + clipboard no
-longer block the overlay's main thread, and incompressible content encodes
-~30× faster on the fast tier.
+## Testing methodology
 
-### Scope note
+- **Headless e2e backdoors** (`ui/e2e.rs`):
+  - `SHOTORI_DEBUG_SELECTION=x,y,w,h`: inject a ready-made selection
+  - `SHOTORI_DEBUG_ACTION=copy|quit|save|ocr|ocrsetup`: fire the action
+    ~1.5 s after startup, through the real dispatch_action pipeline —
+    the only entry point for headless e2e (recipe:
+    `SHOTORI_DEBUG_TARGET=HDMI-A-1 SHOTORI_DEBUG_SELECTION=...
+    SHOTORI_DEBUG_ACTION=copy ./shotori & sleep 4; wl-paste --type
+    image/png | size assertion`)
+  - `SHOTORI_DEBUG_TARGET=<output name>`: restrict the backdoor to one
+    overlay (multiple overlays all firing fight each other)
+  - `SHOTORI_DEBUG_SAVE_PATH=<file>`: skip the save dialog
+- **Don't hardcode pixel coordinates in probe assertions** — prove the
+  overlay is up first, then probe relative geometry (a rounding change
+  once turned every hardcoded check false-negative).
+- **Capture animations with a burst of frames**; a single frame misses
+  0.3 s-scale windows (grim bursts).
+- **Comparison posture**: grim→screencap→grim within a one-second
+  window, three-way compare (wallpaper rotation destroys cross-time
+  comparisons; see the transform entry).
+- **Failure paths (offline / corrupt files / retries) are mandatory
+  testing** for lazy-loading designs; success-path e2e is not enough.
+- **Suspicion order** when something breaks: suspect yourself first,
+  then the compositor, and last remember the user is also using the
+  computer (their copies replace test state).
+- **The pkill in an e2e script must happen after the backdoor action
+  fires** — otherwise you kill a process that hasn't done its work yet;
+  wait for foreground exit before checking.
+- Debug builds run the pure-Rust pixel code 10–100× slower — benchmark
+  with the release install (`shotori --bench`).
+- `SHOTORI_BOOT=1` prints a startup phase timing trace.
 
-The companion preview-split work (cached base layer + rect-only draft layer)
-was not landed here: this tree already carries the "Incremental strokes and
-background previews" pass, which is a more complete preview subsystem. The
-copy/save fast path above is independent of it.
+## Open & shelved
+
+- **One-frame default-cursor flash after a cross-screen release**
+  (2026-09-27, user-shelved): the compositor resets the cursor shape on
+  every pointer focus switch and waits for the newly focused surface to
+  re-assert; gpui can only assert during paint, so a switch landing at
+  MOTION time costs at least one default frame. Two attempts were built
+  and REVERTED (forced repaint on window entry; momentarily emptying the
+  old window's input region at release). Next attempt must start by
+  MEASURING where the gap comes from (compositor logs / cursor protocol
+  tracing), not another assert-timing guess.
+- **niri tiled windows cannot snap** until upstream exposes the view
+  offset (issue #2381, PR #4147 unreviewed for months); the backend
+  interface is ready for a field-fill.
+- **sway windowsnap backend**: fixture-tested only.
+- **Rotation+flip combos** (Flipped90 etc.) unimplemented.
+- **Windows follow-ups**: toast actions; cross-process pin ownership;
+  live display-layout changes for pins.
+- **Annotation follow-ups** (condensed): endpoint/vertex editing,
+  alternate arrow styles and leader arrows, brush-mode mosaic, region
+  editing, smart erase (needs its own feasibility review), existing-text
+  editing, manual text-box resize, font selection, bold/italic,
+  rotation, fill, dashed/dotted line styles, sectors/arcs,
+  select/move/resize existing annotations.
+- **Deferred at the user's request** (2026-09-27): spotlight, watermark,
+  magnifier — not in the implementation queue.
