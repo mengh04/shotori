@@ -68,6 +68,15 @@ impl TextInput {
                 .join("\n")
         })
     }
+    /// Replace the whole buffer (pre-filling the number editor with the
+    /// badge's current value); the caret lands after the last glyph.
+    pub(crate) fn set_value(&mut self, value: &str, cx: &mut Context<Self>) {
+        self.remember(self.editor.clone());
+        self.replace(0..self.value().len(), value);
+        self.editor.set_selection(Selection::None);
+        self.editor.set_cursor(self.cursor_for(self.value().len()));
+        self.changed(cx);
+    }
     pub(crate) fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
     }
@@ -675,6 +684,22 @@ mod tests {
                     assert!(s.layout_height() < s.limit);
                 })
             });
+        });
+    }
+
+    #[gpui_kit::test]
+    fn set_value_replaces_the_whole_buffer_and_appends_after(cx: &mut TestAppContext) {
+        let (input, cx) = cx.add_window_view(|_, cx| TextInput::new(160., 400., 24., cx));
+        cx.update(|window, cx| {
+            input.update(cx, |s, cx| {
+                s.replace_text_in_range(None, "old text", window, cx);
+                s.set_value("42", cx);
+                assert_eq!(s.value(), "42");
+                // the caret must sit AFTER the prefilled digits so a
+                // typed character appends, not prepends
+                s.replace_text_in_range(None, "1", window, cx);
+                assert_eq!(s.value(), "421");
+            })
         });
     }
 
