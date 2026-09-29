@@ -20,7 +20,8 @@ python3 tools/generate-icons.py
 
 Every PNG is rendered directly from the SVG. The ICO embeds the corresponding
 PNG frames without resizing. Assets are checked in; ordinary Rust builds need
-neither Python nor librsvg. The original off-white outer canvas is preserved.
+neither Python nor librsvg. The canvas fits the dark background exactly;
+rounded corners have transparent pixels outside the background, with no white border.
 
 Install desktop metadata and all hicolor sizes from the source/release root:
 
