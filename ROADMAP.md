@@ -676,7 +676,7 @@ private. Per-compositor IPC is the only door.
 
 A hand-rolled four-flag parser served exactly one session before the
 real requirement showed up: screenshot-tool conventions (a `full`
-subcommand with `-c/-p/-d`, long-standing CLI convention), where clap's derive is
+subcommand with `-c/-p/-d`), where clap's derive is
 cheaper than maintaining a parser. Two invariants that survive any
 parser:
 

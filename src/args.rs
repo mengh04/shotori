@@ -1,7 +1,6 @@
 //! # Command-line interface (clap)
 //!
-//! Subcommands follow the screenshot-tool convention (a screenshot tool
-//! heritage): no subcommand / `gui` opens the interactive overlay,
+//! Subcommands follow the usual screenshot-tool CLI convention: no subcommand / `gui` opens the interactive overlay,
 //! `full` captures without any UI. Theme flags apply to both modes.
 //!
 //! The internal child-process entry points (`--notify`, and
