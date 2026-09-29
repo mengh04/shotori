@@ -1,7 +1,7 @@
 # Shotori
 
 <p align="center">
-  <img src="assets/app/shotori-256.png" width="128" height="128" alt="Shotori">
+  <img src="assets/app/shotori-128.png" alt="Shotori">
 </p>
 
 [![Crates.io](https://img.shields.io/crates/v/shotori.svg)](https://crates.io/crates/shotori)
