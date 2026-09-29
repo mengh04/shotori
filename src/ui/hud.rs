@@ -297,6 +297,150 @@ pub(crate) fn annotation_chrome(selected: Option<crate::annotation::Shape>) -> i
     .size_full()
 }
 
+/// Loupe inset side and magnification (issue #19): 160 logical px at
+/// 3× shows a ~53px neighborhood of the focus — wide enough to
+/// recognize the element being aligned to, narrow enough that one
+/// magnified pixel still reads as one.
+const LOUPE_SIDE: f32 = 160.;
+const LOUPE_ZOOM: f32 = 3.;
+/// Clear space between the focus point and the inset's near edge: the
+/// real pixels around the point stay visible beside their magnified
+/// view — the coarse pass (dragging without fine-tuning) keeps an
+/// unobstructed view of the point itself.
+const LOUPE_GAP: f32 = 16.;
+
+/// Clamp that never panics on inverted bounds (a window smaller than
+/// the loupe) — same posture as selection's `clamp_to`.
+fn clamp_to(v: f32, lo: f32, hi: f32) -> f32 {
+    if lo > hi { lo } else { v.clamp(lo, hi) }
+}
+
+/// Where the loupe inset sits: offset `GAP + side/2` out along the
+/// outward diagonal (away from the resized body — never over the point
+/// being placed), clamped into the window so it never leaves the
+/// output being magnified. When the outward side of an axis has no
+/// room (the point is near that screen edge), that axis FLIPS to hang
+/// the inset on the inward side instead of letting the clamp drag it
+/// back over the point — inward covers the dimmed resized body, never
+/// the edge content being aligned to. The CONTENT is independent of
+/// this placement: it always centers on the focus (see
+/// `magnifier_loupe`). Pure geometry — one source for the element and
+/// any future pointer routing.
+fn loupe_frame(focus: Point<Pixels>, outward: (f32, f32), ws: Size<Pixels>) -> Bounds<Pixels> {
+    let half = LOUPE_SIDE / 2.;
+    let reach = half + LOUPE_GAP;
+    let (fx, fy) = (f32::from(focus.x), f32::from(focus.y));
+    let fits = |dir: f32, at: f32, win: f32| {
+        let lo = at + dir * reach - half;
+        lo >= 0. && lo + LOUPE_SIDE <= win
+    };
+    // flip whichever axis cannot host the outward side (per-axis, so a
+    // point at the bottom edge but mid-width keeps its horizontal
+    // placement and only flips vertically)
+    let dx = if fits(outward.0, fx, f32::from(ws.width)) {
+        outward.0
+    } else {
+        -outward.0
+    };
+    let dy = if fits(outward.1, fy, f32::from(ws.height)) {
+        outward.1
+    } else {
+        -outward.1
+    };
+    let l = fx + dx * reach - half;
+    let t = fy + dy * reach - half;
+    Bounds::new(
+        point(
+            px(clamp_to(l, 0., f32::from(ws.width) - LOUPE_SIDE)),
+            px(clamp_to(t, 0., f32::from(ws.height) - LOUPE_SIDE)),
+        ),
+        size(px(LOUPE_SIDE), px(LOUPE_SIDE)),
+    )
+}
+
+/// The magnifier loupe (issue #19): a floating window onto the frozen
+/// capture around the point a corner/handle drag is placing, so the
+/// point lands on the exact pixel without squinting. Composition zoom
+/// only — the SAME per-output texture, scaled and offset inside an
+/// `overflow_hidden` frame: no buffer copies, no BGRA round-trip
+/// (ui/image_util.rs stays untouched), and logical-px math that is
+/// scale-factor-proof by construction, because the img already fills
+/// the window 1:1. Inert by design: a drag owns the pointer through
+/// the window-level listeners, and this element claims no events.
+pub(crate) fn magnifier_loupe(
+    image: std::sync::Arc<RenderImage>,
+    loupe: crate::model::session::Loupe,
+    ws: Size<Pixels>,
+) -> impl IntoElement {
+    let frame = loupe_frame(loupe.focus, loupe.outward, ws);
+    let (fx, fy) = (f32::from(loupe.focus.x), f32::from(loupe.focus.y));
+    // Frame-LOCAL placement of the zoomed image: the focus pixel lands
+    // at the frame's center wherever the frame floats. Absolute
+    // children position against the loupe div's own origin, NOT the
+    // window — mixing the two spaces double-counts frame.origin and
+    // slides the content (and the crosshair) off the point being
+    // placed.
+    let img_left = LOUPE_SIDE / 2. - fx * LOUPE_ZOOM;
+    let img_top = LOUPE_SIDE / 2. - fy * LOUPE_ZOOM;
+    // The same accent the handle dot wears: the crosshair marks the
+    // dot's magnified self, so the two read as one affordance.
+    let cross = rgba(theme::c().accent);
+    div()
+        .id("shotori-loupe")
+        .absolute()
+        .left(frame.origin.x)
+        .top(frame.origin.y)
+        .w(frame.size.width)
+        .h(frame.size.height)
+        .overflow_hidden()
+        .rounded(px(8.))
+        .border_1()
+        .border_color(rgba(theme::c().accent))
+        // Lift the inset off the content it magnifies. Accentless on
+        // purpose: the border already carries the accent, and a black
+        // shadow reads against any wallpaper.
+        .shadow(vec![
+            BoxShadow::new(px(0.), px(2.), rgba(0x00000059).into()).blur_radius(px(12.)),
+        ])
+        .child(
+            img(image)
+                .absolute()
+                .left(px(img_left))
+                .top(px(img_top))
+                .w(px(f32::from(ws.width) * LOUPE_ZOOM))
+                .h(px(f32::from(ws.height) * LOUPE_ZOOM))
+                // Exact geometry, never letterboxed: the inset is a
+                // crop of the window, not a fit.
+                .object_fit(ObjectFit::Fill),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(LOUPE_SIDE / 2. - 0.5))
+                .top_0()
+                .w(px(1.))
+                .h(px(LOUPE_SIDE))
+                .bg(cross),
+        )
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .top(px(LOUPE_SIDE / 2. - 0.5))
+                .w(px(LOUPE_SIDE))
+                .h(px(1.))
+                .bg(cross),
+        )
+        // ~100ms fade-in, the chrome animation posture (spinner):
+        // appears with the gesture, disappears with it — release is
+        // instant by design, no chrome lingering over a finished edit.
+        .with_animation(
+            "shotori-loupe-fade",
+            Animation::new(std::time::Duration::from_millis(100)).with_max_fps(30.),
+            |el, delta| el.opacity(delta),
+        )
+}
+
 #[cfg(test)]
 mod tests {
     // Explicit imports (same reason as selection.rs: avoid gpui's test macro
@@ -312,6 +456,55 @@ mod tests {
 
     fn ws(w: f32, h: f32) -> gpui_kit::Size<Pixels> {
         size(px(w), px(h))
+    }
+
+    // ── Magnifier loupe placement (issue #19) ─────────────────────
+
+    #[test]
+    fn loupe_floats_along_the_outward_diagonal_with_a_gap() {
+        use super::{LOUPE_GAP, LOUPE_SIDE, loupe_frame};
+        // mid-screen focus, dragging the bottom-right corner: outward
+        // = (+1,+1) → the inset sits fully below-right, near edge GAP
+        // away — the point itself stays unobstructed
+        let f = loupe_frame(point(px(500.), px(400.)), (1., 1.), ws(1920., 1080.));
+        assert_eq!(f32::from(f.left()), 500. + LOUPE_GAP);
+        assert_eq!(f32::from(f.top()), 400. + LOUPE_GAP);
+        assert_eq!(f32::from(f.size.width), LOUPE_SIDE);
+        // top-left corner → up-left of the focus
+        let f = loupe_frame(point(px(500.), px(400.)), (-1., -1.), ws(1920., 1080.));
+        assert_eq!(f32::from(f.right()), 500. - LOUPE_GAP);
+        assert_eq!(f32::from(f.bottom()), 400. - LOUPE_GAP);
+    }
+
+    #[test]
+    fn loupe_flips_per_axis_near_edges_and_never_covers_the_focus() {
+        use super::{LOUPE_GAP, loupe_frame};
+        // focus near the bottom-right of a small window: BOTH outward
+        // sides lack room → the inset flips to up-left of the point
+        // instead of clamping back over it
+        let f = loupe_frame(point(px(280.), px(180.)), (1., 1.), ws(300., 200.));
+        assert_eq!(f32::from(f.right()), 280. - LOUPE_GAP);
+        assert_eq!(f32::from(f.bottom()), 180. - LOUPE_GAP);
+        assert!(!f.contains(&point(px(280.), px(180.))));
+        // focus near the top-left: flips to down-right
+        let f = loupe_frame(point(px(5.), px(5.)), (-1., -1.), ws(300., 200.));
+        assert_eq!(f32::from(f.left()), 5. + LOUPE_GAP);
+        assert_eq!(f32::from(f.top()), 5. + LOUPE_GAP);
+        assert!(!f.contains(&point(px(5.), px(5.))));
+        // bottom edge but mid-width: only the vertical axis flips
+        let f = loupe_frame(point(px(500.), px(1060.)), (1., 1.), ws(1920., 1080.));
+        assert_eq!(f32::from(f.left()), 500. + LOUPE_GAP); // horizontal kept
+        assert_eq!(f32::from(f.bottom()), 1060. - LOUPE_GAP); // vertical flipped
+        assert!(!f.contains(&point(px(500.), px(1060.))));
+    }
+
+    #[test]
+    fn loupe_survives_a_window_smaller_than_the_inset() {
+        use super::loupe_frame;
+        // no panic, and the frame stays pinned at the origin
+        let f = loupe_frame(point(px(20.), px(20.)), (1., 1.), ws(100., 100.));
+        assert_eq!(f32::from(f.left()), 0.);
+        assert_eq!(f32::from(f.top()), 0.);
     }
 
     struct BackdropHarness {

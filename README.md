@@ -36,6 +36,9 @@ and feedback are welcome in the
 - Clear all annotations in one step (`Ctrl+Shift+Del` or the toolbar's
   trash button); the selection stays put and a single undo restores
   every mark
+- Magnifier loupe while dragging a corner (or a shape's handle): a 3×
+  inset of the frozen capture floats beside the point being placed —
+  crosshair on the exact pixel, never covering the point itself
 - Double-click existing text to edit it in place; live wrapping extends to the
   selection edge, with size/color controls and one-step undo of the edit. Text
   keeps a 2px inset; input, paste, or size changes that overflow the bottom

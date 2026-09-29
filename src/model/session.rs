@@ -42,6 +42,22 @@ struct HandleDrag {
     before: crate::annotation::Shape,
 }
 
+/// The magnifier loupe's target (issue #19): the desktop-global point a
+/// precision drag is placing — a selection CORNER resize (an edge drag
+/// aims a line, not a pixel) or any placed-shape handle drag
+/// (endpoints, corners and vertices are all point placements). The
+/// CONTENT centers on the focus; the INSET floats `outward`, the ±1
+/// diagonal away from the resized body — visible beside the point when
+/// fine-tuning, out of the way when not (covering the point itself
+/// blocks the coarse pass; tried, reverted).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Loupe {
+    /// The point being placed (desktop-global).
+    pub(crate) focus: Point<Pixels>,
+    /// ±1 per axis: the diagonal away from the resized body.
+    pub(crate) outward: (f32, f32),
+}
+
 impl Screen {
     fn bounds(&self) -> Bounds<Pixels> {
         Bounds {
@@ -912,6 +928,65 @@ impl ScreenshotSession {
                 *p -= origin;
             }
             s
+        })
+    }
+
+    /// The live loupe target, window-local for `name`'s output. None
+    /// when no precision drag is live, or when the focus sits on
+    /// another output — each overlay magnifies only the pixels it
+    /// froze, so the loupe renders on the output that owns the focus.
+    pub(crate) fn local_loupe(&self, name: &str) -> Option<Loupe> {
+        let mut loupe = self.loupe()?;
+        let screen = self.screen(name).bounds();
+        if !screen.contains(&loupe.focus) {
+            return None;
+        }
+        loupe.focus -= screen.origin;
+        Some(loupe)
+    }
+
+    /// The gesture-level loupe target (desktop-global). Selection
+    /// corner resizes and shape handle drags only — everything else
+    /// (moving, fresh dragging, edge resizes) places no precise point.
+    fn loupe(&self) -> Option<Loupe> {
+        if let Selection::Resizing { bounds, handle, .. } = self.selection {
+            let (hx, hy) = handle.axes();
+            let (Some(hx), Some(hy)) = (hx, hy) else {
+                return None; // edge handle: aims a line, not a pixel
+            };
+            let focus = match (hx, hy) {
+                (false, false) => bounds.origin,
+                (true, false) => point(bounds.right(), bounds.top()),
+                (false, true) => point(bounds.left(), bounds.bottom()),
+                (true, true) => bounds.bottom_right(),
+            };
+            return Some(Loupe {
+                focus,
+                outward: (if hx { 1. } else { -1. }, if hy { 1. } else { -1. }),
+            });
+        }
+        let drag = self.handle_drag.as_ref()?;
+        let shape = self.annotations.shape(drag.ix)?;
+        let focus = *shape.handle_points().get(drag.anchor)?;
+        // Away from the shape's body: the diagonal the handle sits on
+        // relative to the bounds center (a centered axis picks +1 —
+        // deterministic; degenerate shapes barely have off-diagonal
+        // handles anyway).
+        let center = shape.bounds.center();
+        Some(Loupe {
+            focus,
+            outward: (
+                if f32::from(focus.x) >= f32::from(center.x) {
+                    1.
+                } else {
+                    -1.
+                },
+                if f32::from(focus.y) >= f32::from(center.y) {
+                    1.
+                } else {
+                    -1.
+                },
+            ),
         })
     }
 
@@ -1860,6 +1935,76 @@ mod tests {
         assert_eq!(b.size, size(px(40.), px(50.)));
         // and the export path follows the new bounds
         assert_eq!(s.crop("left").unwrap().0, 40);
+    }
+
+    #[test]
+    fn loupe_tracks_the_dragged_selection_corner() {
+        let mut s = session();
+        s.begin("left", point(px(10.), px(10.)));
+        s.end("left", point(px(30.), px(30.))); // global (-90,30) 20×20
+        // grab the bottom-right corner, drag to local (50,60) →
+        // global (-50,80)
+        s.pointer_down("left", point(px(30.), px(30.)), false);
+        s.pointer_move("left", point(px(50.), px(60.)), false);
+        let loupe = s.local_loupe("left").expect("corner drag → loupe");
+        assert_eq!(loupe.focus, point(px(50.), px(60.))); // global − left origin
+        assert_eq!(loupe.outward, (1., 1.)); // BR → away is down-right
+        assert!(s.local_loupe("right").is_none()); // focus is on left
+        s.pointer_up("left", point(px(50.), px(60.)), false);
+        assert!(s.local_loupe("left").is_none()); // gesture over → none
+    }
+
+    #[test]
+    fn edge_resize_and_moves_get_no_loupe() {
+        let mut s = session();
+        s.begin("left", point(px(10.), px(10.)));
+        s.end("left", point(px(30.), px(30.)));
+        // top-EDGE midpoint grab: aims a line, not a pixel
+        s.pointer_down("left", point(px(20.), px(10.)), false);
+        s.pointer_move("left", point(px(20.), px(5.)), false);
+        assert!(s.local_loupe("left").is_none());
+        s.pointer_up("left", point(px(20.), px(5.)), false);
+        // interior move: no precise point either
+        s.pointer_down("left", point(px(20.), px(20.)), false);
+        s.pointer_move("left", point(px(25.), px(25.)), false);
+        assert!(s.local_loupe("left").is_none());
+        s.pointer_up("left", point(px(25.), px(25.)), false);
+    }
+
+    #[test]
+    fn loupe_tracks_a_shape_handle_drag() {
+        use crate::annotation::ShapeKind;
+        let mut s = session();
+        s.select_all();
+        let sel = s.selection.bounds().unwrap();
+        let local = |p: gpui_kit::Point<gpui_kit::Pixels>| p - point(px(-100.), px(20.));
+        s.edit_annotations(|a| {
+            a.toggle(ShapeKind::Line);
+            a.begin(point(px(10.), px(10.)), sel, false);
+            a.drag_to(point(px(60.), px(60.)), sel, false);
+            a.end();
+        });
+        let line = s.annotations().committed()[0].clone();
+        // select, then drag the END handle without releasing
+        let mid = point(
+            (line.points[0].x + line.points[1].x) / 2.,
+            (line.points[0].y + line.points[1].y) / 2.,
+        );
+        s.pointer_down("left", local(mid), false);
+        s.pointer_up("left", local(mid), false);
+        let target = point(px(80.), px(20.));
+        s.pointer_down("left", local(line.points[1]), false);
+        s.pointer_move("left", local(target), false);
+        // The handle now lives on the RIGHT output (target is global
+        // (80,20)): the loupe routes to the output that OWNS the focus,
+        // even though the drag events keep coming from the left window
+        // (implicit grab).
+        let loupe = s.local_loupe("right").expect("handle drag → loupe");
+        assert_eq!(loupe.focus, point(px(80.), px(20.))); // global − right origin
+        assert!(s.local_loupe("left").is_none());
+        assert_eq!(loupe.outward, (1., 1.)); // endpoint sits BR of center
+        s.pointer_up("left", local(target), false);
+        assert!(s.local_loupe("right").is_none());
     }
 
     #[test]
