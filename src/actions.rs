@@ -37,7 +37,8 @@ gpui_kit::actions!([
     FinishPolyline,
     UndoAnnotation,
     RedoAnnotation,
-    DeleteAnnotation
+    DeleteAnnotation,
+    ClearAnnotations
 ]);
 
 /// Keybindings, scoped to the `ShotoriOverlay` key context. Bound once
@@ -68,7 +69,8 @@ pub fn bind_keys(cx: &mut App) {
 
 /// Annotation keybindings ("r" rectangle, "e" ellipse, "l" line, "a"
 /// arrow, "m" mosaic, "h" highlighter, "b" pencil, "n" number, "p"
-/// polyline, "t" text, "d" eraser; undo/redo; Enter finishes a polyline). Also scoped to
+/// polyline, "t" text, "d" eraser; undo/redo; Ctrl+Shift+Del clears
+/// every placed annotation; Enter finishes a polyline). Also scoped to
 /// `ShotoriOverlay`, plus the PolylineDrawing sub-context.
 pub fn init_annotation_keybindings(cx: &mut App) {
     cx.bind_keys([
@@ -90,5 +92,17 @@ pub fn init_annotation_keybindings(cx: &mut App) {
         KeyBinding::new("ctrl-shift-z", RedoAnnotation, Some("ShotoriOverlay")),
         KeyBinding::new("delete", DeleteAnnotation, Some("ShotoriOverlay")),
         KeyBinding::new("backspace", DeleteAnnotation, Some("ShotoriOverlay")),
+        // Ctrl+Shift mirrors the Delete/Backspace pair without touching
+        // the plain keys' shape-granular delete (issue #15)
+        KeyBinding::new(
+            "ctrl-shift-delete",
+            ClearAnnotations,
+            Some("ShotoriOverlay"),
+        ),
+        KeyBinding::new(
+            "ctrl-shift-backspace",
+            ClearAnnotations,
+            Some("ShotoriOverlay"),
+        ),
     ]);
 }
