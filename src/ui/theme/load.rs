@@ -1,6 +1,6 @@
 //! TOML theme settings. Surface colors belong to complete built-in palettes;
 //! configuration cannot mix a light background with dark control states.
-use super::{PALETTE, Theme};
+use super::{PALETTE, Theme, ToolbarStyle};
 use serde::Deserialize;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -12,6 +12,7 @@ pub struct ThemeFile {
     pub accent: Option<String>,
     pub dim_opacity: Option<f32>,
     pub annotation_colors: Option<Vec<String>>,
+    pub toolbar_style: Option<String>,
 }
 
 fn hex(s: &str) -> Result<u32, String> {
@@ -82,6 +83,15 @@ fn apply(theme: &mut Theme, file: &ThemeFile) -> Vec<String> {
             }
         }
     }
+    // Layout choice shared by both palettes; `apply` runs per palette
+    // and the write is idempotent, so no special-casing needed.
+    if let Some(value) = &file.toolbar_style {
+        match value.as_str() {
+            "bar" => theme.toolbar_style = ToolbarStyle::Bar,
+            "radial" => theme.toolbar_style = ToolbarStyle::Radial,
+            other => errors.push(format!("toolbar_style: {other:?} (want bar | radial)")),
+        }
+    }
     theme.adapt_accent();
     errors
 }
@@ -107,7 +117,7 @@ impl ThemeFile {
 
 pub fn load_file(path: &Path) -> Result<ThemeFile, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    toml::from_str(&text).map_err(|e| format!("{}: {e}. Use a TOML file with base, accent, dim_opacity and annotation_colors; surface colors are managed together.", path.display()))
+    toml::from_str(&text).map_err(|e| format!("{}: {e}. Use a TOML file with base, accent, dim_opacity, annotation_colors and toolbar_style; surface colors are managed together.", path.display()))
 }
 
 pub fn config_path() -> Option<PathBuf> {
@@ -203,6 +213,14 @@ fn print_theme(theme: &Theme, source: &Source) {
     let _ = writeln!(out, "toolbar_hover  {}", to_hex(theme.toolbar_hover));
     let _ = writeln!(out, "toolbar_selected {}", to_hex(theme.toolbar_selected));
     let _ = writeln!(out, "swatch_border   {}", to_hex(theme.swatch_border));
+    let _ = writeln!(
+        out,
+        "toolbar_style  {}",
+        match theme.toolbar_style {
+            ToolbarStyle::Bar => "bar",
+            ToolbarStyle::Radial => "radial",
+        }
+    );
     let palette = theme
         .annotation_colors
         .iter()
@@ -245,6 +263,25 @@ mod tests {
         assert_eq!(theme.accent, Theme::dark().accent);
         assert_eq!(theme.annotation_colors, Theme::dark().annotation_colors);
         assert_eq!(theme.dim_opacity, 0.55);
+    }
+    #[test]
+    fn toolbar_style_parses_and_rejects_unknown_presets() {
+        let file: ThemeFile = toml::from_str("toolbar_style = 'radial'").unwrap();
+        let (dark, light, errors) = file.palettes();
+        assert!(errors.is_empty());
+        assert_eq!(dark.toolbar_style, ToolbarStyle::Radial);
+        assert_eq!(light.unwrap().toolbar_style, ToolbarStyle::Radial);
+
+        let file: ThemeFile = toml::from_str("toolbar_style = 'pie'").unwrap();
+        let (_, _, errors) = file.palettes();
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("want bar | radial"));
+
+        // absent field keeps the default
+        assert_eq!(
+            ThemeFile::default().palettes().0.toolbar_style,
+            ToolbarStyle::Bar
+        );
     }
     #[test]
     fn toml_comments_palette_and_precedence() {

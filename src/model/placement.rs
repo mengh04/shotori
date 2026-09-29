@@ -51,6 +51,26 @@ pub(crate) const ROW_H: f32 = 38.;
 /// Two-row height (the tall case used for placement decisions)
 pub(crate) const TB_H: f32 = ROW_H * 2. + 6.;
 
+/// Toolbar presentation preset: the floating bar, or a radial dial of
+/// round buttons around a drag hub. A layout concept, so it lives with
+/// the geometry; `ui::theme` re-exports it because the theme file is
+/// where users pick it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToolbarStyle {
+    #[default]
+    Bar,
+    Radial,
+}
+
+/// Radial dial geometry (see [`ToolbarStyle::Radial`]). Outer ring of
+/// round tool buttons at RADIAL_R centers, a central drag hub, and the
+/// settings cluster INSIDE the ring — the outer rect is stateless
+/// (unlike the bar's one-row/two-row basis).
+pub(crate) const RADIAL_BTN: f32 = 40.;
+pub(crate) const RADIAL_R: f32 = 150.;
+pub(crate) const RADIAL_HUB: f32 = 36.;
+pub(crate) const RADIAL_D: f32 = 2. * (RADIAL_R + RADIAL_BTN / 2.) + 8.;
+
 /// Breathing room kept between the lowest element and the screen edge —
 /// "fits at exactly zero margin" still looks glued on (measured).
 const EDGE_B: f32 = 12.;
@@ -111,14 +131,19 @@ pub(crate) fn toolbar_bounds(
     }
 }
 
-/// The toolbar's (width, height) basis for its two row-count states.
-/// Two-row bars keep the measured TB_W — the color settings row needs
-/// it; single-row bars hug row one's natural width instead.
-pub(crate) fn toolbar_size(annotating: bool) -> (f32, f32) {
-    if annotating {
-        (TB_W, TB_H)
-    } else {
-        (TB_W_ROW1, ROW_H)
+/// The toolbar's (width, height) basis. The bar has two row-count
+/// states; the radial dial's square rect never changes — its settings
+/// cluster unfolds inside the ring.
+pub(crate) fn toolbar_size(style: ToolbarStyle, annotating: bool) -> (f32, f32) {
+    match style {
+        ToolbarStyle::Bar => {
+            if annotating {
+                (TB_W, TB_H)
+            } else {
+                (TB_W_ROW1, ROW_H)
+            }
+        }
+        ToolbarStyle::Radial => (RADIAL_D, RADIAL_D),
     }
 }
 
@@ -142,7 +167,8 @@ mod tests {
     // Explicit imports (same reason as selection.rs: avoid gpui's test
     // macro shadowing the built-in #[test])
     use super::{
-        LABEL_H, ROW_H, TB_H, TB_W, TB_W_ROW1, label_anchor, toolbar_anchor, toolbar_size,
+        LABEL_H, RADIAL_D, ROW_H, TB_H, TB_W, TB_W_ROW1, ToolbarStyle, label_anchor,
+        toolbar_anchor, toolbar_size,
     };
     use gpui_kit::{Bounds, Pixels, point, px, size};
 
@@ -206,8 +232,16 @@ mod tests {
 
     #[test]
     fn toolbar_size_switches_with_state() {
-        assert_eq!(toolbar_size(false), (TB_W_ROW1, ROW_H));
-        assert_eq!(toolbar_size(true), (TB_W, TB_H));
+        assert_eq!(toolbar_size(ToolbarStyle::Bar, false), (TB_W_ROW1, ROW_H));
+        assert_eq!(toolbar_size(ToolbarStyle::Bar, true), (TB_W, TB_H));
+        assert_eq!(
+            toolbar_size(ToolbarStyle::Radial, false),
+            (RADIAL_D, RADIAL_D)
+        );
+        assert_eq!(
+            toolbar_size(ToolbarStyle::Radial, true),
+            (RADIAL_D, RADIAL_D)
+        );
     }
 
     #[test]

@@ -5,5 +5,8 @@ base = "auto" # auto | dark | light | high_contrast
 # Optional: opaque #RRGGBB or #RRGGBBAA colors.
 # accent = "#FF6A00"
 # dim_opacity = 0.55
+# Toolbar preset: bar (the floating strip) or radial (a dial of round
+# tool buttons around a drag hub). Colors above apply to both.
+# toolbar_style = "radial"
 # Exactly seven annotation colors, in palette order:
 # annotation_colors = ["#FF4545", "#FF8A32", "#FFD43B", "#40C878", "#409CFF", "#222222", "#FFFFFF"]

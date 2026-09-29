@@ -25,6 +25,12 @@ pub const PALETTE: usize = 7;
 pub const PALETTE_NAMES: [&str; PALETTE] =
     ["Red", "Orange", "Yellow", "Green", "Blue", "Black", "White"];
 
+/// Toolbar presentation preset: the floating bar or a radial dial.
+/// A layout choice, not a color — it lives with the geometry in
+/// `model::placement` (the dependency direction is `ui → model`) and
+/// is re-exported here because the theme file is where users pick it.
+pub use crate::model::placement::ToolbarStyle;
+
 /// The complete visual vocabulary of the overlay. One struct so a theme
 /// is a value: build it, override it, ship it.
 #[derive(Clone)]
@@ -60,6 +66,10 @@ pub struct Theme {
     /// without it), so it does not simply reuse `toolbar_border`.
     pub swatch_border: u32,
 
+    /// Toolbar presentation preset (see [`ToolbarStyle`]). Shared by
+    /// every palette — a layout choice, not per-appearance.
+    pub toolbar_style: ToolbarStyle,
+
     /// Annotation swatch palette (opaque — exported PNGs must be solid).
     pub annotation_colors: [u32; PALETTE],
 }
@@ -82,6 +92,7 @@ impl Theme {
             toolbar_hover: 0x2C2C3AFF,
             toolbar_selected: 0x453528FF,
             swatch_border: 0xFFFFFF38,
+            toolbar_style: ToolbarStyle::Bar,
             annotation_colors: [
                 0xFF4545FF, 0xFF8A32FF, 0xFFD43BFF, 0x40C878FF, 0x409CFFFF, 0x222222FF, 0xFFFFFFFF,
             ],
@@ -104,6 +115,7 @@ impl Theme {
             toolbar_hover: 0xEAEDF2FF,
             toolbar_selected: 0xFFE5D3FF,
             swatch_border: 0x00000026,
+            toolbar_style: ToolbarStyle::Bar,
             ..dark_const()
         }
     }
@@ -120,6 +132,7 @@ impl Theme {
             toolbar_hover: 0xD9D9D9FF,
             toolbar_selected: 0xDCDCDCFF,
             swatch_border: 0x00000059,
+            toolbar_style: ToolbarStyle::Bar,
             ..dark_const()
         }
     }

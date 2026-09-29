@@ -255,6 +255,27 @@ bounds. Verified with a 10-phase fractional sweep — zero leak rows.
 
 ## Pitfalls — gpui & Taffy internals
 
+### Absolute children position against the PARENT, `.relative()` kills the subtree's paint (2026-09-29)
+
+Two traps met while building the radial toolbar preset, both verified
+by pixel probes on live screenshots:
+
+- **Taffy positions an absolute child against its PARENT's box even
+  when the parent is not `.relative()`** — unlike CSS, where the
+  containing block falls back to the initial containing block. So
+  absolute chips inside the toolbar div use LOCAL coordinates (origin
+  at the container's top-left); "window coordinates just in case"
+  double-shifts the ring off-canvas. The probe discipline: expected
+  polar position → ±tolerance window → exact-color pixel count.
+- **A `.relative()` on the absolutely-positioned toolbar container
+  makes its whole subtree not paint** (the same div renders fine
+  without it; gpui-pre 0.3.6). bar's in-flow `.relative()` track divs
+  are unaffected — the failure showed only on the positioned
+  container. Worth an upstream report if it reproduces on 0.3.7.
+- Also met: a `Button` ignores an instance `.bg()` when any state
+  style (hover/selected) claims the background slot — paint the plate
+  on the wrapping div, keep Button as the interaction layer.
+
 ### Scroll-wheel deltas are amplified ×3 by the wayland backend (2026-09-29)
 
 A discrete notch on niri reaches the app as `Pixels(120)`, not 40:
@@ -351,6 +372,29 @@ window so another output can finish displaying the shared image.
   rename); a second one is a duplicate-field error.
 
 ## Design decisions
+
+### Toolbar presets: bar or radial dial, picked by the theme file (2026-09-29)
+
+`theme.toml` gains `toolbar_style = "bar" | "radial"` (default bar).
+The radial dial floats sixteen round chips in a ring around a drag
+hub; its settings cluster (mode pair on the upper arc, palette on the
+lower arc, size slider on a chord) unfolds INSIDE the ring, so the
+outer rect is stateless — one size for every tool state, unlike the
+bar's one-row/two-row basis. Decisions worth keeping:
+
+- **`ToolbarStyle` lives in `model::placement`** (a layout concept),
+  re-exported by `ui::theme` because the theme file is where users
+  pick it. The session stores it once at startup (`set_toolbar_style`)
+  — geometry needs it before the first render, and both of main's two
+  session-construction sites must set it (the async window-opening
+  path is the one that actually runs; missing it silently falls back
+  to the bar, which pixel probes cannot distinguish from "not
+  rendered").
+- **The hub replaces both bar grips** — `toolbar_grips` returns it in
+  both tuple slots, so every caller's either-contains check keeps
+  working unchanged.
+- **Every preset reads the same color vocabulary** — theming one
+  theme entry re-skins both layouts.
 
 ### Number badge editing: wheel tunes the value, double-click opens free entry (2026-09-29)
 

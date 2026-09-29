@@ -166,6 +166,9 @@ fn main() {
                             snaps.unwrap_or_default(),
                         )
                     });
+                    session.update(cx, |s, _| {
+                        s.set_toolbar_style(shotori::ui::theme::c().toolbar_style)
+                    });
                     for (cap, did) in targets {
                         if did.is_none() {
                             eprintln!(
@@ -273,6 +276,9 @@ fn full_capture(clipboard: bool, path: Option<std::path::PathBuf>, delay: f32) -
         caps.into_iter().map(std::sync::Arc::new).collect(),
         Vec::new(),
     );
+    // the theme loader ran above; the toolbar preset it picked must be
+    // in place before the first render sizes the toolbar
+    session.set_toolbar_style(shotori::ui::theme::c().toolbar_style);
     session.select_all();
     let Some((w, h, rgba)) = session.crop_original(&first) else {
         eprintln!("[shotori] full capture produced nothing");

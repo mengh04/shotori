@@ -124,6 +124,9 @@ pub struct ScreenshotSession {
     /// selection or a change of host window — moving/resizing the
     /// current selection keeps it (the user put it there deliberately).
     toolbar_pos: Option<Point<Pixels>>,
+    /// Toolbar preset (bar/radial) — set once at startup from the
+    /// theme; geometry helpers read it, render follows it.
+    toolbar_style: crate::model::placement::ToolbarStyle,
     /// Set while the toolbar is being dragged by an edge grip.
     toolbar_drag: Option<ToolbarDrag>,
     /// Window-snap targets in global logical coordinates; empty when the
@@ -165,6 +168,7 @@ impl ScreenshotSession {
             handle_drag: None,
             blocked: false,
             toolbar_pos: None,
+            toolbar_style: Default::default(),
             toolbar_drag: None,
             snaps,
             hovered: None,
@@ -404,6 +408,13 @@ impl ScreenshotSession {
     /// The toolbar's rect in this output's LOCAL coordinates — the
     /// placement anchor, or wherever the user last dragged it (clamped
     /// inside the window). None when this output hosts no toolbar.
+    /// Set the toolbar preset (theme-driven, once at startup). Must be
+    /// called before the first render; a live switch would strand the
+    /// saved drag position against a different-sized rect.
+    pub fn set_toolbar_style(&mut self, style: crate::model::placement::ToolbarStyle) {
+        self.toolbar_style = style;
+    }
+
     pub(crate) fn toolbar_bounds(&self, name: &str) -> Option<Bounds<Pixels>> {
         if !self.selection.is_selected() || !self.active_on(name) {
             return None;
@@ -412,8 +423,15 @@ impl ScreenshotSession {
         let sel = self
             .local_bounds(name)
             .map(crate::model::placement::round_px)?;
-        let (width, height) = crate::model::placement::toolbar_size(self.annotations.enabled());
+        let (width, height) =
+            crate::model::placement::toolbar_size(self.toolbar_style, self.annotations.enabled());
         let mut b = crate::model::placement::toolbar_bounds(&sel, ws, width, height);
+        if std::env::var_os("SHOTORI_DEBUG_TB").is_some() {
+            eprintln!(
+                "[tb-debug] style={:?} sel={:?} ws={:?} -> {:?}",
+                self.toolbar_style, sel, ws, b
+            );
+        }
         if let Some(pos) = self.toolbar_pos {
             b.origin = point(
                 px(f32::from(pos.x).clamp(
@@ -438,21 +456,42 @@ impl ScreenshotSession {
     /// "draggable but not a hand" or vice versa — user-reported).
     pub(crate) fn toolbar_grips(&self, name: &str) -> Option<(Bounds<Pixels>, Bounds<Pixels>)> {
         let b = self.toolbar_bounds(name)?;
-        let (w, h) = (
-            px(crate::model::placement::GRIP_W),
-            px(crate::model::placement::ROW_H),
-        );
-        let pad = px(crate::model::placement::BAR_PAD);
-        Some((
-            Bounds {
-                origin: point(b.origin.x + pad, b.origin.y),
-                size: size(w, h),
-            },
-            Bounds {
-                origin: point(b.right() - pad - w, b.origin.y),
-                size: size(w, h),
-            },
-        ))
+        match self.toolbar_style {
+            crate::model::placement::ToolbarStyle::Bar => {
+                let (w, h) = (
+                    px(crate::model::placement::GRIP_W),
+                    px(crate::model::placement::ROW_H),
+                );
+                let pad = px(crate::model::placement::BAR_PAD);
+                Some((
+                    Bounds {
+                        origin: point(b.origin.x + pad, b.origin.y),
+                        size: size(w, h),
+                    },
+                    Bounds {
+                        origin: point(b.right() - pad - w, b.origin.y),
+                        size: size(w, h),
+                    },
+                ))
+            }
+            // the hub is the only grab: both tuple slots point at it so
+            // every caller's either-contains check keeps working
+            crate::model::placement::ToolbarStyle::Radial => {
+                let hub = Bounds::new(
+                    point(
+                        b.origin.x + b.size.width / 2.
+                            - px(crate::model::placement::RADIAL_HUB / 2.),
+                        b.origin.y + b.size.height / 2.
+                            - px(crate::model::placement::RADIAL_HUB / 2.),
+                    ),
+                    size(
+                        px(crate::model::placement::RADIAL_HUB),
+                        px(crate::model::placement::RADIAL_HUB),
+                    ),
+                );
+                Some((hub, hub))
+            }
+        }
     }
 
     /// Press on an edge grip: start dragging the toolbar. `press` is in
@@ -484,7 +523,8 @@ impl ScreenshotSession {
             return false;
         };
         self.pointer_global = Some(self.to_global(name, local));
-        let (base_w, height) = crate::model::placement::toolbar_size(self.annotations.enabled());
+        let (base_w, height) =
+            crate::model::placement::toolbar_size(self.toolbar_style, self.annotations.enabled());
         let w = base_w.min((f32::from(ws.width) - 16.).max(1.));
         let next = point(
             px((f32::from(local.x) - f32::from(grab.x))

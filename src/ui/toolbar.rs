@@ -107,6 +107,35 @@ pub(crate) fn selection_toolbar(
     focus: FocusHandle,
     size_slider: Option<SizeSlider>,
 ) -> impl IntoElement {
+    if std::env::var_os("SHOTORI_DEBUG_TB").is_some() {
+        eprintln!(
+            "[tb-debug] selection_toolbar dispatch: {:?}",
+            theme::c().toolbar_style
+        );
+    }
+    match theme::c().toolbar_style {
+        theme::ToolbarStyle::Bar => {
+            bar_toolbar(rect, output, annotations, session, focus, size_slider)
+        }
+        theme::ToolbarStyle::Radial => radial_toolbar(
+            rect,
+            output,
+            annotations,
+            session,
+            focus,
+            size_slider.as_ref(),
+        ),
+    }
+}
+
+fn bar_toolbar(
+    rect: Bounds<Pixels>,
+    output: SharedString,
+    annotations: &crate::annotation::Annotations,
+    session: Entity<ScreenshotSession>,
+    focus: FocusHandle,
+    size_slider: Option<SizeSlider>,
+) -> Stateful<Div> {
     let edit_kind = annotations.edit_kind();
     let selected_color = annotations
         .selected()
@@ -467,6 +496,464 @@ pub(crate) fn selection_toolbar(
         }))
 }
 
+/// The radial dial preset: round buttons floating in a ring around a
+/// drag hub — no shared plate, each button is its own chip (the dial
+/// covers screenshot content, so it stays visually light). Settings
+/// unfold INSIDE the ring when a tool is active: the mode pair at the
+/// upper arc, the palette at the lower arc, the size slider on a chord
+/// below the hub — the outer rect never changes state.
+fn radial_toolbar(
+    rect: Bounds<Pixels>,
+    output: SharedString,
+    annotations: &crate::annotation::Annotations,
+    session: Entity<ScreenshotSession>,
+    focus: FocusHandle,
+    size_slider: Option<&SizeSlider>,
+) -> Stateful<Div> {
+    use crate::model::placement::{RADIAL_BTN, RADIAL_HUB, RADIAL_R};
+    let edit_kind = annotations.edit_kind();
+    let selected_color = annotations
+        .selected()
+        .map(|s| s.color)
+        .unwrap_or_else(|| annotations.color().0);
+    let filter_tool = matches!(
+        edit_kind,
+        Some(crate::annotation::ShapeKind::Mosaic | crate::annotation::ShapeKind::Blur)
+    );
+    let eraser_tool = matches!(
+        edit_kind,
+        Some(crate::annotation::ShapeKind::Eraser | crate::annotation::ShapeKind::EraserRect)
+    );
+
+    // polar → cartesian, θ=0 at 12 o'clock growing clockwise, in
+    // WINDOW coordinates: absolute children resolve against the
+    // window's initial containing block (the container is NOT
+    // `.relative()` — that positioning context makes the whole
+    // subtree fail to paint, see ROADMAP), so the chips carry the
+    // toolbar's own origin themselves.
+    let at = |theta_deg: f32, radius: f32| {
+        let rad = theta_deg.to_radians();
+        point(
+            rect.size.width / 2. + px(radius * rad.sin()),
+            rect.size.height / 2. - px(radius * rad.cos()),
+        )
+    };
+    let chip = |p: Point<Pixels>, size_: f32| {
+        div()
+            .absolute()
+            .left(p.x - px(size_ / 2.))
+            .top(p.y - px(size_ / 2.))
+            .size(px(size_))
+    };
+
+    // ── the hub: the dial's drag handle (same contract as the bar's
+    // grips — every pixel that shows the hand grabs) ────────────────
+    let hub = chip(at(0., 0.), RADIAL_HUB)
+        .id("rt-hub")
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap(px(2.))
+        .bg(rgba(theme::c().toolbar_bg))
+        .border_1()
+        .border_color(rgba(theme::c().toolbar_border))
+        .shadow_sm()
+        .on_mouse_down(MouseButton::Left, {
+            let output = output.clone();
+            let session = session.clone();
+            move |ev, _, cx| {
+                session.update(cx, |s, cx| {
+                    if s.toolbar_drag_begin(&output, ev.position) {
+                        cx.notify();
+                    }
+                });
+                cx.stop_propagation();
+            }
+        })
+        .children((0..3).map(|_| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(1.5))
+                .children((0..3).map(|_| {
+                    div()
+                        .size(px(1.5))
+                        .rounded_full()
+                        .bg(rgba((theme::c().toolbar_text & 0xFFFFFF00) | 0x4D))
+                }))
+        }));
+
+    // ── the ring: every tool and action, one floating round chip each.
+    // All sixteen dispatch the same actions the bar's buttons (and the
+    // keyboard) do — one action, three triggers, one pipeline.
+    struct RingEntry {
+        id: &'static str,
+        label: &'static str,
+        icon: RingIcon,
+        action: RingAction,
+        selected: bool,
+    }
+    type RingAction = Box<dyn Fn(&mut Window, &mut App)>;
+    enum RingIcon {
+        Kit(IconName),
+        Own(&'static str),
+    }
+    macro_rules! dispatch {
+        ($action:ident) => {
+            Box::new(|window: &mut Window, cx: &mut App| {
+                window.dispatch_action(Box::new($action), cx)
+            })
+        };
+    }
+    let tool = annotations.tool();
+    let is_tool =
+        |kind: crate::annotation::ShapeKind| tool == Some(kind) || edit_kind == Some(kind);
+    let ring = [
+        RingEntry {
+            id: "rt-rectangle",
+            label: "Rectangle · R",
+            icon: RingIcon::Kit(IconName::Square),
+            action: dispatch!(ToggleRectangle),
+            selected: is_tool(crate::annotation::ShapeKind::Rectangle),
+        },
+        RingEntry {
+            id: "rt-ellipse",
+            label: "Ellipse · E",
+            icon: RingIcon::Kit(IconName::Circle),
+            action: dispatch!(ToggleEllipse),
+            selected: is_tool(crate::annotation::ShapeKind::Ellipse),
+        },
+        RingEntry {
+            id: "rt-line",
+            label: "Line · L",
+            icon: RingIcon::Kit(IconName::Slash),
+            action: dispatch!(ToggleLine),
+            selected: is_tool(crate::annotation::ShapeKind::Line),
+        },
+        RingEntry {
+            id: "rt-polyline",
+            label: "Polyline · P",
+            icon: RingIcon::Kit(IconName::Waypoints),
+            action: dispatch!(TogglePolyline),
+            selected: is_tool(crate::annotation::ShapeKind::Polyline),
+        },
+        RingEntry {
+            id: "rt-arrow",
+            label: "Arrow · A",
+            icon: RingIcon::Kit(IconName::ArrowUpRight),
+            action: dispatch!(ToggleArrow),
+            selected: is_tool(crate::annotation::ShapeKind::Arrow),
+        },
+        RingEntry {
+            id: "rt-number",
+            label: "Sequence number · N",
+            icon: RingIcon::Kit(IconName::ListOrdered),
+            action: dispatch!(ToggleNumber),
+            selected: is_tool(crate::annotation::ShapeKind::Number),
+        },
+        RingEntry {
+            id: "rt-text",
+            label: "Text · T",
+            icon: RingIcon::Kit(IconName::Type),
+            action: dispatch!(ToggleText),
+            selected: is_tool(crate::annotation::ShapeKind::Text),
+        },
+        RingEntry {
+            id: "rt-pencil",
+            label: "Pencil · B",
+            icon: RingIcon::Kit(IconName::Pencil),
+            action: dispatch!(TogglePencil),
+            selected: is_tool(crate::annotation::ShapeKind::Pencil),
+        },
+        RingEntry {
+            id: "rt-highlighter",
+            label: "Highlighter · H",
+            icon: RingIcon::Kit(IconName::Highlighter),
+            action: dispatch!(ToggleHighlighter),
+            selected: is_tool(crate::annotation::ShapeKind::Highlighter),
+        },
+        RingEntry {
+            id: "rt-mosaic",
+            label: "Mosaic / Blur · M",
+            icon: RingIcon::Own("icons/mosaic.svg"),
+            action: dispatch!(ToggleMosaic),
+            selected: filter_tool,
+        },
+        RingEntry {
+            id: "rt-eraser",
+            label: "Eraser · D",
+            icon: RingIcon::Kit(IconName::Eraser),
+            action: dispatch!(ToggleEraser),
+            selected: eraser_tool,
+        },
+        RingEntry {
+            id: "rt-ocr",
+            label: "Recognize text · Ctrl+O",
+            icon: RingIcon::Kit(IconName::ScanText),
+            action: dispatch!(OcrSelection),
+            selected: false,
+        },
+        RingEntry {
+            id: "rt-save",
+            label: "Save · Ctrl+S",
+            icon: RingIcon::Kit(IconName::Save),
+            action: dispatch!(SaveSelection),
+            selected: false,
+        },
+        RingEntry {
+            id: "rt-pin",
+            label: "Pin to screen · Ctrl+P",
+            icon: RingIcon::Own("icons/pin.svg"),
+            action: dispatch!(PinSelection),
+            selected: false,
+        },
+        RingEntry {
+            id: "rt-cancel",
+            label: "Cancel · Esc",
+            icon: RingIcon::Kit(IconName::X),
+            action: dispatch!(QuitOverlay),
+            selected: false,
+        },
+        RingEntry {
+            id: "rt-copy",
+            label: "Copy · Enter / Ctrl+C",
+            icon: RingIcon::Kit(IconName::Copy),
+            action: dispatch!(CopySelection),
+            selected: false,
+        },
+    ];
+
+    // a floating chip is its own plate (the bar shares one background
+    // across the row; the ring has none). The plate is the CONTAINER
+    // div — Button's own background slot is routed through its state
+    // machinery (hover/selected), which swallows a plain instance .bg()
+    let plate = |p: Point<Pixels>, size_: f32| {
+        chip(p, size_)
+            .rounded_full()
+            .bg(rgba(theme::c().toolbar_bg))
+            .border_1()
+            .border_color(rgba(theme::c().toolbar_border))
+            .shadow_sm()
+    };
+
+    let ring_buttons = ring.into_iter().enumerate().map(|(i, entry)| {
+        let theta = i as f32 * (360. / 16.);
+        plate(at(theta, RADIAL_R), RADIAL_BTN).child(
+            control(
+                entry.id.into(),
+                entry.label.into(),
+                focus.clone(),
+                entry.action,
+            )
+            .size_full()
+            .rounded_full()
+            .selected(entry.selected)
+            .child(match entry.icon {
+                RingIcon::Kit(name) => svg()
+                    .path(name.path())
+                    .size(px(18.))
+                    .text_color(rgba(theme::c().toolbar_text))
+                    .into_any_element(),
+                RingIcon::Own(path) => own_icon(path).into_any_element(),
+            }),
+        )
+    });
+
+    // ── inside the ring: the settings cluster (a tool is active) ────
+    let mut inner: Vec<AnyElement> = Vec::new();
+    if edit_kind.is_some() {
+        // the mode pair rides the upper arc (mosaic/blur, brush/rect)
+        let modes: &[(&str, &str, crate::annotation::ShapeKind, IconName)] = if filter_tool {
+            &[
+                (
+                    "rt-blur",
+                    "Blur",
+                    crate::annotation::ShapeKind::Blur,
+                    IconName::MirrorRectangular,
+                ),
+                (
+                    "rt-pixelate",
+                    "Mosaic",
+                    crate::annotation::ShapeKind::Mosaic,
+                    IconName::Square,
+                ),
+            ]
+        } else if eraser_tool {
+            &[
+                (
+                    "rt-eraser-brush",
+                    "Brush eraser",
+                    crate::annotation::ShapeKind::Eraser,
+                    IconName::Eraser,
+                ),
+                (
+                    "rt-eraser-rect",
+                    "Rectangle eraser",
+                    crate::annotation::ShapeKind::EraserRect,
+                    IconName::Square,
+                ),
+            ]
+        } else {
+            &[]
+        };
+        for (i, (id, label, kind, icon)) in modes.iter().enumerate() {
+            let (id, label, kind) = (*id, *label, *kind);
+            let session = session.clone();
+            let p = at(if i == 0 { 315. } else { 225. }, 95.);
+            inner.push(
+                chip(p, 28.)
+                    .rounded_full()
+                    .bg(rgba(theme::c().toolbar_bg))
+                    .border_1()
+                    .border_color(rgba(theme::c().toolbar_border))
+                    .shadow_sm()
+                    .child(
+                        control(id.into(), label.into(), focus.clone(), move |_, cx| {
+                            session.update(cx, |s, cx| {
+                                s.edit_annotations(|a| {
+                                    if a.tool() != Some(kind) {
+                                        a.toggle(kind);
+                                    }
+                                });
+                                cx.notify();
+                            });
+                        })
+                        .size_full()
+                        .rounded_full()
+                        .selected(edit_kind == Some(kind))
+                        .child(
+                            svg()
+                                .path(icon.path())
+                                .size(px(16.))
+                                .text_color(rgba(theme::c().toolbar_text)),
+                        ),
+                    )
+                    .into_any_element(),
+            );
+        }
+        // the palette rides the lower arc
+        if !filter_tool && !eraser_tool {
+            for (i, color) in theme::c().annotation_colors.into_iter().enumerate() {
+                let name = theme::PALETTE_NAMES[i];
+                let session = session.clone();
+                let p = at(30. + i as f32 * 20., 95.);
+                inner.push(
+                    chip(p, 26.)
+                        .child(
+                            control(
+                                format!("rt-color-{i}"),
+                                format!("Color: {name}"),
+                                focus.clone(),
+                                move |_, cx| {
+                                    session.update(cx, |s, cx| {
+                                        s.edit_annotation_settings(|a| a.set_color(i));
+                                        cx.notify();
+                                    })
+                                },
+                            )
+                            .size_full()
+                            .rounded_full()
+                            .selected(selected_color == color)
+                            .child(
+                                div()
+                                    .size(px(18.))
+                                    .rounded_full()
+                                    .bg(rgba(color))
+                                    .border_1()
+                                    .border_color(rgba(theme::c().swatch_border)),
+                            ),
+                        )
+                        .into_any_element(),
+                );
+            }
+        }
+        // the size slider spans a chord below the hub
+        if let Some(sc) =
+            size_slider.filter(|_| edit_kind != Some(crate::annotation::ShapeKind::EraserRect))
+        {
+            let origin = at(180., 55.);
+            inner.push(
+                div()
+                    .absolute()
+                    .left(origin.x - px(48.))
+                    .top(origin.y - px(10.))
+                    .w(px(96. + 6. + 20.))
+                    .h(px(20.))
+                    .flex()
+                    .items_center()
+                    .child(radial_size_control(sc))
+                    .into_any_element(),
+            );
+        }
+    }
+
+    div()
+        .id("shotori-toolbar")
+        .absolute()
+        .left(rect.origin.x)
+        .top(rect.origin.y)
+        .w(rect.size.width)
+        .h(rect.size.height)
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(hub)
+        .children(ring_buttons)
+        .children(inner)
+}
+
+/// The dial's compact size control: the same base slider primitives
+/// as the bar's `size_control`, at a chord-friendly scale.
+fn radial_size_control(sc: &SizeSlider) -> Div {
+    const TRACK_W: f32 = 96.;
+    const THUMB: f32 = 12.;
+    let state = &sc.state;
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .child(
+            div()
+                .relative()
+                .w(px(TRACK_W))
+                .h(px(20.))
+                .child(
+                    Slider::new(state)
+                        .horizontal()
+                        .absolute()
+                        .size_full()
+                        .child(
+                            SliderTrack::new(state)
+                                .absolute()
+                                .left(px(THUMB / 2.))
+                                .top(px(8.))
+                                .w(px(TRACK_W - THUMB))
+                                .h(px(4.))
+                                .rounded_full()
+                                .bg(rgba(theme::c().toolbar_border))
+                                .child(SliderIndicator::new(state).size_full()),
+                        ),
+                )
+                .child(
+                    SliderThumb::new(state)
+                        .absolute()
+                        .top(px(10. - THUMB / 2.))
+                        .left(px(sc.percentage * (TRACK_W - THUMB)))
+                        .size(px(THUMB))
+                        .rounded_full()
+                        .bg(rgba(theme::c().toolbar_text))
+                        .border_1()
+                        .border_color(rgba(theme::c().toolbar_bg)),
+                ),
+        )
+        .child(
+            div()
+                .debug_selector(|| "rt-size-readout".to_string())
+                .w(px(20.))
+                .text_size(px(11.))
+                .text_color(rgba(theme::c().toolbar_text))
+                .child(format!("{:.0}", sc.current)),
+        )
+}
 /// A drag strip at the toolbar's edge: press and the whole toolbar
 /// follows the pointer anywhere on its layer (session-side clamping
 /// keeps it inside the window). Visually a matte "grip texture" — a
