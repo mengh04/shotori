@@ -26,8 +26,18 @@ const MIN_SIZE: f32 = 2.0;
 /// crossings cost a pixel or two.
 pub(crate) const HANDLE_HIT: f32 = 8.0;
 
-/// Painted handle size (logical pixels) — see `ui::hud::selection_handles`.
-pub(crate) const HANDLE_VIS: f32 = 8.0;
+/// Painted handle-dot diameter (logical pixels) — see
+/// `ui::hud::paint_handle_dot`. Deliberately smaller than
+/// [`HANDLE_HIT`]: what you SEE and what you can GRAB are separate
+/// budgets (a small dot stays quiet, the grab band stays generous).
+/// Restyles may shrink the dot; never shrink the band to match.
+pub(crate) const HANDLE_VIS: f32 = 7.0;
+
+/// The dot must stay inside the grab band (see/grab separation, issue
+/// #18): restyles may shrink the visible handle, never the grab
+/// comfort. A compile-time check, so the two constants cannot drift
+/// into coupling unnoticed.
+const _: () = assert!(HANDLE_VIS < HANDLE_HIT);
 
 /// Which edge(s) a resize grab drags. The eight zones mirror the classic
 /// screenshot-tool handles (4 corners + 4 edge midpoints).

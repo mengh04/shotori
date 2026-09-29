@@ -85,9 +85,10 @@ impl Shape {
     }
 
     /// Whether `p` grabs one of the handles; returns its anchor index
-    /// (same indexing as [`Shape::handle_points`]). The grab radius is
-    /// a little larger than the painted 6 px square so handles are
-    /// easy to catch.
+    /// (same indexing as [`Shape::handle_points`]). The grab radius
+    /// comfortably exceeds the painted dot's radius (`HANDLE_VIS / 2`,
+    /// see `ui::hud::paint_handle_dot`), so the small dot stays easy to
+    /// catch — what you see and what you can grab are separate budgets.
     pub(crate) fn handle_at(&self, p: Point<Pixels>) -> Option<usize> {
         const GRAB_RADIUS: f32 = 7.;
         self.handle_points()
