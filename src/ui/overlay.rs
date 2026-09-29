@@ -25,8 +25,8 @@ use crate::model::placement::round_px;
 use crate::model::selection::{PressTarget, Selection};
 use crate::platform::capture::Capture;
 use crate::ui::hud::{
-    annotation_chrome, handle_cursor, hover_outline, selection_backdrop, selection_handles,
-    selection_label,
+    annotation_chrome, handle_cursor, hover_outline, magnifier_loupe, selection_backdrop,
+    selection_handles, selection_label,
 };
 use crate::ui::image_util;
 use crate::ui::toolbar::selection_toolbar;
@@ -1060,6 +1060,7 @@ impl Render for Overlay {
         let highlighter_cache = self.highlighter_cache.clone();
         let drawing_polyline = shared.annotations().is_drawing_polyline();
         let active = shared.active_on(&self.capture.output_name);
+        let loupe = shared.local_loupe(&self.capture.output_name);
         let input_view = cx.entity().downgrade();
         let ws = window.bounds().size; // window logical size (= output logical size)
 
@@ -1483,6 +1484,13 @@ impl Render for Overlay {
             )
             // ⑤ OCR busy badge (spinner on the selection)
             .children(busy_el)
+            // ⑤½ Magnifier loupe (issue #19): the drag's precision
+            // chrome, topmost below the setup dialog (which blocks
+            // gestures anyway, so ⑥ stays above it). Renders only on
+            // the output that owns the focus point.
+            .children(
+                loupe.map(|l| magnifier_loupe(self.frozen.clone(), l, ws).into_any_element()),
+            )
             // ⑥ First-run OCR setup dialog (confirm / progress), topmost
 
             .children(setup_el)

@@ -352,6 +352,52 @@ window so another output can finish displaying the shared image.
 
 ## Design decisions
 
+### Loupe magnifies by composition, not by buffer (2026-09-29)
+
+Issue #19: pixel-precise corner placement gets a floating 3× inset of
+the frozen capture, crosshair on the focus pixel.
+
+- **The zoom is pure element composition** — the SAME per-output
+  `RenderImage`, sized `window × 3` and offset inside an
+  `overflow_hidden` frame so the focus pixel lands at the frame's
+  center. No cropped buffer, no `rgba_to_render_image` round-trip, no
+  atlas churn per drag frame — and the math is all logical px, which
+  is scale-factor-proof by construction because the img already fills
+  the window 1:1. The alternative (re-buffered crops, like the pin
+  path) would have to redo the physical/logical division per output
+  (the crop-scale trap) for zero visual gain.
+- **The loupe routes to the output that owns the focus point**, not
+  the window receiving the drag events. Under implicit grab a
+  cross-screen release drags events into the press window while the
+  handle itself lives on the other output; each overlay magnifies
+  only the pixels it froze, so `local_loupe` returns None elsewhere
+  (pinned by the cross-output shape-handle test).
+- **Corners and shape handles only.** An edge drag aims a line, not a
+  pixel; a move drags a body. The loupe targets gestures whose whole
+  meaning is "place THIS point" — selection corner resizes and every
+  shape handle drag (endpoints, corners, vertices).
+- **Content centers on the point; the inset floats away from it.**
+  Two passes, two needs: fine-tuning wants the magnified view centered
+  on the point (crosshair IS the pixel being placed); the coarse pass
+  (dragging without fine-tuning) wants the point unobstructed. So the
+  img inside the frame always maps the focus to the frame's center,
+  while the frame itself floats `16px` out along the handle's outward
+  diagonal (away from the resized body). **Near a screen edge the
+  failing axis flips per-axis** — clamping back would re-cover the
+  point (caught live: a corner dragged to the top-right had the
+  clamped loupe squatting on it), while the flipped side only covers
+  the dimmed resized body. A window too small for either side still
+  clamps (accepted fallback). Fade-in is the spinner's
+  `with_animation` posture (~100ms); disappearing with the gesture is
+  instant by design — no chrome lingers over a finished edit.
+- **Absolute-in-absolute is frame-local.** The zoomed img and the
+  crosshair position against the loupe div's own origin, not the
+  window: computing their offsets in window coordinates
+  double-counts `frame.origin`, and the magnified content slides off
+  the crosshair by exactly wherever the inset floats. Same class of
+  bug as the hit-test-rect trap (two geometry sources for one
+  concept): pick ONE coordinate space per element nesting level.
+
 ### Closed polygons select by interior; closure is structural (2026-09-29)
 
 Issue #16: a placed polygon (polyline) was selectable only along its
