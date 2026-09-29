@@ -553,11 +553,20 @@ mod tests {
         a.finish_polyline();
         // Freshly placed shapes auto-select (`record_add`), so the
         // interior reads as the move affordance right away…
-        assert_eq!(a.shape_hover(point(px(35.), px(35.))), Some(ShapeHover::Move));
+        assert_eq!(
+            a.shape_hover(point(px(35.), px(35.))),
+            Some(ShapeHover::Move)
+        );
         // …and as the pick affordance once nothing is selected.
         a.deselect();
-        assert_eq!(a.shape_hover(point(px(35.), px(35.))), Some(ShapeHover::Pick));
+        assert_eq!(
+            a.shape_hover(point(px(35.), px(35.))),
+            Some(ShapeHover::Pick)
+        );
         assert!(a.select_index(0));
-        assert_eq!(a.shape_hover(point(px(35.), px(35.))), Some(ShapeHover::Move));
+        assert_eq!(
+            a.shape_hover(point(px(35.), px(35.))),
+            Some(ShapeHover::Move)
+        );
     }
 }
