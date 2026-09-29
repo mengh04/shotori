@@ -38,8 +38,10 @@ pub(crate) const TB_W: f32 = 632.;
 /// natural content width, measured via test probe
 /// (`toolbar_hugs_its_content`): the full TB_W leaves a ~70px dead
 /// hole between the tool cluster and the action cluster, which the
-/// flex_1 spacer widens into a visible gap (user-reported).
-pub(crate) const TB_W_ROW1: f32 = 562.;
+/// flex_1 spacer widens into a visible gap (user-reported). Re-based
+/// 562 → 595 when the clear-all button joined the tool cluster
+/// (issue #15): one button pitch (30px button + 2px gap, probe-measured).
+pub(crate) const TB_W_ROW1: f32 = 595.;
 /// Width of one drag-grip strip at the toolbar's left/right edge.
 pub(crate) const GRIP_W: f32 = 12.;
 /// The bar rows' horizontal padding. The grip elements sit INSIDE that

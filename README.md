@@ -33,6 +33,9 @@ and feedback are welcome in the
   scales and rotated outputs, with selections spanning screens
 - Annotations: rectangle, ellipse, line, polyline, arrow, numbered steps,
   pencil, highlighter, mosaic/blur, eraser, and text
+- Clear all annotations in one step (`Ctrl+Shift+Del` or the toolbar's
+  trash button); the selection stays put and a single undo restores
+  every mark
 - Double-click existing text to edit it in place; live wrapping extends to the
   selection edge, with size/color controls and one-step undo of the edit. Text
   keeps a 2px inset; input, paste, or size changes that overflow the bottom

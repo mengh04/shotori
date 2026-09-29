@@ -16,10 +16,10 @@ use gpui_kit::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOpti
 use gpui_kit::*;
 
 use crate::actions::{
-    CancelText, CopySelection, DeleteAnnotation, FinishPolyline, OcrSelection, PinSelection,
-    QuitOverlay, RedoAnnotation, SaveSelection, SelectScreen, ToggleArrow, ToggleEllipse,
-    ToggleEraser, ToggleHighlighter, ToggleLine, ToggleMosaic, ToggleNumber, TogglePencil,
-    TogglePolyline, ToggleRectangle, ToggleText, UndoAnnotation,
+    CancelText, ClearAnnotations, CopySelection, DeleteAnnotation, FinishPolyline, OcrSelection,
+    PinSelection, QuitOverlay, RedoAnnotation, SaveSelection, SelectScreen, ToggleArrow,
+    ToggleEllipse, ToggleEraser, ToggleHighlighter, ToggleLine, ToggleMosaic, ToggleNumber,
+    TogglePencil, TogglePolyline, ToggleRectangle, ToggleText, UndoAnnotation,
 };
 use crate::model::placement::round_px;
 use crate::model::selection::{PressTarget, Selection};
@@ -1177,6 +1177,20 @@ impl Render for Overlay {
                 this.session.update(cx, |s, cx| {
                     s.edit_annotations(|a| {
                         a.delete_selected();
+                    });
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &ClearAnnotations, window, cx| {
+                // An in-flight text/number edit would keep its editor
+                // open over an emptied canvas; cancel it — committing
+                // first is pointless when the result is about to be
+                // cleared as part of the same user step.
+                this.finish_text(false, window, cx);
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| {
+                        a.clear_all();
                     });
                     cx.notify();
                 });
@@ -2351,7 +2365,7 @@ mod multi_output_tests {
         });
         let gap = f32::from(
             vcx.debug_bounds("tb-ocr").unwrap().left()
-                - vcx.debug_bounds("tb-text").unwrap().right(),
+                - vcx.debug_bounds("tb-clear").unwrap().right(),
         );
         assert!(
             gap <= 10.,

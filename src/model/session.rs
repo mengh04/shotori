@@ -2197,6 +2197,47 @@ mod tests {
     }
 
     #[test]
+    fn clear_all_annotations_keep_selection_and_frozen_capture() {
+        use crate::annotation::ShapeKind;
+        let mut s = session();
+        s.select_all();
+        let sel = s.selection.bounds().unwrap();
+        let pristine = s.crop("left").unwrap().2;
+        s.edit_annotations(|a| {
+            a.toggle(ShapeKind::Rectangle);
+            a.begin(point(px(0.), px(10.)), sel, false);
+            a.drag_to(point(px(40.), px(50.)), sel, false);
+            a.end();
+            // a raster-preview kind (mosaic) flips the session onto the
+            // filtered path, so the wipe must invalidate that cache too
+            a.toggle(ShapeKind::Mosaic);
+            a.begin(point(px(50.), px(10.)), sel, false);
+            a.drag_to(point(px(80.), px(50.)), sel, false);
+            a.end();
+        });
+        let marked = s.crop("left").unwrap().2;
+        assert_ne!(marked, pristine);
+        let _ = s.filtered_preview("left");
+
+        let mut cleared = false;
+        s.edit_annotations(|a| cleared = a.clear_all());
+        assert!(cleared);
+        // annotations only: the selection region and the frozen capture
+        // are exactly what they were before any mark existed
+        assert_eq!(s.selection.bounds(), Some(sel));
+        assert_eq!(s.crop("left").unwrap().2, pristine);
+        // the raster path itself switches off — no filter kinds remain,
+        // so the preview cache is dropped instead of being reused
+        assert!(s.filtered_preview("left").is_none());
+        assert!(s.filter_preview.borrow().is_none());
+
+        // one undo restores every mark, still without touching the region
+        s.edit_annotations(|a| a.undo());
+        assert_eq!(s.crop("left").unwrap().2, marked);
+        assert_eq!(s.selection.bounds(), Some(sel));
+    }
+
+    #[test]
     fn click_selects_shapes_and_drag_moves_the_hit_shape() {
         use crate::annotation::ShapeKind;
         let mut s = session();

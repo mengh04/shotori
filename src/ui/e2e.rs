@@ -6,17 +6,18 @@
 //!   all running the same code, enabling all of them makes them fight
 //!   each other; this scopes the other two knobs to one overlay
 //! - `SHOTORI_DEBUG_SELECTION=x,y,w,h` — inject a ready-made selection
-//! - `SHOTORI_DEBUG_ACTION=copy|save|pin|quit|ocr|ocrsetup` — fire the
-//!   action(s) automatically after 1.5s; the only entry point for
-//!   headless e2e (the virtual pointer is dead on niri, see ROADMAP).
-//!   quit/ocr go through the real dispatch_action pipeline;
+//! - `SHOTORI_DEBUG_ACTION=copy|save|pin|quit|ocr|ocrsetup|clear` —
+//!   fire the action(s) automatically after 1.5s; the only entry point
+//!   for headless e2e (the virtual pointer is dead on niri, see
+//!   ROADMAP). quit/ocr go through the real dispatch_action pipeline;
 //!   "ocrsetup" drives the full first-run flow: OcrSelection at 1.5s
 //!   (opens the dialog since models are missing), then
-//!   OcrSetupConfirm at 6s (starts the download)
+//!   OcrSetupConfirm at 6s (starts the download); "clear" fires the
+//!   clear-all annotations action (issue #15)
 
 use gpui_kit::*;
 
-use crate::actions::{CopySelection, OcrSelection, QuitOverlay, SaveSelection};
+use crate::actions::{ClearAnnotations, CopySelection, OcrSelection, QuitOverlay, SaveSelection};
 use crate::model::selection::Selection;
 use crate::ui::overlay::Overlay;
 
@@ -49,7 +50,13 @@ pub(crate) fn debug_selection(targeted: bool) -> Selection {
 /// Fire the configured action(s) after 1.5s.
 pub(crate) fn spawn_debug_action(window: &mut Window, cx: &mut Context<Overlay>) {
     let Some(action) = std::env::var("SHOTORI_DEBUG_ACTION").ok().filter(|a| {
-        a == "copy" || a == "quit" || a == "save" || a == "pin" || a == "ocr" || a == "ocrsetup"
+        a == "copy"
+            || a == "quit"
+            || a == "save"
+            || a == "pin"
+            || a == "ocr"
+            || a == "ocrsetup"
+            || a == "clear"
     }) else {
         return;
     };
@@ -77,6 +84,7 @@ pub(crate) fn spawn_debug_action(window: &mut Window, cx: &mut Context<Overlay>)
                 "save" => Box::new(SaveSelection),
                 "pin" => Box::new(crate::actions::PinSelection),
                 "ocr" => Box::new(OcrSelection),
+                "clear" => Box::new(ClearAnnotations),
                 _ => Box::new(QuitOverlay),
             };
             window.dispatch_action(action, cx);

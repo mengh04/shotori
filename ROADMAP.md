@@ -400,6 +400,33 @@ grabbed yet; the affordance being promised is "click to pick". Now:
 - The gpui pointing-hand variant is **`CursorStyle::PointingHand`**
   (CSS `pointer`), not `Pointer`.
 
+### Clear-all is one whole-list history entry, not N removals (2026-09-29)
+
+Issue #15's one-click wipe of every placed annotation:
+
+- **`HistoryEntry::RemoveAll { shapes }` stores the entire committed
+  sequence and restores it wholesale on undo**, instead of replaying N
+  per-shape `Remove` entries. The saved sequence is self-describing:
+  undo puts the exact list back no matter what interleaves after the
+  clear (new strokes, further undos, redo), so the "indices in older
+  entries stay valid" invariant needs no index arithmetic over a list
+  that empties and refills. One entry is also the issue's contract —
+  a single Ctrl+Z restores everything. An empty canvas records NO
+  entry (pressing clear twice must not clobber the redo stack),
+  mirroring `delete_selected`'s no-selection no-op.
+- **The raster-preview path needed no new invalidation plumbing.**
+  `filtered_preview` already diffs `cached.committed` against the live
+  list, so a mass removal rebuilds from the immutable capture; once no
+  filter kinds remain, `uses_raster_preview()` flipping false drops
+  the cache outright — the session test pins both.
+- **Placement on the toolbar: end of the tool cluster.** Undo/redo
+  are deliberately keyboard-only (`geometry_toolbar_keyboard_and_export`
+  asserts `tb-undo`/`tb-redo` never exist), so there is no undo/redo
+  row to sit "near" — the trash button closes the tool cluster
+  instead. `TB_W_ROW1` re-measured 562 → 595 (one probe-measured
+  32px button pitch; the copy-clips assert would have caught a miss).
+  This Lucide bundle has no trash-2, hence the plain `Trash` glyph.
+
 ### Number badge editing: wheel tunes the value, double-click opens free entry (2026-09-29)
 
 Issue #2's second ask (post-placement value editing), riding the issue
