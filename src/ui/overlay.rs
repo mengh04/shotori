@@ -16,10 +16,10 @@ use gpui_kit::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOpti
 use gpui_kit::*;
 
 use crate::actions::{
-    CancelText, CopySelection, DeleteAnnotation, FinishPolyline, OcrSelection, PinSelection,
-    QuitOverlay, RedoAnnotation, SaveSelection, SelectScreen, ToggleArrow, ToggleEllipse,
-    ToggleEraser, ToggleHighlighter, ToggleLine, ToggleMosaic, ToggleNumber, TogglePencil,
-    TogglePolyline, ToggleRectangle, ToggleText, UndoAnnotation,
+    CancelText, ClearAnnotations, CopySelection, DeleteAnnotation, FinishPolyline, OcrSelection,
+    PinSelection, QuitOverlay, RedoAnnotation, SaveSelection, SelectScreen, ToggleArrow,
+    ToggleEllipse, ToggleEraser, ToggleHighlighter, ToggleLine, ToggleMosaic, ToggleNumber,
+    TogglePencil, TogglePolyline, ToggleRectangle, ToggleText, UndoAnnotation,
 };
 use crate::model::placement::round_px;
 use crate::model::selection::{PressTarget, Selection};
@@ -169,9 +169,10 @@ impl Overlay {
     /// The window cursor for the current interaction state, hit-tested
     /// against the selection at the last known pointer position:
     /// crosshair for (new) selection drawing and annotation tools, the
-    /// resize arrows on the handles, an open hand over the interior and
-    /// the toolbar grips, a closed hand while moving — or dragging the
-    /// toolbar by a grip.
+    /// resize arrows on the handles, a pointing hand over an unselected
+    /// shape (click-to-pick), an open hand over the selected shape's
+    /// body, the selection interior and the toolbar grips, a closed
+    /// hand while moving — or dragging the toolbar by a grip.
     fn cursor_style(&self, cx: &App) -> CursorStyle {
         let session = self.session.read(cx);
         if session.blocked() {
@@ -215,13 +216,15 @@ impl Overlay {
                     || session.is_body_moving()
                     || session.handle_drag_anchor().is_some()
                     || session.annotation_handle_hover().is_some()
-                    || session.pointer_on_annotation()
+                    || session.annotation_hover().is_some()
                 {
                     // body move: grabbed; handle drag keeps its own
                     // affordance (plain arrow for point handles, the
                     // diagonal for corners); a handle under the pointer
                     // promises the same; a shape body selects on press
-                    // (grab cursor); blank canvas keeps the crosshair
+                    // (pointing hand — open hand once selected, when
+                    // the press becomes a move); blank canvas keeps
+                    // the crosshair
                     if session.is_body_moving() {
                         return CursorStyle::ClosedHand;
                     }
@@ -231,8 +234,20 @@ impl Overlay {
                     if let Some((kind, anchor)) = session.annotation_handle_hover() {
                         return annotation_handle_cursor(kind, anchor);
                     }
-                    if session.pointer_on_annotation() {
-                        return CursorStyle::OpenHand;
+                    // The pick/grab split (issue #17): a hand means
+                    // "holding something", so before anything is
+                    // grabbed the affordance over a shape is "click to
+                    // pick"; the already-selected shape is a move
+                    // affordance (open hand) and the drag itself is
+                    // the closed hand above.
+                    match session.annotation_hover() {
+                        Some(crate::annotation::ShapeHover::Move) => {
+                            return CursorStyle::OpenHand;
+                        }
+                        Some(crate::annotation::ShapeHover::Pick) => {
+                            return CursorStyle::PointingHand;
+                        }
+                        None => {}
                     }
                     if session.annotations().enabled() {
                         return CursorStyle::Crosshair;
@@ -1162,6 +1177,20 @@ impl Render for Overlay {
                 this.session.update(cx, |s, cx| {
                     s.edit_annotations(|a| {
                         a.delete_selected();
+                    });
+                    cx.notify();
+                });
+            }))
+            .on_action(cx.listener(|this, _: &ClearAnnotations, window, cx| {
+                // An in-flight text/number edit would keep its editor
+                // open over an emptied canvas; cancel it — committing
+                // first is pointless when the result is about to be
+                // cleared as part of the same user step.
+                this.finish_text(false, window, cx);
+                window.focus(&this.focus_handle, cx);
+                this.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| {
+                        a.clear_all();
                     });
                     cx.notify();
                 });
@@ -2164,6 +2193,131 @@ mod multi_output_tests {
     }
 
     #[gpui_kit::test]
+    fn annotation_hover_cursor_picks_then_grabs(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::base::init(cx);
+            crate::actions::init_annotation_keybindings(cx);
+            crate::actions::bind_keys(cx);
+        });
+        let mut capture = Capture::for_test((0, 0), 1.);
+        capture.output_name = "main".into();
+        capture.width = 400;
+        capture.height = 400;
+        capture.rgba = vec![255; 400 * 400 * 4];
+        let capture = Arc::new(capture);
+        let session = cx.new(|_| ScreenshotSession::new(vec![capture.clone()], Vec::new()));
+        let (overlay, vcx) =
+            cx.add_window_view(|window, cx| Overlay::new(capture, session.clone(), window, cx));
+        vcx.simulate_resize(size(px(400.), px(400.)));
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        vcx.run_until_parked();
+
+        // a selection first: (50,50)-(150,150)
+        vcx.simulate_mouse_down(
+            point(px(50.), px(50.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_move(
+            point(px(150.), px(150.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_up(
+            point(px(150.), px(150.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+
+        // a rectangle annotation inside it: (60,70)-(140,130) — freshly
+        // placed marks select themselves, so the first hover is the
+        // move affordance of the ALREADY-selected shape
+        vcx.simulate_keystrokes("r");
+        vcx.run_until_parked();
+        vcx.simulate_mouse_down(
+            point(px(60.), px(70.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_move(
+            point(px(140.), px(130.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_up(
+            point(px(140.), px(130.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            assert!(session.read(cx).annotations().selected().is_some());
+        });
+
+        // hover the top edge's midpoint (40 px from either corner
+        // handle, outside the 7 px grab radius): selected body = grab
+        vcx.simulate_mouse_move(
+            point(px(100.), px(70.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        vcx.update(|_, cx| assert_eq!(overlay.read(cx).cursor.get(), CursorStyle::OpenHand));
+
+        // Escape drops the selection (the tool stays active): the same
+        // body now advertises click-to-pick — a hand before anything
+        // is grabbed would read as "already holding" (issue #17)
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            assert!(session.read(cx).annotations().selected().is_none());
+            assert_eq!(overlay.read(cx).cursor.get(), CursorStyle::PointingHand);
+        });
+
+        // press-release without a drag: the shape is selected again and
+        // the body becomes a move affordance (open hand)
+        vcx.simulate_mouse_down(
+            point(px(100.), px(70.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_up(
+            point(px(100.), px(70.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            assert!(session.read(cx).annotations().selected().is_some());
+            assert_eq!(overlay.read(cx).cursor.get(), CursorStyle::OpenHand);
+        });
+
+        // press and drag past the click slop: holding — closed hand
+        vcx.simulate_mouse_down(
+            point(px(100.), px(70.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.simulate_mouse_move(
+            point(px(110.), px(80.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        vcx.update(|_, cx| assert_eq!(overlay.read(cx).cursor.get(), CursorStyle::ClosedHand));
+        vcx.simulate_mouse_up(
+            point(px(110.), px(80.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        // release: back to the open hand — the pointer (110,80) sits on
+        // the translated shape's top edge, still selected
+        vcx.update(|_, cx| assert_eq!(overlay.read(cx).cursor.get(), CursorStyle::OpenHand));
+    }
+
+    #[gpui_kit::test]
     fn toolbar_hugs_its_content(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_kit::base::init(cx);
@@ -2211,7 +2365,7 @@ mod multi_output_tests {
         });
         let gap = f32::from(
             vcx.debug_bounds("tb-ocr").unwrap().left()
-                - vcx.debug_bounds("tb-text").unwrap().right(),
+                - vcx.debug_bounds("tb-clear").unwrap().right(),
         );
         assert!(
             gap <= 10.,

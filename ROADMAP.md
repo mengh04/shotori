@@ -352,6 +352,81 @@ window so another output can finish displaying the shared image.
 
 ## Design decisions
 
+### Closed polygons select by interior; closure is structural (2026-09-29)
+
+Issue #16: a placed polygon (polyline) was selectable only along its
+stroke band — the interior click silently missed. The fix rides the
+module's "what you see is what you can click" contract, with two
+findings that shaped it:
+
+- **The shape model has no closed flag, so closure must be inferred.**
+  Sealing a polygon in this tool means the final click lands back on
+  the first vertex; `ring_is_closed` accepts that within pointing
+  slop (`CLOSURE_SLOP` 7 px — the handle-grab scale — plus the
+  stroke's own footprint). Without the slop an exact `first == last`
+  test would reject every human-sealed ring; with too much, zigzags
+  whose endpoints merely sit nearby would gain a phantom interior.
+- **Ray casting over the vertex list implicitly closes the ring**
+  (last→first edge), which is exactly the sealed-ring interior — and
+  stays exact for concave outlines (an L's notch) where a bounding-box
+  test false-positives. Pencil/Highlighter loops remain band-only:
+  their visual is a stroke, an interior is not meaningful, and their
+  hit region shares nothing with the polyline arm anymore.
+
+The hover probe (now `shape_hover`, see the #17 entry below) rides
+the same `shape_hit`, so the hover cursor now covers polygon interiors
+too — the affordance other selectable bodies already had. While the
+polyline tool is active nothing changes: `parks_click_select` keeps
+its clicks placing vertices, selection happens from any other tool.
+
+### Annotation hover cursor: pointing hand picks, hands only hold (2026-09-29)
+
+Issue #17. Hovering a shape used to show the open hand — but a hand
+advertises "I'm holding something", and at hover time nothing is
+grabbed yet; the affordance being promised is "click to pick". Now:
+
+- **Unselected shape → pointing hand; selected shape → open hand;
+  actively moving → closed hand** (toolbar grips and resize handles
+  unchanged). The select-then-move sequence reads
+  pick → press → hold → release.
+- **The split lives in `Annotations::shape_hover`
+  (`annotation/select.rs`), a pure `Pick`/`Move` function of the
+  topmost hit, not a boolean.** The answer must match what a press
+  would do, and `pointer_down` parks its click on the TOPMOST hit —
+  so where a newer shape overlaps the selected one, the overlap
+  probes as Pick (the press would pick the top shape). The old
+  boolean probe (`pointer_on_annotation`/`hits_shape`) could not
+  express that and was removed.
+- The gpui pointing-hand variant is **`CursorStyle::PointingHand`**
+  (CSS `pointer`), not `Pointer`.
+
+### Clear-all is one whole-list history entry, not N removals (2026-09-29)
+
+Issue #15's one-click wipe of every placed annotation:
+
+- **`HistoryEntry::RemoveAll { shapes }` stores the entire committed
+  sequence and restores it wholesale on undo**, instead of replaying N
+  per-shape `Remove` entries. The saved sequence is self-describing:
+  undo puts the exact list back no matter what interleaves after the
+  clear (new strokes, further undos, redo), so the "indices in older
+  entries stay valid" invariant needs no index arithmetic over a list
+  that empties and refills. One entry is also the issue's contract —
+  a single Ctrl+Z restores everything. An empty canvas records NO
+  entry (pressing clear twice must not clobber the redo stack),
+  mirroring `delete_selected`'s no-selection no-op.
+- **The raster-preview path needed no new invalidation plumbing.**
+  `filtered_preview` already diffs `cached.committed` against the live
+  list, so a mass removal rebuilds from the immutable capture; once no
+  filter kinds remain, `uses_raster_preview()` flipping false drops
+  the cache outright — the session test pins both.
+- **Placement on the toolbar: end of the tool cluster.** Undo/redo
+  are deliberately keyboard-only (`geometry_toolbar_keyboard_and_export`
+  asserts `tb-undo`/`tb-redo` never exist), so there is no undo/redo
+  row to sit "near" — the trash button closes the tool cluster
+  instead. `TB_W_ROW1` re-measured 562 → 595 (one probe-measured
+  32px button pitch; the copy-clips assert would have caught a miss).
+  This Lucide bundle has no trash-2, hence the plain `Trash` glyph.
+
 ### Number badge editing: wheel tunes the value, double-click opens free entry (2026-09-29)
 
 Issue #2's second ask (post-placement value editing), riding the issue
@@ -625,6 +700,22 @@ traces the recorded centerline (one open path); a single-point tap
 keeps its circle rim; Line/Arrow keep the capsule rim that doubles as
 the width cue. Rule: a chrome path must be O(1) per selected shape,
 not O(segments).
+
+**Update (2026-09-29): handle chips became accent dots (issue #18).**
+The white-square-plus-accent-outline handles read as clutter against
+the dim bands and the orange border. Restyle: one
+`ui::hud::paint_handle_dot` helper (solid accent circle —
+`fill(..).corner_radii(half)`; gpui quads round, no path needed, and
+one quad per handle instead of two during resize drags) owns the look for BOTH
+the selection chrome and the annotation shape chrome, so the future
+corner loupe has exactly one place to grow on. Contract now enforced
+at compile time (`const _: () = assert!(HANDLE_VIS < HANDLE_HIT)` in
+model/selection.rs): the painted diameter is deliberately smaller than
+the grab band — what you SEE and what you can GRAB are separate
+budgets; syncing the two "for consistency" couples looks to comfort.
+Test note: quad origins are floored to device pixels, so assertions on
+painted geometry must carry ~1 px tolerance (same lesson as the
+probe-e2e rule against hardcoded pixel coordinates).
 
 ### Window snapping: what the compositor will and won't tell you (2026-09-26)
 

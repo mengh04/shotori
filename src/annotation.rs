@@ -10,6 +10,7 @@ pub(crate) use highlighter::HighlighterCache;
 mod number;
 mod select;
 pub(crate) use number::NumberCache;
+pub(crate) use select::ShapeHover;
 
 use chrome::ellipse_contour;
 use gpui_kit::{Bounds, Path, PathBuilder, Pixels, Point, point, px, size};
@@ -205,6 +206,15 @@ enum HistoryEntry {
     Remove {
         ix: usize,
         shape: Shape,
+    },
+    /// Clear-all (issue #15): every placed shape leaves as ONE entry,
+    /// so a single undo restores the whole sequence in order. A
+    /// whole-list replacement rather than N per-shape `Remove`s: the
+    /// saved sequence is self-describing, so undo puts the exact list
+    /// back no matter what interleaves after the clear — no index
+    /// arithmetic over a list that empties and refills.
+    RemoveAll {
+        shapes: Vec<Shape>,
     },
 }
 
@@ -785,6 +795,9 @@ impl Annotations {
                 HistoryEntry::Remove { ix, shape } => {
                     self.shapes.insert(*ix, shape.clone());
                 }
+                HistoryEntry::RemoveAll { shapes } => {
+                    self.shapes = shapes.clone();
+                }
             }
             self.redo.push(entry);
         }
@@ -804,6 +817,9 @@ impl Annotations {
                 }
                 HistoryEntry::Remove { ix, .. } => {
                     self.shapes.remove(*ix);
+                }
+                HistoryEntry::RemoveAll { .. } => {
+                    self.shapes.clear();
                 }
             }
             self.history.push(entry);
@@ -921,6 +937,30 @@ impl Annotations {
             self.redo.clear();
             self.selected = None;
         }
+    }
+
+    /// Remove every placed shape as ONE history entry (issue #15), so
+    /// a single Ctrl+Z restores the whole sequence in order and redo
+    /// re-clears. Selection/editing state that references shape
+    /// indices goes first — the list is about to empty — and a live
+    /// draft is canceled: the cleared canvas shows exactly the frozen
+    /// capture. The active tool, colors and per-tool sizes stay; only
+    /// the marks leave. No entry when nothing is placed (an empty
+    /// canvas must not pollute undo, matching `delete_selected`).
+    pub(crate) fn clear_all(&mut self) -> bool {
+        if self.shapes.is_empty() {
+            return false;
+        }
+        self.draft = None;
+        self.pressed = false;
+        self.selected = None;
+        self.text_original = None;
+        self.size_drag_active = false;
+        self.history.push(HistoryEntry::RemoveAll {
+            shapes: std::mem::take(&mut self.shapes),
+        });
+        self.redo.clear();
+        true
     }
 
     pub(crate) fn committed(&self) -> &[Shape] {
@@ -1097,7 +1137,7 @@ fn line_endpoint(
 
 #[cfg(test)]
 mod tests {
-    use super::{Annotations, ShapeKind};
+    use super::{Annotations, ShapeHover, ShapeKind};
     use gpui_kit::{Bounds, point, px, size};
 
     fn selection() -> Bounds<gpui_kit::Pixels> {
@@ -1225,6 +1265,44 @@ mod tests {
                 (ShapeKind::Ellipse, 4),
                 (ShapeKind::Pencil, 0),
             ]
+        );
+    }
+
+    #[test]
+    fn hover_splits_pick_from_move_by_selection() {
+        let mut a = Annotations::default();
+        a.toggle(ShapeKind::Rectangle);
+        // two rectangles, the later one topmost; their top edges both
+        // run through (30,10)
+        a.begin(point(px(0.), px(10.)), selection(), false);
+        a.drag_to(point(px(40.), px(50.)), selection(), false);
+        a.end();
+        a.begin(point(px(20.), px(10.)), selection(), false);
+        a.drag_to(point(px(60.), px(50.)), selection(), false);
+        a.end();
+
+        // the freshly placed top shape is selected (record_add picks
+        // it), so the bottom one is the unselected case: a press over
+        // it would pick it. Blank canvas offers nothing.
+        assert_eq!(
+            a.shape_hover(point(px(0.), px(30.))),
+            Some(ShapeHover::Pick)
+        );
+        assert_eq!(a.shape_hover(point(px(70.), px(30.))), None);
+
+        // selected: the same body becomes a move affordance
+        assert!(a.select_index(0));
+        assert_eq!(
+            a.shape_hover(point(px(0.), px(30.))),
+            Some(ShapeHover::Move)
+        );
+
+        // at the overlap the TOPMOST shape decides even though the
+        // selected one is hit too — a press parks its click on the
+        // topmost, so the affordance must promise the same
+        assert_eq!(
+            a.shape_hover(point(px(30.), px(10.))),
+            Some(ShapeHover::Pick)
         );
     }
 
@@ -1382,6 +1460,122 @@ mod tests {
 
         // deleting with no selection is a no-op
         assert!(!a.delete_selected());
+    }
+
+    #[test]
+    fn clear_all_is_one_history_entry_whose_undo_restores_every_shape() {
+        let mut a = Annotations::default();
+        a.toggle(super::ShapeKind::Rectangle);
+        rectangle(&mut a); // A: (10,10) → (30,40)
+        a.begin(point(px(40.), px(10.)), selection(), false);
+        a.drag_to(point(px(60.), px(40.)), selection(), false);
+        a.end(); // B beside it
+        a.toggle(super::ShapeKind::Pencil);
+        a.begin(point(px(5.), px(5.)), selection(), false);
+        a.drag_to(point(px(60.), px(50.)), selection(), false);
+        a.end(); // freehand C
+        let before: Vec<super::Shape> = a.committed().to_vec();
+        assert_eq!(before.len(), 3);
+        let history_len = a.history.len();
+
+        assert!(a.clear_all());
+        // ONE entry for the whole wipe — not one per shape
+        assert_eq!(a.history.len(), history_len + 1);
+        assert_eq!(a.visible().count(), 0);
+
+        a.undo(); // a single Ctrl+Z brings all three back…
+        assert_eq!(a.committed(), before.as_slice());
+        a.redo(); // …and redo re-clears them in one step
+        assert_eq!(a.visible().count(), 0);
+        a.undo();
+        assert_eq!(a.committed(), before.as_slice());
+    }
+
+    #[test]
+    fn clear_all_on_an_empty_canvas_records_no_history() {
+        let mut a = Annotations::default();
+        a.toggle(super::ShapeKind::Rectangle);
+        assert!(!a.clear_all());
+        assert!(a.history.is_empty());
+
+        rectangle(&mut a);
+        assert!(a.clear_all());
+        assert!(!a.clear_all()); // a second press on the emptied canvas
+        assert_eq!(a.history.len(), 2); // Add + exactly ONE Clear
+        a.undo();
+        assert_eq!(a.visible().count(), 1);
+        // the no-op press must not have clobbered the redo stack
+        a.redo();
+        assert_eq!(a.visible().count(), 0);
+    }
+
+    #[test]
+    fn clear_all_survives_history_interleaved_with_new_strokes() {
+        let mut a = Annotations::default();
+        a.toggle(super::ShapeKind::Rectangle);
+        rectangle(&mut a); // A
+        a.begin(point(px(40.), px(10.)), selection(), false);
+        a.drag_to(point(px(60.), px(40.)), selection(), false);
+        a.end(); // B
+        let before: Vec<super::Shape> = a.committed().to_vec();
+
+        assert!(a.clear_all());
+        rectangle(&mut a); // C on the emptied canvas
+        assert_eq!(a.committed().len(), 1);
+        a.undo(); // C leaves
+        assert_eq!(a.visible().count(), 0);
+        a.undo(); // the clear unwinds: A and B return, in order
+        assert_eq!(a.committed(), before.as_slice());
+        a.redo(); // re-clear
+        assert_eq!(a.visible().count(), 0);
+        a.redo(); // re-add C
+        assert_eq!(a.committed().len(), 1);
+    }
+
+    #[test]
+    fn clear_all_cancels_selection_draft_and_a_pending_text_edit() {
+        // a live selection referencing a shape index
+        let mut a = Annotations::default();
+        a.toggle(super::ShapeKind::Rectangle);
+        rectangle(&mut a);
+        assert!(click(&mut a, point(px(10.), px(25.))));
+        assert!(a.selected().is_some());
+        assert!(a.clear_all());
+        assert_eq!(a.visible().count(), 0);
+        assert!(a.selected().is_none());
+
+        // a stroke mid-gesture: the draft goes with the wipe (a
+        // committed shape must exist too, else clear records nothing)
+        a.toggle(super::ShapeKind::Pencil);
+        a.begin(point(px(5.), px(5.)), selection(), false);
+        a.drag_to(point(px(40.), px(30.)), selection(), false);
+        a.end(); // committed pencil stroke
+        a.begin(point(px(5.), px(5.)), selection(), false); // next in flight
+        a.drag_to(point(px(20.), px(20.)), selection(), false);
+        assert!(a.is_pressed());
+        assert!(a.draft_shape().is_some());
+        assert!(a.clear_all());
+        assert!(!a.is_pressed());
+        assert!(a.draft_shape().is_none());
+
+        // an in-place text edit whose (ix, original) snapshot would
+        // dangle: dropping it must leave a consistent state, and the
+        // overlay's later finish must be a harmless no-op
+        a.toggle(super::ShapeKind::Text);
+        a.add_text(
+            Bounds::new(point(px(0.), px(60.)), size(px(50.), px(20.))),
+            "hi".into(),
+        );
+        assert!(a.begin_text_edit(0));
+        a.preview_text(
+            Bounds::new(point(px(0.), px(60.)), size(px(50.), px(20.))),
+            "edited".into(),
+        );
+        let history_len = a.history.len();
+        assert!(a.clear_all());
+        a.finish_text_edit(true); // the overlay path after clear
+        assert_eq!(a.visible().count(), 0);
+        assert_eq!(a.history.len(), history_len + 1); // just the Clear
     }
 
     #[test]

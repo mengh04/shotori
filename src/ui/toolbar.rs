@@ -17,9 +17,9 @@ use crate::model::session::ScreenshotSession;
 use crate::ui::theme;
 
 use crate::actions::{
-    CopySelection, OcrSelection, PinSelection, QuitOverlay, SaveSelection, ToggleArrow,
-    ToggleEllipse, ToggleEraser, ToggleHighlighter, ToggleLine, ToggleMosaic, ToggleNumber,
-    TogglePencil, TogglePolyline, ToggleRectangle, ToggleText,
+    ClearAnnotations, CopySelection, OcrSelection, PinSelection, QuitOverlay, SaveSelection,
+    ToggleArrow, ToggleEllipse, ToggleEraser, ToggleHighlighter, ToggleLine, ToggleMosaic,
+    ToggleNumber, TogglePencil, TogglePolyline, ToggleRectangle, ToggleText,
 };
 use crate::model::placement::{GRIP_W, ROW_H};
 
@@ -41,6 +41,7 @@ gpui_kit::assets::icon_assets!(
         ScanText,
         Save,
         Pin,
+        Trash,
         X,
         Copy
     ]
@@ -274,6 +275,24 @@ pub(crate) fn selection_toolbar(
                         },
                     )
                     .selected(text_tool),
+                )
+                .child(
+                    // Wipes every placed mark in one undoable step
+                    // (issue #15). Lives at the end of the tool cluster —
+                    // undo/redo are keyboard-only, so this is the one
+                    // history action with a button. Lucide's plain Trash
+                    // is the conventional "clear" glyph (this bundle has
+                    // no trash-2); an empty-canvas press is a harmless
+                    // no-op, like Delete.
+                    icon_button(
+                        "tb-clear",
+                        "Clear annotations · Ctrl+Shift+Del",
+                        IconName::Trash,
+                        focus.clone(),
+                        |window, cx| {
+                            window.dispatch_action(Box::new(ClearAnnotations), cx);
+                        },
+                    ),
                 )
                 .child(div().flex_1())
                 .child(icon_button(
@@ -708,6 +727,7 @@ mod tests {
             IconName::ScanText,
             IconName::Save,
             IconName::Pin,
+            IconName::Trash,
             IconName::X,
             IconName::Copy,
         ] {

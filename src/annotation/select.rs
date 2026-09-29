@@ -13,6 +13,19 @@ use gpui_kit::{Bounds, Pixels, Point, point, px, size};
 /// an edge-pointing click still lands.
 const HIT_TOLERANCE: f32 = 0.5;
 
+/// What a press at the hovered spot would do to a shape — the input
+/// to the cursor affordance. A hand cursor implies "I'm holding
+/// something", which is wrong before anything is grabbed: the
+/// pre-selection hover advertises "click to pick" instead (the
+/// canvas-app convention, issue #17).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShapeHover {
+    /// Over an unselected shape: press selects it.
+    Pick,
+    /// Over the selected shape's body: press starts a move drag.
+    Move,
+}
+
 impl Annotations {
     /// Hit probe without side effects: the topmost shape index under
     /// the point, if any.
@@ -20,10 +33,18 @@ impl Annotations {
         self.shapes.iter().rposition(|s| shape_hit(s, p))
     }
 
-    /// Whether the pointer currently sits on a selectable shape — the
-    /// hover probe for the pointer affordance.
-    pub(crate) fn hits_shape(&self, p: Point<Pixels>) -> bool {
-        self.shapes.iter().rev().any(|s| shape_hit(s, p))
+    /// Classify the hover at `p` for the cursor affordance. The
+    /// topmost hit decides — the same shape a press would act on
+    /// (`pointer_down` parks its click on the topmost hit, selected
+    /// or not) — so a selected shape buried under a newer one still
+    /// reads as Pick at the overlap.
+    pub(crate) fn shape_hover(&self, p: Point<Pixels>) -> Option<ShapeHover> {
+        let ix = self.hit_test(p)?;
+        Some(if self.selected_index() == Some(ix) {
+            ShapeHover::Move
+        } else {
+            ShapeHover::Pick
+        })
     }
 
     /// Select a shape by index (the click-select path); no-op when the
@@ -313,8 +334,20 @@ pub(super) fn shape_hit(shape: &Shape, p: Point<Pixels>) -> bool {
                 .iter()
                 .any(|poly| point_in_polygon(p, poly))
         }
+        // A placed polyline is a stroke band like its freehand
+        // cousins, plus the interior when the ring reads as closed:
+        // the shape carries no closed flag, so a sealed polygon
+        // means the final click landed back on the first vertex
+        // (issue #16). Ray casting over the vertex ring stays exact
+        // for concave outlines a bounding-box test would misjudge.
+        ShapeKind::Polyline => {
+            let band = line::geometry(&shape.points, shape.width, false)
+                .iter()
+                .any(|poly| point_in_polygon(p, poly));
+            band || ring_is_closed(shape) && point_in_polygon(p, &shape.points)
+        }
         // freehand families share the same visual-polygon outline
-        ShapeKind::Polyline | ShapeKind::Pencil | ShapeKind::Highlighter => {
+        ShapeKind::Pencil | ShapeKind::Highlighter => {
             line::geometry(&shape.points, shape.width, false)
                 .iter()
                 .any(|poly| point_in_polygon(p, poly))
@@ -352,9 +385,188 @@ fn point_in_polygon(p: Point<Pixels>, poly: &[Point<Pixels>]) -> bool {
     inside
 }
 
+/// Pointing forgiveness for sealing a polyline ring: the handle
+/// grab radius (7 px in `chrome.rs`) on top of the stroke's own
+/// footprint, so a human aiming the final click at the first
+/// vertex gets a closed polygon while endpoints that merely sit
+/// nearby keep the open-stroke hit region.
+const CLOSURE_SLOP: f32 = 7.;
+
+/// Whether a placed polyline reads as a closed polygon. The shape
+/// model carries no closed flag — closing is structural: the ring
+/// is sealed when its final vertex landed back on the first within
+/// pointing slop. Ray casting then treats the vertex list as the
+/// ring (an implicit last→first edge that is near-zero here).
+fn ring_is_closed(shape: &Shape) -> bool {
+    match (shape.points.first(), shape.points.last()) {
+        // A two-vertex "ring" encloses nothing; a degenerate sliver
+        // simply never passes the ray-cast test, so 3 is the only
+        // floor that matters.
+        (Some(first), Some(last)) if shape.points.len() >= 3 => {
+            super::distance(*first, *last) <= CLOSURE_SLOP + shape.width
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn inflate(b: &Bounds<Pixels>, by: Pixels) -> Bounds<Pixels> {
     Bounds::new(
         point(b.origin.x - by, b.origin.y - by),
         size(b.size.width + by * 2., b.size.height + by * 2.),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn polyline(points: &[(f32, f32)], width: f32) -> Shape {
+        Shape {
+            kind: ShapeKind::Polyline,
+            number: None,
+            text: None,
+            bounds: Bounds::default(),
+            color: 0xffd43b60,
+            width,
+            points: points.iter().map(|&(x, y)| point(px(x), px(y))).collect(),
+        }
+    }
+
+    fn hits(shape: &Shape, x: f32, y: f32) -> bool {
+        shape_hit(shape, point(px(x), px(y)))
+    }
+
+    /// An L whose ring returns to its start. The notch around (60,60)
+    /// sits inside the bounding box but outside the polygon — the
+    /// false positive a naive bbox test would select on.
+    const CLOSED_L: &[(f32, f32)] = &[
+        (10., 10.),
+        (90., 10.),
+        (90., 40.),
+        (40., 40.),
+        (40., 90.),
+        (10., 90.),
+        (10., 10.),
+    ];
+
+    #[test]
+    fn closed_polygon_interior_selects_and_bbox_gaps_stay_clear() {
+        // triangle sealed back on its start; width 4 → 2 px band
+        let triangle = polyline(&[(10., 10.), (90., 10.), (50., 70.), (10., 10.)], 4.);
+        assert!(hits(&triangle, 50., 30.), "convex interior must select");
+        assert!(
+            !hits(&triangle, 80., 60.),
+            "inside the bbox, outside the ring"
+        );
+        assert!(hits(&triangle, 50., 10.), "outline band keeps hitting");
+    }
+
+    #[test]
+    fn concave_l_polygon_hits_both_arms_and_misses_the_notch() {
+        let l = polyline(CLOSED_L, 4.);
+        assert!(hits(&l, 30., 70.), "left arm interior");
+        assert!(hits(&l, 70., 20.), "top arm interior");
+        assert!(!hits(&l, 60., 60.), "the notch is not part of the ring");
+    }
+
+    #[test]
+    fn open_polyline_keeps_its_stroke_band_only_region() {
+        // same L without the return click: the ring is not sealed, so
+        // the interior (implicit closing chord aside) must stay clear
+        let open = &CLOSED_L[..CLOSED_L.len() - 1];
+        let l = polyline(open, 4.);
+        assert!(!hits(&l, 30., 70.), "open stroke has no interior region");
+        assert!(hits(&l, 50., 10.), "the outline band still selects");
+    }
+
+    #[test]
+    fn closure_tolerates_an_imprecise_final_click_only() {
+        // 5 px off the start (20,20) with width 4: within CLOSURE_SLOP
+        let sealed = polyline(
+            &[(20., 20.), (80., 20.), (80., 80.), (20., 80.), (25., 20.)],
+            4.,
+        );
+        assert!(ring_is_closed(&sealed));
+        assert!(hits(&sealed, 50., 50.));
+        // 40 px off: endpoints that merely sit nearby stay an open stroke
+        let unsealed = polyline(
+            &[(20., 20.), (80., 20.), (80., 80.), (20., 80.), (60., 20.)],
+            4.,
+        );
+        assert!(!ring_is_closed(&unsealed));
+        assert!(!hits(&unsealed, 50., 50.));
+        // a two-vertex "ring" encloses nothing
+        assert!(!ring_is_closed(&polyline(&[(10., 10.), (90., 10.)], 4.)));
+    }
+
+    #[test]
+    fn freehand_loops_stay_stroke_band_only() {
+        // A pencil/highlighter loop is still a stroke visually — the
+        // interior gain is the polyline polygon's alone (issue #16)
+        for kind in [ShapeKind::Pencil, ShapeKind::Highlighter] {
+            let mut shape = polyline(CLOSED_L, 4.);
+            shape.kind = kind;
+            assert!(!hits(&shape, 30., 70.), "{kind:?} interior must stay clear");
+            assert!(hits(&shape, 50., 10.), "{kind:?} stroke band keeps hitting");
+        }
+    }
+
+    #[test]
+    fn polygon_drawn_through_the_tool_selects_by_interior_click() {
+        // The placed-shape path end to end: click vertices (the last
+        // back on the first), finish, then the interior probe must
+        // find the shape. While the polyline tool stays active the
+        // press must NOT park a click-select — its clicks place
+        // vertices; selection of the placed ring happens from any
+        // other tool.
+        let selection = Bounds::new(point(px(-20.), px(0.)), size(px(100.), px(100.)));
+        let mut a = Annotations::default();
+        a.toggle(ShapeKind::Polyline);
+        for (x, y) in [(10., 10.), (60., 10.), (60., 60.), (10., 60.), (10., 10.)] {
+            let p = point(px(x), px(y));
+            a.begin(p, selection, false);
+            a.drag_to(p, selection, false);
+            a.end();
+        }
+        a.finish_polyline();
+        assert!(!a.parks_click_select(), "vertex placement owns the clicks");
+        assert_eq!(a.hit_test(point(px(35.), px(35.))), Some(0));
+        assert!(a.select_index(0));
+        assert_eq!(a.selected().map(|s| s.kind), Some(ShapeKind::Polyline));
+    }
+
+    #[test]
+    fn polygon_interior_hover_picks_then_moves_once_selected() {
+        // Integration of #16 + #17: the interior hit (#16) feeds the
+        // hover classifier (#17), so a closed ring advertises Pick
+        // inside before selection and Move on the selected body —
+        // the cursor never lags behind what a press would do.
+        let selection = Bounds::new(point(px(-20.), px(0.)), size(px(100.), px(100.)));
+        let mut a = Annotations::default();
+        a.toggle(ShapeKind::Polyline);
+        for (x, y) in [(10., 10.), (60., 10.), (60., 60.), (10., 60.), (10., 10.)] {
+            let p = point(px(x), px(y));
+            a.begin(p, selection, false);
+            a.drag_to(p, selection, false);
+            a.end();
+        }
+        a.finish_polyline();
+        // Freshly placed shapes auto-select (`record_add`), so the
+        // interior reads as the move affordance right away…
+        assert_eq!(
+            a.shape_hover(point(px(35.), px(35.))),
+            Some(ShapeHover::Move)
+        );
+        // …and as the pick affordance once nothing is selected.
+        a.deselect();
+        assert_eq!(
+            a.shape_hover(point(px(35.), px(35.))),
+            Some(ShapeHover::Pick)
+        );
+        assert!(a.select_index(0));
+        assert_eq!(
+            a.shape_hover(point(px(35.), px(35.))),
+            Some(ShapeHover::Move)
+        );
+    }
 }

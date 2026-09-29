@@ -915,11 +915,13 @@ impl ScreenshotSession {
         })
     }
 
-    /// Whether the pointer currently sits on a selectable annotation
-    /// shape — the hover probe for the pointer affordance.
-    pub(crate) fn pointer_on_annotation(&self) -> bool {
+    /// What a press at the pointer would do to an annotation shape:
+    /// pick an unselected one, move the selected one — the hover
+    /// probe the cursor maps onto pointing hand / open hand (issue
+    /// #17).
+    pub(crate) fn annotation_hover(&self) -> Option<crate::annotation::ShapeHover> {
         self.pointer_global
-            .is_some_and(|p| self.annotations.hits_shape(p))
+            .and_then(|p| self.annotations.shape_hover(p))
     }
 
     pub(crate) fn crop(&self, output: &str) -> Option<(u32, u32, Vec<u8>)> {
@@ -2192,6 +2194,47 @@ mod tests {
         assert_eq!(preview.as_bytes(0).unwrap(), expected);
         let (_, other) = s.filtered_preview("right").unwrap();
         assert!(Arc::ptr_eq(&preview, &other));
+    }
+
+    #[test]
+    fn clear_all_annotations_keep_selection_and_frozen_capture() {
+        use crate::annotation::ShapeKind;
+        let mut s = session();
+        s.select_all();
+        let sel = s.selection.bounds().unwrap();
+        let pristine = s.crop("left").unwrap().2;
+        s.edit_annotations(|a| {
+            a.toggle(ShapeKind::Rectangle);
+            a.begin(point(px(0.), px(10.)), sel, false);
+            a.drag_to(point(px(40.), px(50.)), sel, false);
+            a.end();
+            // a raster-preview kind (mosaic) flips the session onto the
+            // filtered path, so the wipe must invalidate that cache too
+            a.toggle(ShapeKind::Mosaic);
+            a.begin(point(px(50.), px(10.)), sel, false);
+            a.drag_to(point(px(80.), px(50.)), sel, false);
+            a.end();
+        });
+        let marked = s.crop("left").unwrap().2;
+        assert_ne!(marked, pristine);
+        let _ = s.filtered_preview("left");
+
+        let mut cleared = false;
+        s.edit_annotations(|a| cleared = a.clear_all());
+        assert!(cleared);
+        // annotations only: the selection region and the frozen capture
+        // are exactly what they were before any mark existed
+        assert_eq!(s.selection.bounds(), Some(sel));
+        assert_eq!(s.crop("left").unwrap().2, pristine);
+        // the raster path itself switches off — no filter kinds remain,
+        // so the preview cache is dropped instead of being reused
+        assert!(s.filtered_preview("left").is_none());
+        assert!(s.filter_preview.borrow().is_none());
+
+        // one undo restores every mark, still without touching the region
+        s.edit_annotations(|a| a.undo());
+        assert_eq!(s.crop("left").unwrap().2, marked);
+        assert_eq!(s.selection.bounds(), Some(sel));
     }
 
     #[test]
