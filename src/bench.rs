@@ -276,7 +276,7 @@ pub fn bench_main() -> i32 {
             let mut a = Annotations::default();
             a.toggle(kind);
             a.set_tool_size(24.); // strongest filter (spec max is 48, 24 = old L)
-            a.begin(point(px(100.), px(100.)), sel);
+            a.begin(point(px(100.), px(100.)), sel, false);
             a.drag_to(point(px(800.), px(600.)), sel, false);
             a.end();
             a
@@ -324,7 +324,7 @@ pub fn bench_main() -> i32 {
             let pts = scribble(n, w as f32, h as f32);
             let mut ann = Annotations::default();
             ann.toggle(ShapeKind::Pencil);
-            ann.begin(pts[0], sel);
+            ann.begin(pts[0], sel, false);
             for p in &pts[1..] {
                 ann.drag_to(*p, sel, false);
             }

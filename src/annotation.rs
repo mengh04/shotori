@@ -423,6 +423,21 @@ impl Annotations {
             .unwrap_or(0)
             .saturating_add(1)
     }
+    /// The number a new badge takes. `same_number` (Alt held) reuses
+    /// the largest number already on canvas — several badges marking
+    /// the same step — instead of advancing; an empty canvas starts
+    /// at 1 either way.
+    fn placement_number(&self, same_number: bool) -> u32 {
+        if same_number {
+            self.shapes
+                .iter()
+                .filter_map(|s| s.number)
+                .max()
+                .unwrap_or(1)
+        } else {
+            self.next_number()
+        }
+    }
     pub(crate) fn tool(&self) -> Option<ShapeKind> {
         self.tool
     }
@@ -456,6 +471,16 @@ impl Annotations {
         // edit mode (begin/toggle) clears it
         debug_assert!(self.selected.is_none_or(|ix| self.shapes.get(ix).is_some()));
         if let Some(ix) = self.selected {
+            // The wheel over a selected NUMBER tunes its value (issue
+            // #2's quick nudge — diameter stays with the slider);
+            // every other kind steps its size as before.
+            if self
+                .shapes
+                .get(ix)
+                .is_some_and(|s| s.kind == ShapeKind::Number)
+            {
+                return self.step_selected_number(ix, up);
+            }
             return self.step_selected_size(ix, up);
         }
         let Some(tool) = self.tool else {
@@ -481,7 +506,7 @@ impl Annotations {
         self.selected = None;
     }
 
-    pub(crate) fn begin(&mut self, p: Point<Pixels>, selection: Bounds<Pixels>) {
+    pub(crate) fn begin(&mut self, p: Point<Pixels>, selection: Bounds<Pixels>, same_number: bool) {
         if !self.enabled() || self.tool == Some(ShapeKind::Text) || !selection.contains(&p) {
             return;
         }
@@ -502,7 +527,8 @@ impl Annotations {
             shape: Shape {
                 kind: self.tool.expect("active annotation tool"),
                 text: None,
-                number: (self.tool == Some(ShapeKind::Number)).then(|| self.next_number()),
+                number: (self.tool == Some(ShapeKind::Number))
+                    .then(|| self.placement_number(same_number)),
                 bounds: if self.tool == Some(ShapeKind::Number) {
                     number_bounds(p, selection, self.number_size())
                 } else {
@@ -924,7 +950,7 @@ mod tests {
         hit.is_some_and(|ix| a.select_index(ix))
     }
     fn rectangle(a: &mut Annotations) {
-        a.begin(point(px(10.), px(10.)), selection());
+        a.begin(point(px(10.), px(10.)), selection(), false);
         a.drag_to(point(px(30.), px(40.)), selection(), false);
         a.end();
     }
@@ -936,15 +962,15 @@ mod tests {
         // hit tolerance reaches surprisingly far, so each probe point
         // must be checked against every shape's inflated band
         a.toggle(super::ShapeKind::Rectangle);
-        a.begin(point(px(0.), px(10.)), selection());
+        a.begin(point(px(0.), px(10.)), selection(), false);
         a.drag_to(point(px(40.), px(50.)), selection(), false);
         a.end();
         a.toggle(super::ShapeKind::Line);
-        a.begin(point(px(50.), px(10.)), selection());
+        a.begin(point(px(50.), px(10.)), selection(), false);
         a.drag_to(point(px(90.), px(50.)), selection(), false);
         a.end();
         a.toggle(super::ShapeKind::Ellipse);
-        a.begin(point(px(50.), px(65.)), selection());
+        a.begin(point(px(50.), px(65.)), selection(), false);
         a.drag_to(point(px(78.), px(95.)), selection(), false);
         a.end();
 
@@ -976,7 +1002,7 @@ mod tests {
         // two endpoints for a line, four corners for regions, none for
         // freehand strokes
         a.toggle(super::ShapeKind::Pencil);
-        a.begin(point(px(5.), px(5.)), selection());
+        a.begin(point(px(5.), px(5.)), selection(), false);
         a.drag_to(point(px(60.), px(50.)), selection(), false);
         a.end();
         let handles = |a: &Annotations| -> Vec<(ShapeKind, usize)> {
@@ -1040,7 +1066,7 @@ mod tests {
         rectangle(&mut a);
 
         assert!(click(&mut a, point(px(10.), px(25.))));
-        a.begin(point(px(50.), px(50.)), selection()); // new stroke wins
+        a.begin(point(px(50.), px(50.)), selection(), false); // new stroke wins
         assert_eq!(a.selected(), None);
         a.end();
 
@@ -1061,7 +1087,7 @@ mod tests {
 
         // pencil: visual-polygon hit on the stroke, +1 per notch
         a.toggle(super::ShapeKind::Pencil);
-        a.begin(point(px(5.), px(5.)), selection());
+        a.begin(point(px(5.), px(5.)), selection(), false);
         for p in [(20., 20.), (40., 30.), (60., 50.)] {
             a.drag_to(point(px(p.0), px(p.1)), selection(), false);
         }
@@ -1071,31 +1097,38 @@ mod tests {
         assert!(a.step_size(true));
         assert_eq!(a.selected().map(|s| s.width), Some(4.));
 
-        // number badge: circle hit, miss outside; wheel grows the
-        // DIAMETER (32 → 33) around the center, undo restores
+        // number badge: circle hit, miss outside; the wheel tunes the
+        // VALUE now (issue #2) — the diameter stays with the slider;
+        // undo restores. (This badge is #2 in the sequence: the pencil
+        // stroke placed first is not numbered, `next_number` starts at 1.)
         a.toggle(super::ShapeKind::Number);
-        a.begin(point(px(30.), px(50.)), selection());
+        a.begin(point(px(30.), px(50.)), selection(), false);
         a.end();
         assert!(click(&mut a, point(px(30.), px(50.))));
         assert_eq!(a.selected().map(|s| s.kind), Some(super::ShapeKind::Number));
         assert!(a.hit_test(point(px(30.), px(70.))).is_none());
-        let b = a.selected().unwrap().bounds;
-        let center = point(b.left() + b.size.width / 2., b.top() + b.size.height / 2.);
-        assert!(a.step_size(true));
-        let b = a.selected().unwrap().bounds;
-        assert_eq!(f32::from(b.size.width), 33.);
+        let diameter = f32::from(a.selected().unwrap().bounds.size.width);
+        assert!(a.step_size(true)); // value 1 → 2
+        assert_eq!(a.selected().and_then(|s| s.number), Some(2));
         assert_eq!(
-            point(b.left() + b.size.width / 2., b.top() + b.size.height / 2.),
-            center
+            f32::from(a.selected().unwrap().bounds.size.width),
+            diameter,
+            "the wheel no longer resizes a badge"
         );
+        assert!(a.step_size(false)); // back to 1
+        a.undo(); // undoes the LAST notch (1 → 2 again); undo drops the selection
+        macro_rules! badge {
+            () => {
+                a.committed()
+                    .iter()
+                    .find(|s| s.kind == super::ShapeKind::Number)
+                    .unwrap()
+                    .number
+            };
+        }
+        assert_eq!(badge!(), Some(2), "undo reverts the -1 notch");
         a.undo();
-        // undo drops the selection — read the badge back from committed
-        let badge = a
-            .committed()
-            .iter()
-            .find(|s| s.kind == super::ShapeKind::Number)
-            .unwrap();
-        assert_eq!(f32::from(badge.bounds.size.width), 32.);
+        assert_eq!(badge!(), Some(1), "undo reverts the +1 notch too");
 
         // text: solid-bounds hit; wheel steps the font size (24 → 25)
         a.toggle(super::ShapeKind::Text);
@@ -1110,7 +1143,7 @@ mod tests {
 
         // mosaic: solid-bounds hit; wheel steps filter strength (16 → 17)
         a.toggle(super::ShapeKind::Mosaic);
-        a.begin(point(px(-10.), px(10.)), selection());
+        a.begin(point(px(-10.), px(10.)), selection(), false);
         a.drag_to(point(px(20.), px(40.)), selection(), false);
         a.end();
         assert!(click(&mut a, point(px(5.), px(25.))));
@@ -1124,7 +1157,7 @@ mod tests {
         let mut a = Annotations::default();
         a.toggle(super::ShapeKind::Rectangle);
         rectangle(&mut a); // A: (10,10) → (30,40)
-        a.begin(point(px(40.), px(10.)), selection());
+        a.begin(point(px(40.), px(10.)), selection(), false);
         a.drag_to(point(px(60.), px(40.)), selection(), false);
         a.end(); // B beside it
 
@@ -1177,13 +1210,13 @@ mod tests {
 
         // thicken the pencil's next stroke by editing its placed mark
         a.toggle(super::ShapeKind::Pencil);
-        a.begin(point(px(5.), px(5.)), selection());
+        a.begin(point(px(5.), px(5.)), selection(), false);
         a.drag_to(point(px(60.), px(50.)), selection(), false);
         a.end(); // auto-selected
         a.apply_size(9.);
         a.end_size_drag();
         a.deselect();
-        a.begin(point(px(5.), px(5.)), selection()); // next pencil stroke
+        a.begin(point(px(5.), px(5.)), selection(), false); // next pencil stroke
         assert_eq!(a.draft_shape().unwrap().width, 9.);
 
         // the rectangle tool keeps its OWN memory
@@ -1242,7 +1275,7 @@ mod tests {
         assert_eq!(a.width(), 20.);
         a.set_color(4);
         a.set_tool_size(32.);
-        a.begin(point(px(10.), px(30.)), selection());
+        a.begin(point(px(10.), px(30.)), selection(), false);
         a.drag_to(point(px(60.), px(30.)), selection(), false);
         a.end();
         let mark = a.visible().next().unwrap().clone();
@@ -1266,7 +1299,7 @@ mod tests {
         a.toggle(super::ShapeKind::Pencil);
         let points =
             [(0., 10.), (15., 25.), (30., 10.), (40., 35.)].map(|(x, y)| point(px(x), px(y)));
-        a.begin(points[0], selection());
+        a.begin(points[0], selection(), false);
         for p in &points[1..] {
             assert!(a.drag_to(*p, selection(), false));
             assert!(!a.drag_to(*p, selection(), false));
@@ -1278,7 +1311,7 @@ mod tests {
         assert_eq!(a.visible().count(), 0);
         a.redo();
         assert_eq!(a.visible().next().unwrap().points, points);
-        a.begin(points[0], selection());
+        a.begin(points[0], selection(), false);
         a.drag_to(point(px(200.), px(-40.)), selection(), false);
         assert_eq!(
             *a.visible().last().unwrap().points.last().unwrap(),
@@ -1293,7 +1326,7 @@ mod tests {
         let mut a = Annotations::default();
         a.toggle(super::ShapeKind::Pencil);
         a.set_tool_size(5.);
-        a.begin(point(px(20.), px(20.)), selection());
+        a.begin(point(px(20.), px(20.)), selection(), false);
         a.end();
         assert_eq!(a.visible().count(), 1);
         assert_eq!(
@@ -1344,7 +1377,7 @@ mod tests {
     fn square_stays_square_at_boundary_and_reverse_drag_normalizes() {
         let mut a = Annotations::default();
         a.toggle(super::ShapeKind::Rectangle);
-        a.begin(point(px(20.), px(20.)), selection());
+        a.begin(point(px(20.), px(20.)), selection(), false);
         a.drag_to(point(px(-100.), px(-200.)), selection(), true);
         let b = a.visible().next().unwrap().bounds;
         assert_eq!(b.origin, point(px(0.), px(0.)));
@@ -1359,9 +1392,9 @@ mod tests {
         a.toggle(super::ShapeKind::Rectangle);
         rectangle(&mut a);
         a.undo();
-        a.begin(point(px(200.), px(20.)), selection());
+        a.begin(point(px(200.), px(20.)), selection(), false);
         a.end();
-        a.begin(point(px(10.), px(10.)), selection());
+        a.begin(point(px(10.), px(10.)), selection(), false);
         a.drag_to(point(px(11.), px(11.)), selection(), false);
         a.end();
         assert!(!a.redo.is_empty());
@@ -1373,7 +1406,7 @@ mod tests {
         let mut a = Annotations::default();
         a.toggle(super::ShapeKind::Rectangle);
         rectangle(&mut a);
-        a.begin(point(px(10.), px(10.)), selection());
+        a.begin(point(px(10.), px(10.)), selection(), false);
         assert!(a.cancel());
         assert!(a.enabled());
         assert_eq!(a.visible().count(), 1);
@@ -1407,7 +1440,7 @@ mod tests {
         let mut a = Annotations::default();
         a.toggle(super::ShapeKind::Rectangle);
         rectangle(&mut a);
-        a.begin(point(px(10.), px(10.)), selection());
+        a.begin(point(px(10.), px(10.)), selection(), false);
         a.toggle(super::ShapeKind::Ellipse);
         assert_eq!(a.visible().count(), 1);
         a.set_color(3);
@@ -1430,7 +1463,7 @@ mod tests {
     fn shift_ellipse_is_a_circle_even_at_selection_boundary() {
         let mut a = Annotations::default();
         a.toggle(super::ShapeKind::Ellipse);
-        a.begin(point(px(20.), px(20.)), selection());
+        a.begin(point(px(20.), px(20.)), selection(), false);
         a.drag_to(point(px(-100.), px(-200.)), selection(), true);
         a.end();
         let ellipse = a.visible().next().unwrap();
@@ -1503,13 +1536,13 @@ mod tests {
         let mut a = Annotations::default();
         a.toggle(super::ShapeKind::Line);
         for (x, y) in [(50., 20.), (20., 50.), (-10., 20.)] {
-            a.begin(point(px(20.), px(20.)), selection());
+            a.begin(point(px(20.), px(20.)), selection(), false);
             a.drag_to(point(px(x), px(y)), selection(), false);
             a.end();
         }
         assert_eq!(a.visible().count(), 3);
         a.undo();
-        a.begin(point(px(20.), px(20.)), selection());
+        a.begin(point(px(20.), px(20.)), selection(), false);
         a.end();
         a.redo();
         assert_eq!(a.visible().count(), 3);
@@ -1542,7 +1575,7 @@ mod tests {
         a.toggle(super::ShapeKind::Polyline);
         for (x, y) in [(10., 10.), (40., 40.), (10., 70.)] {
             let p = point(px(x), px(y));
-            a.begin(p, selection());
+            a.begin(p, selection(), false);
             a.drag_to(p, selection(), false);
             a.end();
         }
@@ -1558,10 +1591,10 @@ mod tests {
         assert_eq!(a.visible().count(), 0);
         a.redo();
         assert_eq!(a.visible().next().unwrap().points.len(), 3);
-        a.begin(point(px(10.), px(10.)), selection());
+        a.begin(point(px(10.), px(10.)), selection(), false);
         assert!(a.cancel());
         assert_eq!(a.visible().count(), 1);
-        a.begin(point(px(10.), px(10.)), selection());
+        a.begin(point(px(10.), px(10.)), selection(), false);
         a.end();
         a.finish_polyline();
         assert_eq!(a.visible().count(), 1);
@@ -1610,7 +1643,7 @@ mod tests {
         let mut a = Annotations::default();
         a.toggle(super::ShapeKind::Number);
         for expected in 1..=12 {
-            a.begin(point(px(30.), px(30.)), selection());
+            a.begin(point(px(30.), px(30.)), selection(), false);
             a.end();
             assert_eq!(a.visible().last().unwrap().number, Some(expected));
         }
@@ -1619,11 +1652,11 @@ mod tests {
         a.redo();
         assert_eq!(a.next_number(), 13);
         a.undo();
-        a.begin(point(px(30.), px(30.)), selection());
+        a.begin(point(px(30.), px(30.)), selection(), false);
         a.end();
         a.redo();
         assert_eq!(a.visible().count(), 12);
-        a.begin(point(px(30.), px(30.)), selection());
+        a.begin(point(px(30.), px(30.)), selection(), false);
         a.cancel();
         assert_eq!(a.next_number(), 13);
         a.toggle(super::ShapeKind::Rectangle);
@@ -1633,11 +1666,72 @@ mod tests {
         assert_eq!(a.next_number(), 1);
     }
     #[test]
+    fn same_number_placement_repeats_the_largest_badge() {
+        let mut a = Annotations::default();
+        a.toggle(super::ShapeKind::Number);
+        // empty canvas: an Alt placement starts the sequence at 1
+        a.begin(point(px(30.), px(30.)), selection(), true);
+        a.end();
+        assert_eq!(a.visible().last().unwrap().number, Some(1));
+        // plain placement advances
+        a.begin(point(px(30.), px(30.)), selection(), false);
+        a.end();
+        assert_eq!(a.visible().last().unwrap().number, Some(2));
+        // Alt re-placements repeat the largest number on canvas
+        a.begin(point(px(30.), px(30.)), selection(), true);
+        a.end();
+        a.begin(point(px(30.), px(30.)), selection(), true);
+        a.end();
+        assert_eq!(a.visible().count(), 4);
+        assert_eq!(a.visible().last().unwrap().number, Some(2));
+        // after the run of 2s the sequence resumes from max + 1
+        assert_eq!(a.next_number(), 3);
+        // undo drops the repeated badge; the next Alt placement re-reads
+        // the CURRENT max, not a remembered "last placed" value
+        a.undo();
+        a.begin(point(px(30.), px(30.)), selection(), true);
+        a.end();
+        assert_eq!(a.visible().last().unwrap().number, Some(2));
+    }
+    #[test]
+    fn number_editor_previews_commits_and_cancels() {
+        let mut a = Annotations::default();
+        a.toggle(super::ShapeKind::Number);
+        a.begin(point(px(30.), px(30.)), selection(), false);
+        a.end(); // badge 1
+        let ix = a.committed().len() - 1;
+        let before = a.committed()[ix].clone();
+
+        // live preview writes the value with NO history entry — a
+        // half-typed buffer must stay outside undo
+        a.preview_number(ix, 7);
+        assert_eq!(a.committed()[ix].number, Some(7));
+        assert_eq!(a.history.len(), 1, "only the Add entry while typing");
+
+        // commit (the overlay's finish path): one Edit entry, undo and
+        // redo both restore the exact values
+        a.commit_move(ix, before.clone());
+        a.undo();
+        assert_eq!(a.committed()[ix].number, Some(1));
+        a.redo();
+        assert_eq!(a.committed()[ix].number, Some(7));
+
+        // cancel: re-previewing the original leaves nothing new to undo
+        a.preview_number(ix, 3);
+        a.preview_number(ix, 1);
+        a.undo(); // undoes the committed Edit, not the cancelled buffer
+        assert_eq!(a.committed()[ix].number, Some(1));
+
+        // the wheel floors at 1 (0 is not a badge)
+        a.select_index(ix);
+        assert!(!a.step_size(false), "1 is the floor");
+    }
+    #[test]
     fn number_drag_and_size_stay_inside_selection_and_tiny_regions_do_not_count() {
         let mut a = Annotations::default();
         a.toggle(super::ShapeKind::Number);
         a.set_tool_size(40.);
-        a.begin(point(px(-19.), px(1.)), selection());
+        a.begin(point(px(-19.), px(1.)), selection(), false);
         a.drag_to(point(px(300.), px(300.)), selection(), false);
         a.end();
         let mark = a.visible().next().unwrap();
@@ -1647,7 +1741,7 @@ mod tests {
         // the number slot is its own — other tools' presets untouched
         assert_eq!(a.size_of(super::ShapeKind::Rectangle), 3.);
         let tiny = Bounds::new(point(px(0.), px(0.)), size(px(10.), px(10.)));
-        a.begin(point(px(5.), px(5.)), tiny);
+        a.begin(point(px(5.), px(5.)), tiny, false);
         a.end();
         assert_eq!(a.next_number(), 2);
     }
