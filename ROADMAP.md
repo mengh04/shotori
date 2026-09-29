@@ -352,6 +352,33 @@ window so another output can finish displaying the shared image.
 
 ## Design decisions
 
+### Closed polygons select by interior; closure is structural (2026-09-29)
+
+Issue #16: a placed polygon (polyline) was selectable only along its
+stroke band — the interior click silently missed. The fix rides the
+module's "what you see is what you can click" contract, with two
+findings that shaped it:
+
+- **The shape model has no closed flag, so closure must be inferred.**
+  Sealing a polygon in this tool means the final click lands back on
+  the first vertex; `ring_is_closed` accepts that within pointing
+  slop (`CLOSURE_SLOP` 7 px — the handle-grab scale — plus the
+  stroke's own footprint). Without the slop an exact `first == last`
+  test would reject every human-sealed ring; with too much, zigzags
+  whose endpoints merely sit nearby would gain a phantom interior.
+- **Ray casting over the vertex list implicitly closes the ring**
+  (last→first edge), which is exactly the sealed-ring interior — and
+  stays exact for concave outlines (an L's notch) where a bounding-box
+  test false-positives. Pencil/Highlighter loops remain band-only:
+  their visual is a stroke, an interior is not meaningful, and their
+  hit region shares nothing with the polyline arm anymore.
+
+The hover probe (`pointer_on_annotation`) rides the same
+`shape_hit`, so the open-hand cursor now covers polygon interiors
+too — the affordance other selectable bodies already had. While the
+polyline tool is active nothing changes: `parks_click_select` keeps
+its clicks placing vertices, selection happens from any other tool.
+
 ### Number badge editing: wheel tunes the value, double-click opens free entry (2026-09-29)
 
 Issue #2's second ask (post-placement value editing), riding the issue
