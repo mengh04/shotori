@@ -915,11 +915,13 @@ impl ScreenshotSession {
         })
     }
 
-    /// Whether the pointer currently sits on a selectable annotation
-    /// shape — the hover probe for the pointer affordance.
-    pub(crate) fn pointer_on_annotation(&self) -> bool {
+    /// What a press at the pointer would do to an annotation shape:
+    /// pick an unselected one, move the selected one — the hover
+    /// probe the cursor maps onto pointing hand / open hand (issue
+    /// #17).
+    pub(crate) fn annotation_hover(&self) -> Option<crate::annotation::ShapeHover> {
         self.pointer_global
-            .is_some_and(|p| self.annotations.hits_shape(p))
+            .and_then(|p| self.annotations.shape_hover(p))
     }
 
     pub(crate) fn crop(&self, output: &str) -> Option<(u32, u32, Vec<u8>)> {

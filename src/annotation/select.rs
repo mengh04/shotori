@@ -13,6 +13,19 @@ use gpui_kit::{Bounds, Pixels, Point, point, px, size};
 /// an edge-pointing click still lands.
 const HIT_TOLERANCE: f32 = 0.5;
 
+/// What a press at the hovered spot would do to a shape — the input
+/// to the cursor affordance. A hand cursor implies "I'm holding
+/// something", which is wrong before anything is grabbed: the
+/// pre-selection hover advertises "click to pick" instead (the
+/// canvas-app convention, issue #17).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShapeHover {
+    /// Over an unselected shape: press selects it.
+    Pick,
+    /// Over the selected shape's body: press starts a move drag.
+    Move,
+}
+
 impl Annotations {
     /// Hit probe without side effects: the topmost shape index under
     /// the point, if any.
@@ -20,10 +33,18 @@ impl Annotations {
         self.shapes.iter().rposition(|s| shape_hit(s, p))
     }
 
-    /// Whether the pointer currently sits on a selectable shape — the
-    /// hover probe for the pointer affordance.
-    pub(crate) fn hits_shape(&self, p: Point<Pixels>) -> bool {
-        self.shapes.iter().rev().any(|s| shape_hit(s, p))
+    /// Classify the hover at `p` for the cursor affordance. The
+    /// topmost hit decides — the same shape a press would act on
+    /// (`pointer_down` parks its click on the topmost hit, selected
+    /// or not) — so a selected shape buried under a newer one still
+    /// reads as Pick at the overlap.
+    pub(crate) fn shape_hover(&self, p: Point<Pixels>) -> Option<ShapeHover> {
+        let ix = self.hit_test(p)?;
+        Some(if self.selected_index() == Some(ix) {
+            ShapeHover::Move
+        } else {
+            ShapeHover::Pick
+        })
     }
 
     /// Select a shape by index (the click-select path); no-op when the

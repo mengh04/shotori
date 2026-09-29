@@ -352,6 +352,27 @@ window so another output can finish displaying the shared image.
 
 ## Design decisions
 
+### Annotation hover cursor: pointing hand picks, hands only hold (2026-09-29)
+
+Issue #17. Hovering a shape used to show the open hand — but a hand
+advertises "I'm holding something", and at hover time nothing is
+grabbed yet; the affordance being promised is "click to pick". Now:
+
+- **Unselected shape → pointing hand; selected shape → open hand;
+  actively moving → closed hand** (toolbar grips and resize handles
+  unchanged). The select-then-move sequence reads
+  pick → press → hold → release.
+- **The split lives in `Annotations::shape_hover`
+  (`annotation/select.rs`), a pure `Pick`/`Move` function of the
+  topmost hit, not a boolean.** The answer must match what a press
+  would do, and `pointer_down` parks its click on the TOPMOST hit —
+  so where a newer shape overlaps the selected one, the overlap
+  probes as Pick (the press would pick the top shape). The old
+  boolean probe (`pointer_on_annotation`/`hits_shape`) could not
+  express that and was removed.
+- The gpui pointing-hand variant is **`CursorStyle::PointingHand`**
+  (CSS `pointer`), not `Pointer`.
+
 ### Number badge editing: wheel tunes the value, double-click opens free entry (2026-09-29)
 
 Issue #2's second ask (post-placement value editing), riding the issue
