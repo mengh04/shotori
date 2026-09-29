@@ -534,4 +534,30 @@ mod tests {
         assert!(a.select_index(0));
         assert_eq!(a.selected().map(|s| s.kind), Some(ShapeKind::Polyline));
     }
+
+    #[test]
+    fn polygon_interior_hover_picks_then_moves_once_selected() {
+        // Integration of #16 + #17: the interior hit (#16) feeds the
+        // hover classifier (#17), so a closed ring advertises Pick
+        // inside before selection and Move on the selected body —
+        // the cursor never lags behind what a press would do.
+        let selection = Bounds::new(point(px(-20.), px(0.)), size(px(100.), px(100.)));
+        let mut a = Annotations::default();
+        a.toggle(ShapeKind::Polyline);
+        for (x, y) in [(10., 10.), (60., 10.), (60., 60.), (10., 60.), (10., 10.)] {
+            let p = point(px(x), px(y));
+            a.begin(p, selection, false);
+            a.drag_to(p, selection, false);
+            a.end();
+        }
+        a.finish_polyline();
+        // Freshly placed shapes auto-select (`record_add`), so the
+        // interior reads as the move affordance right away…
+        assert_eq!(a.shape_hover(point(px(35.), px(35.))), Some(ShapeHover::Move));
+        // …and as the pick affordance once nothing is selected.
+        a.deselect();
+        assert_eq!(a.shape_hover(point(px(35.), px(35.))), Some(ShapeHover::Pick));
+        assert!(a.select_index(0));
+        assert_eq!(a.shape_hover(point(px(35.), px(35.))), Some(ShapeHover::Move));
+    }
 }
