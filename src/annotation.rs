@@ -10,6 +10,7 @@ pub(crate) use highlighter::HighlighterCache;
 mod number;
 mod select;
 pub(crate) use number::NumberCache;
+pub(crate) use select::ShapeHover;
 
 use chrome::ellipse_contour;
 use gpui_kit::{Bounds, Path, PathBuilder, Pixels, Point, point, px, size};
@@ -1097,7 +1098,7 @@ fn line_endpoint(
 
 #[cfg(test)]
 mod tests {
-    use super::{Annotations, ShapeKind};
+    use super::{Annotations, ShapeHover, ShapeKind};
     use gpui_kit::{Bounds, point, px, size};
 
     fn selection() -> Bounds<gpui_kit::Pixels> {
@@ -1225,6 +1226,44 @@ mod tests {
                 (ShapeKind::Ellipse, 4),
                 (ShapeKind::Pencil, 0),
             ]
+        );
+    }
+
+    #[test]
+    fn hover_splits_pick_from_move_by_selection() {
+        let mut a = Annotations::default();
+        a.toggle(ShapeKind::Rectangle);
+        // two rectangles, the later one topmost; their top edges both
+        // run through (30,10)
+        a.begin(point(px(0.), px(10.)), selection(), false);
+        a.drag_to(point(px(40.), px(50.)), selection(), false);
+        a.end();
+        a.begin(point(px(20.), px(10.)), selection(), false);
+        a.drag_to(point(px(60.), px(50.)), selection(), false);
+        a.end();
+
+        // the freshly placed top shape is selected (record_add picks
+        // it), so the bottom one is the unselected case: a press over
+        // it would pick it. Blank canvas offers nothing.
+        assert_eq!(
+            a.shape_hover(point(px(0.), px(30.))),
+            Some(ShapeHover::Pick)
+        );
+        assert_eq!(a.shape_hover(point(px(70.), px(30.))), None);
+
+        // selected: the same body becomes a move affordance
+        assert!(a.select_index(0));
+        assert_eq!(
+            a.shape_hover(point(px(0.), px(30.))),
+            Some(ShapeHover::Move)
+        );
+
+        // at the overlap the TOPMOST shape decides even though the
+        // selected one is hit too — a press parks its click on the
+        // topmost, so the affordance must promise the same
+        assert_eq!(
+            a.shape_hover(point(px(30.), px(10.))),
+            Some(ShapeHover::Pick)
         );
     }
 
