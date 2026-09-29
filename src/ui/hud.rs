@@ -76,6 +76,26 @@ pub(crate) fn handle_cursor(h: Handle) -> CursorStyle {
     }
 }
 
+/// Paint one resize-handle dot centered on `p` (window-local): a solid
+/// accent-orange circle, [`HANDLE_VIS`] px across, no outline. The
+/// single owner of the handle look — the selection chrome and the
+/// annotation chrome both call it, so a restyle (or a future corner
+/// loupe) changes exactly one place. A solid circle replaces the white
+/// square + outline chip, which read as clutter against the dim bands
+/// and the border (issue #18), and one quad per handle is also one quad
+/// less per frame during resize drags. The dot is what you SEE — what
+/// you can GRAB stays each context's own, larger band ([`HANDLE_HIT`]
+/// here, `Shape::handle_at` for shapes).
+fn paint_handle_dot(window: &mut Window, p: Point<Pixels>) {
+    let half = HANDLE_VIS / 2.;
+    let b = Bounds::new(
+        point(p.x - px(half), p.y - px(half)),
+        size(px(HANDLE_VIS), px(HANDLE_VIS)),
+    );
+    // Corner radius = half the edge turns the quad into a circle.
+    window.paint_quad(fill(b, rgba(theme::c().accent)).corner_radii(half));
+}
+
 /// Resize handles over a finalized (or being-edited) selection, plus the
 /// window cursor. The cursor lives in a shared cell that the
 /// pointer-move path refreshes (see `Overlay::cursor_style`); this canvas
@@ -103,7 +123,6 @@ pub(crate) fn selection_handles(
                 return;
             };
             b.origin += viewport.origin;
-            let half = HANDLE_VIS / 2.;
             let (l, r, t, bt) = (
                 f32::from(b.left()),
                 f32::from(b.right()),
@@ -121,12 +140,7 @@ pub(crate) fn selection_handles(
                 (cx, bt),
                 (r, bt),
             ] {
-                let h = Bounds {
-                    origin: point(px(x - half), px(y - half)),
-                    size: size(px(HANDLE_VIS), px(HANDLE_VIS)),
-                };
-                window.paint_quad(fill(h, rgba(0xFFFFFFFF)));
-                window.paint_quad(outline(h, rgba(theme::c().accent), BorderStyle::default()));
+                paint_handle_dot(window, point(px(x), px(y)));
             }
         },
     )
@@ -253,11 +267,12 @@ fn spinner() -> impl IntoElement {
 }
 
 /// The annotation selection chrome: a 1 px accent stroke tracing the
-/// selected shape's own visual outline, plus 6 px handles at its
-/// anchor points (endpoints for lines, vertices for polylines, corners
-/// for rects/ellipses). Pure rendering of [`crate::annotation::Shape`]
-/// geometry — independent of which preview path paints the marks, and
-/// the same visual language as [`selection_handles`].
+/// selected shape's own visual outline, plus the shared handle dots
+/// ([`paint_handle_dot`]) at its anchor points (endpoints for lines,
+/// vertices for polylines, corners for rects/ellipses). Pure rendering
+/// of [`crate::annotation::Shape`] geometry — independent of which
+/// preview path paints the marks, and the same visual language as
+/// [`selection_handles`].
 pub(crate) fn annotation_chrome(selected: Option<crate::annotation::Shape>) -> impl IntoElement {
     canvas(
         |_, _, _| (),
@@ -269,19 +284,10 @@ pub(crate) fn annotation_chrome(selected: Option<crate::annotation::Shape>) -> i
             for path in shape.hilite_paths(viewport.origin) {
                 window.paint_path(path, accent);
             }
-            // sized between the selection's HANDLE_VIS (8) and the
-            // annotation marks' own scale so small shapes keep handles
-            let vis = px(6.);
+            // One helper, one size: a shape's resize affordance must read
+            // as the same control the selection border wears.
             for p in shape.handle_points() {
-                let h = Bounds::new(
-                    point(
-                        p.x + viewport.origin.x - vis / 2.,
-                        p.y + viewport.origin.y - vis / 2.,
-                    ),
-                    size(vis, vis),
-                );
-                window.paint_quad(fill(h, rgba(0xFFFFFFFF)));
-                window.paint_quad(outline(h, accent, BorderStyle::default()));
+                paint_handle_dot(window, p + viewport.origin);
             }
         },
     )
@@ -295,7 +301,7 @@ pub(crate) fn annotation_chrome(selected: Option<crate::annotation::Shape>) -> i
 mod tests {
     // Explicit imports (same reason as selection.rs: avoid gpui's test macro
     // shadowing the built-in #[test])
-    use gpui_kit::{Bounds, Pixels, point, px, size};
+    use gpui_kit::{Background, Bounds, CursorStyle, Pixels, point, px, rgba, size};
 
     fn bounds(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
         Bounds {
@@ -380,5 +386,109 @@ mod tests {
                 }
             }
         }
+    }
+
+    struct HandleHarness {
+        selection: Option<Bounds<Pixels>>,
+        visible: bool,
+    }
+
+    impl gpui_kit::Render for HandleHarness {
+        fn render(
+            &mut self,
+            _: &mut gpui_kit::Window,
+            _: &mut gpui_kit::Context<Self>,
+        ) -> impl gpui_kit::IntoElement {
+            use gpui_kit::{ParentElement, Styled};
+            // The shared cursor cell the canvas would push through;
+            // cursor_active is false so the test needs no cursor
+            // plumbing.
+            let cursor = std::rc::Rc::new(std::cell::Cell::new(CursorStyle::Arrow));
+            gpui_kit::div()
+                .relative()
+                .size_full()
+                .child(super::selection_handles(
+                    self.selection,
+                    self.visible,
+                    cursor,
+                    false,
+                ))
+        }
+    }
+
+    // The handle restyle (issue #18): eight solid accent CIRCLES, not
+    // white squares with an accent outline. Encodes circle-ness (every
+    // corner radius = half the edge), the accent fill, the absent
+    // outline, and the dot centers landing on the selection's true
+    // edges (the border's contract). See/grab separation — dot smaller
+    // than HANDLE_HIT — is held in selection.rs.
+    #[gpui_kit::test]
+    fn selection_handles_paint_solid_accent_circles(cx: &mut gpui_kit::TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, _| HandleHarness {
+            selection: Some(bounds(100., 100., 80., 60.)),
+            visible: true,
+        });
+        cx.update(|window, _| window.resize(ws(400., 400.)));
+        // Pin scale 1: the default test scale is 2, and the exact-value
+        // assertions below (dot diameter, centers) are logical px.
+        cx.simulate_scale_factor_change(1.);
+        let quads = cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.painted_quads()
+        });
+        assert_eq!(quads.len(), 8);
+        let expected_bg: Background = rgba(super::theme::c().accent).into();
+        let mut centers: Vec<(f32, f32)> = Vec::new();
+        for q in &quads {
+            let (w, h) = (q.bounds.size.width.0, q.bounds.size.height.0);
+            assert_eq!((w, h), (super::HANDLE_VIS, super::HANDLE_VIS));
+            // circle: radius is half the edge, on every corner
+            assert_eq!(q.corner_radii.top_left.0, w / 2.);
+            assert_eq!(q.corner_radii.bottom_right.0, w / 2.);
+            // solid dot: accent fill, no outline
+            assert_eq!(q.background, expected_bg);
+            assert_eq!(q.border_widths.top.0, 0.);
+            centers.push((q.bounds.origin.x.0 + w / 2., q.bounds.origin.y.0 + h / 2.));
+        }
+        // 4 corners + 4 edge midpoints of the selection. Quads get
+        // their origins floored to device pixels, so centers may sit
+        // half a pixel off the anchor — match within 1 px, not exactly
+        // (dots are 40 px apart here; the tolerance is unambiguous).
+        let (l, r, t, b) = (100., 180., 100., 160.);
+        let (mx, my) = ((l + r) / 2., (t + b) / 2.);
+        let expected: Vec<(f32, f32)> = vec![
+            (l, t),
+            (mx, t),
+            (r, t),
+            (l, my),
+            (r, my),
+            (l, b),
+            (mx, b),
+            (r, b),
+        ];
+        for anchor in &expected {
+            let i = centers
+                .iter()
+                .position(|c| (c.0 - anchor.0).abs() <= 1. && (c.1 - anchor.1).abs() <= 1.);
+            let Some(i) = i else {
+                panic!("no dot center within 1px of anchor {anchor:?}; got {centers:?}");
+            };
+            centers.swap_remove(i);
+        }
+        assert!(
+            centers.is_empty(),
+            "unexpected extra dot centers: {centers:?} (expected {expected:?})"
+        );
+
+        // Hidden chrome paints nothing — no ghost dots off-state
+        view.update(cx, |view, cx| {
+            view.visible = false;
+            cx.notify();
+        });
+        let quads = cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.painted_quads()
+        });
+        assert!(quads.is_empty());
     }
 }

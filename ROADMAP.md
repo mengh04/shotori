@@ -674,6 +674,22 @@ keeps its circle rim; Line/Arrow keep the capsule rim that doubles as
 the width cue. Rule: a chrome path must be O(1) per selected shape,
 not O(segments).
 
+**Update (2026-09-29): handle chips became accent dots (issue #18).**
+The white-square-plus-accent-outline handles read as clutter against
+the dim bands and the orange border. Restyle: one
+`ui::hud::paint_handle_dot` helper (solid accent circle —
+`fill(..).corner_radii(half)`; gpui quads round, no path needed, and
+one quad per handle instead of two during resize drags) owns the look for BOTH
+the selection chrome and the annotation shape chrome, so the future
+corner loupe has exactly one place to grow on. Contract now enforced
+at compile time (`const _: () = assert!(HANDLE_VIS < HANDLE_HIT)` in
+model/selection.rs): the painted diameter is deliberately smaller than
+the grab band — what you SEE and what you can GRAB are separate
+budgets; syncing the two "for consistency" couples looks to comfort.
+Test note: quad origins are floored to device pixels, so assertions on
+painted geometry must carry ~1 px tolerance (same lesson as the
+probe-e2e rule against hardcoded pixel coordinates).
+
 ### Window snapping: what the compositor will and won't tell you (2026-09-26)
 
 Clients are isolated; no standard protocol exposes other clients'
