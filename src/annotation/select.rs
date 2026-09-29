@@ -195,6 +195,41 @@ impl Annotations {
         }
     }
 
+    /// Step the selected badge's VALUE ±1 — the wheel over a selected
+    /// number (issue #2's quick tune); the size slider keeps owning the
+    /// diameter. Floors at 1 (0 is not a badge); one reversible Edit
+    /// entry per notch.
+    pub(crate) fn step_selected_number(&mut self, ix: usize, up: bool) -> bool {
+        let Some(current) = self.shapes.get(ix).and_then(|s| s.number) else {
+            return false;
+        };
+        let next = match (up, current) {
+            (true, _) => current.saturating_add(1),
+            (false, 0 | 1) => return false,
+            (false, _) => current - 1,
+        };
+        if next == current {
+            return false;
+        }
+        let before = self.shapes[ix].clone();
+        self.shapes[ix].number = Some(next);
+        let after = self.shapes[ix].clone();
+        self.history.push(HistoryEntry::Edit { ix, before, after });
+        self.redo.clear();
+        true
+    }
+
+    /// Write a value with NO history entry — the double-click editor's
+    /// live preview. The caller holds the pre-edit shape; commit goes
+    /// through `commit_move` (before-snapshot → current), cancel
+    /// re-previews the original. The NumberCache keys on `shape.number`,
+    /// so rendering follows along.
+    pub(crate) fn preview_number(&mut self, ix: usize, value: u32) {
+        if let Some(shape) = self.shapes.get_mut(ix) {
+            shape.number = Some(value);
+        }
+    }
+
     /// Whether a press right now should park a click-select pending
     /// resolution (release = select, drag past the slop = draw
     /// through). Polyline never parks: its clicks PLACE VERTICES, and

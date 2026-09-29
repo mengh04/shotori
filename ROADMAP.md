@@ -255,6 +255,20 @@ bounds. Verified with a 10-phase fractional sweep — zero leak rows.
 
 ## Pitfalls — gpui & Taffy internals
 
+### Scroll-wheel deltas are amplified ×3 by the wayland backend (2026-09-29)
+
+A discrete notch on niri reaches the app as `Pixels(120)`, not 40:
+gpui's wayland backend hard-codes `modifier = 3.0` on every `axis`
+value (client.rs, a Zed-inherited speed hack), and the continuous
+pixels path outranks `axis_discrete`, so `ScrollDelta::Lines` never
+arrives for a mouse wheel. Dividing pixels by a per-notch constant is
+therefore compositor-dependent; the robust posture for notch-stepping
+is clamping each EVENT to ±1 line (one notch = one event = one step)
+and letting sub-line events (touchpads, smaller per-notch values)
+accumulate. Symptom before the fix: one notch stepped the value +3
+(concealed until number editing made it visible; it silently affected
+size stepping too).
+
 ### The RenderImage contract (2026-09-25)
 
 BGRA bytes (Vulkan backend); feeding memory directly requires swap(0,2);
@@ -337,6 +351,43 @@ window so another output can finish displaying the shared image.
   rename); a second one is a duplicate-field error.
 
 ## Design decisions
+
+### Number badge editing: wheel tunes the value, double-click opens free entry (2026-09-29)
+
+Issue #2's second ask (post-placement value editing), riding the issue
+#5 selection layer:
+
+- **The wheel over a selected badge redirects to its VALUE** (±1,
+  floored at 1 — 0 is not a badge). The diameter keeps the size-slider
+  path, so the two edits never fight over one gesture.
+- **Double-click opens the editor; it reuses the text-editing
+  machinery wholesale.** `text_editing` still carries the editor, so
+  blocked-canvas, Esc-cancel, Enter-commit and click-away-commit all
+  apply unchanged; `number_edit: Option<(ix, before-snapshot)>` is the
+  only new state. Live previews write `shape.number` with NO history
+  entry (a half-typed buffer must stay outside undo); commit is exactly
+  `commit_move`'s before→current contract, cancel re-previews the
+  original. The NumberCache keys on `shape.number`, so previewing needs
+  no cache plumbing.
+- **Parse-or-hold previews.** A non-numeric or empty buffer previews
+  nothing (the badge keeps its last value); commit only accepts a full
+  `u32` — anything else restores.
+
+### Same-number badges: repeat max(existing), not "last placed" (2026-09-29)
+
+Alt+placement repeats the largest number on canvas (issue #2's first
+ask). Two decisions worth keeping:
+
+- **max(existing) over a remembered "last placed" value.** A
+  last-placed field desyncs after undo or deletion; deriving from the
+  shapes themselves keeps the semantics correct through
+  undo/redo/delete for free. An empty canvas starts at 1 either way.
+- **The press-through path samples Alt at PRESS time.** A press on an
+  existing shape parks as a pending click; the stroke only begins when
+  the drag crosses the click slop (a MOVE event, possibly seconds
+  later). The modifier rides along in the `pending_click` tuple —
+  reading modifiers at slop-crossing time would honor an Alt the user
+  already released.
 
 ### Size controls: continuous slider over base primitives (2026-09-28)
 

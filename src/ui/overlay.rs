@@ -49,6 +49,11 @@ pub struct Overlay {
     ocr_busy: bool,
     text_editing: Option<crate::ui::text_editor::TextEditor>,
     text_subscription: Option<Subscription>,
+    /// Double-click value editor for a number badge: the shape index
+    /// and its pre-edit snapshot. `text_editing` carries the editor
+    /// itself, so every gate it implies (blocked canvas, Esc cancel,
+    /// Enter commit, click-away commit) applies unchanged.
+    number_edit: Option<(usize, crate::annotation::Shape)>,
     /// The window cursor for the current pointer position/state
     /// (crosshair / open hand / resize), refreshed by the pointer-move
     /// path and pushed during paint by the handles canvas.
@@ -113,6 +118,7 @@ impl Overlay {
             ocr_busy: false,
             text_editing: None,
             text_subscription: None,
+            number_edit: None,
             cursor: std::rc::Rc::new(std::cell::Cell::new(CursorStyle::Crosshair)),
             perf_first_render_pending: true,
             slider: None,
@@ -311,16 +317,75 @@ impl Overlay {
         cx.notify();
     }
 
+    fn start_number_edit(
+        &mut self,
+        ix: usize,
+        badge_local: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(shape) = self
+            .session
+            .read(cx)
+            .annotations()
+            .committed()
+            .get(ix)
+            .cloned()
+        else {
+            return;
+        };
+        // The editor box floats on the badge; text matches the digit
+        // scale the badge itself renders at (diameter × 0.55, the
+        // layout factor in annotation::number).
+        let diameter = f32::from(shape.bounds.size.width);
+        let editor = crate::ui::text_editor::TextEditor::new(
+            shape.bounds,
+            badge_local,
+            diameter * 0.55,
+            shape.color,
+            cx,
+        );
+        editor.input().update(cx, |input, cx| {
+            input.set_value(&shape.number.unwrap_or(1).to_string(), cx)
+        });
+        self.subscribe_text(editor.input(), window, cx);
+        self.text_editing = Some(editor);
+        self.number_edit = Some((ix, shape));
+        self.session.update(cx, |s, cx| {
+            s.set_blocked(true);
+            cx.notify();
+        });
+        cx.defer_in(window, |this, window, cx| {
+            if let Some(editor) = &this.text_editing {
+                editor.focus(window, cx);
+            }
+        });
+        cx.notify();
+    }
+
     fn refresh_text(&mut self, cx: &mut Context<Self>) {
         let Some(editor) = &mut self.text_editing else {
             return;
         };
         editor.refresh(cx);
-        let (bounds, value) = (editor.actual_bounds(), editor.value(cx));
-        self.session.update(cx, |s, cx| {
-            s.preview_text(bounds, value);
-            cx.notify();
-        });
+        let value = editor.value(cx);
+        if let Some((ix, _)) = &self.number_edit {
+            // parse-or-hold: a half-typed or non-numeric buffer
+            // previews nothing — the badge keeps its last value until
+            // the buffer parses again
+            if let Ok(v) = value.trim().parse::<u32>() {
+                self.session.update(cx, |s, cx| {
+                    s.edit_annotations(|a| a.preview_number(*ix, v));
+                    cx.notify();
+                });
+            }
+        } else {
+            let bounds = editor.actual_bounds();
+            self.session.update(cx, |s, cx| {
+                s.preview_text(bounds, value);
+                cx.notify();
+            });
+        }
         cx.notify();
     }
 
@@ -385,11 +450,29 @@ impl Overlay {
             return;
         };
         self.text_subscription.take();
-        self.session.update(cx, |s, cx| {
-            s.preview_text(editor.actual_bounds(), editor.value(cx));
-            s.finish_text_edit(commit);
-            cx.notify();
-        });
+        if let Some((ix, before)) = self.number_edit.take() {
+            // commit only a full integer; anything else (Esc, empty,
+            // trailing junk) restores the pre-edit value
+            let value = editor.value(cx);
+            let parsed = commit.then(|| value.trim().parse::<u32>().ok()).flatten();
+            self.session.update(cx, |s, cx| {
+                s.set_blocked(false);
+                s.edit_annotations(|a| match parsed {
+                    Some(v) => {
+                        a.preview_number(ix, v);
+                        a.commit_move(ix, before);
+                    }
+                    None => a.preview_number(ix, before.number.unwrap_or(1)),
+                });
+                cx.notify();
+            });
+        } else {
+            self.session.update(cx, |s, cx| {
+                s.preview_text(editor.actual_bounds(), editor.value(cx));
+                s.finish_text_edit(commit);
+                cx.notify();
+            });
+        }
         window.focus(&self.focus_handle, cx);
         cx.notify();
     }
@@ -1213,6 +1296,17 @@ impl Render for Overlay {
                     ScrollDelta::Lines(l) => l.y,
                     ScrollDelta::Pixels(p) => f32::from(p.y) / 40.,
                 };
+                // One discrete notch must be one step, but a notch
+                // arrives (on niri) as Pixels(40 × 3): gpui's wayland
+                // backend hard-codes a ×3 amplification of the axis
+                // value, and the per-notch value has no cross-
+                // compositor standard (continuous pixels also outrank
+                // the discrete event, so Lines never reaches us here).
+                // Clamping each EVENT to ±1 line lands one notch = one
+                // step on any compositor whose notch value reaches the
+                // /40 divisor, while touchpads (many small events)
+                // still accumulate to full steps below.
+                let lines = lines.clamp(-1., 1.);
                 // accumulate touchpad-scale deltas; one notch = one preset
                 this.size_scroll_acc += lines;
                 let mut changed = false;
@@ -1453,9 +1547,25 @@ fn pointer_event_sink(input_view: WeakEntity<Overlay>) -> impl IntoElement {
                         this.start_text(event.position, window, cx);
                         return;
                     }
+                    // Double-click on a badge opens the value editor
+                    // (issue #2); the FIRST click of the pair already
+                    // selected it, so no click-select flow is disturbed.
+                    if event.click_count == 2
+                        && let Some((ix, badge_local)) = this
+                            .session
+                            .read(cx)
+                            .number_at_double_click(&this.capture.output_name, event.position)
+                    {
+                        this.start_number_edit(ix, badge_local, window, cx);
+                        return;
+                    }
                     window.focus(&this.focus_handle, cx);
                     this.session.update(cx, |s, cx| {
-                        s.pointer_down(&this.capture.output_name, event.position);
+                        s.pointer_down(
+                            &this.capture.output_name,
+                            event.position,
+                            event.modifiers.alt,
+                        );
                         cx.notify(); // repaint re-derives the cursor in render
                     });
                 });
@@ -1562,7 +1672,7 @@ mod multi_output_tests {
                     s.begin("screen", point(px(0.), px(0.)));
                     s.end("screen", point(px(190.), px(190.)));
                     s.edit_annotations(|a| a.toggle(kind));
-                    s.pointer_down("screen", point(px(10.), px(10.)));
+                    s.pointer_down("screen", point(px(10.), px(10.)), false);
                     cx.notify();
                 })
             });
@@ -1616,7 +1726,7 @@ mod multi_output_tests {
             session.update(cx, |s, cx| {
                 s.select_all();
                 s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Pencil));
-                s.pointer_down("screen", point(px(10.), px(10.)));
+                s.pointer_down("screen", point(px(10.), px(10.)), false);
                 cx.notify();
             })
         });
@@ -1631,7 +1741,7 @@ mod multi_output_tests {
                     );
                     if i % 25 == 24 {
                         s.pointer_up("screen", point(px(170.), px(100.)), false);
-                        s.pointer_down("screen", point(px(10.), px(10.)));
+                        s.pointer_down("screen", point(px(10.), px(10.)), false);
                     }
                     cx.notify();
                 });

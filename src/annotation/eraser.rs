@@ -63,14 +63,14 @@ mod tests {
                 };
                 let mut a = Annotations::default();
                 a.toggle(ShapeKind::Mosaic);
-                a.begin(at(0., 0.), selection);
+                a.begin(at(0., 0.), selection, false);
                 a.drag_to(at(100., 100.), selection, false);
                 a.end();
                 let marked = render(&a);
                 assert_ne!(marked, original);
                 a.toggle(kind);
                 a.set_tool_size(24.);
-                a.begin(at(40., 40.), selection);
+                a.begin(at(40., 40.), selection, false);
                 a.drag_to(at(60., 60.), selection, false);
                 let preview = render(&a);
                 a.end();
@@ -88,7 +88,7 @@ mod tests {
                 a.redo();
                 assert_eq!(render(&a), preview);
                 a.toggle(ShapeKind::Pencil);
-                a.begin(at(50., 50.), selection);
+                a.begin(at(50., 50.), selection, false);
                 a.end();
                 assert_ne!(
                     &render(&a)[center..center + 4],
@@ -97,7 +97,7 @@ mod tests {
                 a.undo();
                 assert_eq!(render(&a), preview);
                 a.toggle(kind);
-                a.begin(at(5., 5.), selection);
+                a.begin(at(5., 5.), selection, false);
                 a.drag_to(at(95., 95.), selection, false);
                 a.cancel();
                 assert_eq!(render(&a), preview);

@@ -656,7 +656,28 @@ impl ScreenshotSession {
         .then_some(available)
     }
 
-    pub(crate) fn pointer_down(&mut self, name: &str, local: Point<Pixels>) {
+    /// A double-click landing on a NUMBER badge: the shape index (for
+    /// the overlay's value editor) plus the badge origin in the
+    /// RECEIVING window's local coordinates (for the editor box).
+    /// None for every other kind or place — the click-select flow
+    /// itself is untouched.
+    pub(crate) fn number_at_double_click(
+        &self,
+        name: &str,
+        local: Point<Pixels>,
+    ) -> Option<(usize, Point<Pixels>)> {
+        if !self.annotations.enabled() || self.selection.bounds().is_none() {
+            return None;
+        }
+        let origin = self.screen(name).bounds().origin;
+        let p = local + origin;
+        let ix = self.annotations.hit_test(p)?;
+        let shape = self.annotations.committed().get(ix)?;
+        (shape.kind == crate::annotation::ShapeKind::Number)
+            .then(|| (ix, shape.bounds.origin - origin))
+    }
+
+    pub(crate) fn pointer_down(&mut self, name: &str, local: Point<Pixels>, alt: bool) {
         if self.blocked {
             return;
         }
@@ -684,7 +705,7 @@ impl ScreenshotSession {
             }
             if self.annotations.enabled() {
                 self.annotations.deselect(); // click on blank canvas
-                self.annotations.begin(p, selection);
+                self.annotations.begin(p, selection, alt);
                 return;
             }
         }
@@ -1335,7 +1356,7 @@ mod tests {
             // Exercise raster jobs directly: pressing on an existing blur
             // now selects/moves it instead of starting another stroke.
             let selection = s.selection.bounds().unwrap();
-            s.edit_annotations(|a| a.begin(point(px(0.), px(0.)), selection));
+            s.edit_annotations(|a| a.begin(point(px(0.), px(0.)), selection, false));
             s.pointer_move("left", point(px(580.), px(580.)), false);
             s.filtered_preview("left").unwrap();
             s.pointer_move("left", point(px(600.), px(600.)), false);
@@ -1353,7 +1374,7 @@ mod tests {
             // Exercise raster jobs directly: pressing on an existing blur
             // now selects/moves it instead of starting another stroke.
             let selection = s.selection.bounds().unwrap();
-            s.edit_annotations(|a| a.begin(point(px(0.), px(0.)), selection));
+            s.edit_annotations(|a| a.begin(point(px(0.), px(0.)), selection, false));
             s.pointer_move("left", point(px(580.), px(580.)), false);
             s.filtered_preview("left").unwrap();
             s.pointer_move("left", point(px(600.), px(600.)), false);
@@ -1366,7 +1387,7 @@ mod tests {
             // Exercise raster jobs directly: pressing on an existing blur
             // now selects/moves it instead of starting another stroke.
             let selection = s.selection.bounds().unwrap();
-            s.edit_annotations(|a| a.begin(point(px(0.), px(0.)), selection));
+            s.edit_annotations(|a| a.begin(point(px(0.), px(0.)), selection, false));
             s.pointer_move("left", point(px(550.), px(550.)), false);
             assert!(s.request_filtered_preview("left", cx).is_none());
         });
@@ -1401,7 +1422,7 @@ mod tests {
             // Exercise raster jobs directly: pressing on an existing blur
             // now selects/moves it instead of starting another stroke.
             let selection = s.selection.bounds().unwrap();
-            s.edit_annotations(|a| a.begin(point(px(0.), px(0.)), selection));
+            s.edit_annotations(|a| a.begin(point(px(0.), px(0.)), selection, false));
             s.pointer_move("left", point(px(512.), px(512.)), false);
             assert!(s.request_filtered_preview("left", cx).is_none());
             assert!(s.preview_busy);
@@ -1432,7 +1453,7 @@ mod tests {
             // Exercise raster jobs directly: pressing on an existing blur
             // now selects/moves it instead of starting another stroke.
             let selection = s.selection.bounds().unwrap();
-            s.edit_annotations(|a| a.begin(point(px(0.), px(0.)), selection));
+            s.edit_annotations(|a| a.begin(point(px(0.), px(0.)), selection, false));
             s.pointer_move("left", point(px(512.), px(512.)), false);
             s.request_filtered_preview("left", cx);
             assert!(s.preview_busy);
@@ -1448,7 +1469,7 @@ mod tests {
             // Exercise raster jobs directly: pressing on an existing blur
             // now selects/moves it instead of starting another stroke.
             let selection = s.selection.bounds().unwrap();
-            s.edit_annotations(|a| a.begin(point(px(0.), px(0.)), selection));
+            s.edit_annotations(|a| a.begin(point(px(0.), px(0.)), selection, false));
             s.pointer_move("left", point(px(512.), px(512.)), false);
             s.request_filtered_preview("left", cx);
             assert!(s.preview_busy);
@@ -1666,7 +1687,7 @@ mod tests {
         // move it across the seam: press inside on right's window, drag
         // and release with the pointer already on "left" — Wayland's
         // implicit grab delivers the WHOLE gesture to the press window
-        s.pointer_down("right", point(px(30.), px(30.)));
+        s.pointer_down("right", point(px(30.), px(30.)), false);
         assert!(s.selection.is_editing());
         s.pointer_move("right", point(px(-40.), px(50.)), false);
         s.pointer_up("right", point(px(-40.), px(50.)), false);
@@ -1803,14 +1824,14 @@ mod tests {
         s.begin("left", point(px(10.), px(10.)));
         s.end("left", point(px(30.), px(30.))); // global (-90,30) 20×20
         s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Rectangle));
-        s.pointer_down("left", point(px(12.), px(12.)));
+        s.pointer_down("left", point(px(12.), px(12.)), false);
         s.pointer_up("left", point(px(28.), px(28.)), false);
         assert_eq!(s.annotations().visible().count(), 1);
         // untoggle: back to selection mode (editing only works without a tool)
         s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Rectangle));
 
         // press the interior, drag, release → translated, annotations intact
-        s.pointer_down("left", point(px(20.), px(20.))); // global (-80,40): interior
+        s.pointer_down("left", point(px(20.), px(20.)), false); // global (-80,40): interior
         assert!(s.selection().is_editing());
         assert!(!s.selection().is_selected()); // toolbar hides mid-edit
         s.pointer_move("left", point(px(40.), px(40.)), false); // global (-60,60)
@@ -1828,7 +1849,7 @@ mod tests {
         s.begin("left", point(px(10.), px(10.)));
         s.end("left", point(px(30.), px(30.))); // global (-90,30) 20×20
         // press right at the bottom-right corner (within the 8px band)
-        s.pointer_down("left", point(px(30.), px(30.)));
+        s.pointer_down("left", point(px(30.), px(30.)), false);
         assert!(s.selection().is_editing());
         s.pointer_move("left", point(px(50.), px(60.)), false); // global (-50,80)
         s.pointer_up("left", point(px(50.), px(60.)), false);
@@ -1845,13 +1866,13 @@ mod tests {
         s.begin("left", point(px(10.), px(10.)));
         s.end("left", point(px(30.), px(30.)));
         s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Rectangle));
-        s.pointer_down("left", point(px(15.), px(15.)));
+        s.pointer_down("left", point(px(15.), px(15.)), false);
         s.pointer_up("left", point(px(25.), px(25.)), false);
         assert_eq!(s.annotations().visible().count(), 1);
         // untoggle the tool, then press well outside the box: fresh
         // selection, annotations wiped
         s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Rectangle));
-        s.pointer_down("left", point(px(60.), px(60.)));
+        s.pointer_down("left", point(px(60.), px(60.)), false);
         assert!(s.selection().is_dragging());
         s.pointer_move("left", point(px(80.), px(80.)), false);
         s.pointer_up("left", point(px(80.), px(80.)), false);
@@ -1865,7 +1886,7 @@ mod tests {
         let mut s = session();
         s.begin("left", point(px(10.), px(10.)));
         s.end("left", point(px(30.), px(30.)));
-        s.pointer_down("left", point(px(20.), px(20.)));
+        s.pointer_down("left", point(px(20.), px(20.)), false);
         s.pointer_move("left", point(px(60.), px(60.)), false);
         s.cancel_drag();
         assert!(s.selection().is_selected());
@@ -1880,7 +1901,7 @@ mod tests {
         s.begin("left", point(px(80.), px(20.)));
         s.end("right", point(px(20.), px(60.))); // global (-20,40) 40×20, spans the seam
         // grab the part that lives on the RIGHT screen…
-        s.pointer_down("right", point(px(10.), px(50.))); // global (10,50): interior
+        s.pointer_down("right", point(px(10.), px(50.)), false); // global (10,50): interior
         // …and the drag continues with the LEFT overlay delivering events
         // (left origin is (-100,20): local (90,40) → global (-10,60))
         s.pointer_move("left", point(px(90.), px(40.)), false);
@@ -1905,7 +1926,7 @@ mod tests {
         s.end("right", point(px(55.), px(75.)));
         // a click (no drag) at a point that ALSO sits on a snap window:
         // editing semantics win — the current selection is kept, no re-snap
-        s.pointer_down("right", point(px(40.), px(55.)));
+        s.pointer_down("right", point(px(40.), px(55.)), false);
         s.pointer_up("right", point(px(40.), px(55.)), false);
         assert!(s.selection().is_selected());
         let b = s.selection().bounds().unwrap();
@@ -1918,7 +1939,7 @@ mod tests {
         let mut s = snapped_session();
         s.begin("right", point(px(25.), px(35.)));
         s.end("right", point(px(55.), px(75.)));
-        s.pointer_down("right", point(px(40.), px(55.))); // move grab
+        s.pointer_down("right", point(px(40.), px(55.)), false); // move grab
         assert!(!s.hover_at("right", point(px(30.), px(40.)))); // over a window, but editing
         assert!(s.hover_bounds("right").is_none());
         s.pointer_up("right", point(px(40.), px(55.)), false);
@@ -2007,13 +2028,13 @@ mod tests {
         assert_ne!(dragged, anchored);
 
         // moving the SELECTION (an edit) keeps the user's placement
-        s.pointer_down("right", point(px(120.), px(100.))); // interior
+        s.pointer_down("right", point(px(120.), px(100.)), false); // interior
         s.pointer_move("right", point(px(220.), px(200.)), false);
         s.pointer_up("right", point(px(220.), px(200.)), false);
         assert_eq!(s.toolbar_bounds("right").unwrap().origin, dragged);
 
         // a NEW selection re-anchors
-        s.pointer_down("right", point(px(500.), px(500.)));
+        s.pointer_down("right", point(px(500.), px(500.)), false);
         s.pointer_move("right", point(px(700.), px(650.)), false);
         s.pointer_up("right", point(px(700.), px(650.)), false);
         assert_ne!(s.toolbar_bounds("right").unwrap().origin, dragged);
@@ -2038,7 +2059,7 @@ mod tests {
         s.begin("left", point(px(80.), px(20.)));
         s.end("right", point(px(20.), px(60.)));
         s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Rectangle));
-        s.pointer_down("left", point(px(90.), px(25.)));
+        s.pointer_down("left", point(px(90.), px(25.)), false);
         s.pointer_up("right", point(px(10.), px(55.)), false);
         let (w, h, pixels) = s.crop("right").unwrap();
         let png = crate::model::export::encode_png(w, h, &pixels).unwrap();
@@ -2062,7 +2083,7 @@ mod tests {
             a.toggle(crate::annotation::ShapeKind::Ellipse);
             a.set_color(4);
         });
-        s.pointer_down("left", point(px(90.), px(25.)));
+        s.pointer_down("left", point(px(90.), px(25.)), false);
         s.pointer_up("right", point(px(10.), px(55.)), false);
         let left = s.local_annotations("left")[0].clone();
         let right = s.local_annotations("right")[0].clone();
@@ -2098,10 +2119,10 @@ mod tests {
                 a.toggle(kind);
                 a.set_color(4);
             });
-            s.pointer_down("left", point(px(90.), px(30.)));
+            s.pointer_down("left", point(px(90.), px(30.)), false);
             if kind == crate::annotation::ShapeKind::Polyline {
                 s.pointer_up("left", point(px(90.), px(30.)), false);
-                s.pointer_down("right", point(px(10.), px(50.)));
+                s.pointer_down("right", point(px(10.), px(50.)), false);
             }
             s.pointer_up("right", point(px(10.), px(50.)), false);
             s.pointer_move("right", point(px(10.), px(58.)), false);
@@ -2181,24 +2202,24 @@ mod tests {
         let sel = s.selection.bounds().unwrap();
         s.edit_annotations(|a| {
             a.toggle(ShapeKind::Rectangle);
-            a.begin(point(px(0.), px(10.)), sel); // global (0,10) → (40,50)
+            a.begin(point(px(0.), px(10.)), sel, false); // global (0,10) → (40,50)
             a.drag_to(point(px(40.), px(50.)), sel, false);
             a.end();
         });
 
         // single click on the left edge band selects
-        s.pointer_down("left", point(px(101.), px(5.))); // local → global (1,25)
+        s.pointer_down("left", point(px(101.), px(5.)), false); // local → global (1,25)
         s.pointer_up("left", point(px(101.), px(5.)), false);
         assert!(s.annotations().selected().is_some());
 
         // click on blank canvas deselects
-        s.pointer_down("left", point(px(300.), px(300.)));
+        s.pointer_down("left", point(px(300.), px(300.)), false);
         s.pointer_up("left", point(px(300.), px(300.)), false);
         assert!(s.annotations().selected().is_none());
 
         // Dragging a hit shape selects and moves it even if it was deselected.
         let before = s.annotations().committed()[0].clone();
-        s.pointer_down("left", point(px(101.), px(5.)));
+        s.pointer_down("left", point(px(101.), px(5.)), false);
         s.pointer_move("left", point(px(160.), px(60.)), false);
         assert!(s.annotations().draft_shape().is_none());
         s.pointer_up("left", point(px(160.), px(60.)), false);
@@ -2209,7 +2230,7 @@ mod tests {
         assert_eq!(s.annotations().committed()[0], before);
 
         // a press that only wiggles within the slop still click-selects
-        s.pointer_down("left", point(px(101.), px(5.)));
+        s.pointer_down("left", point(px(101.), px(5.)), false);
         s.pointer_move("left", point(px(103.), px(7.)), false); // < CLICK_SLOP
         s.pointer_up("left", point(px(103.), px(7.)), false);
         assert!(s.annotations().selected().is_some());
@@ -2225,7 +2246,7 @@ mod tests {
         let rect = Bounds::new(point(px(0.), px(10.)), size(px(40.), px(40.)));
         s.edit_annotations(|a| {
             a.toggle(ShapeKind::Rectangle);
-            a.begin(rect.origin, sel);
+            a.begin(rect.origin, sel, false);
             a.drag_to(rect.bottom_right(), sel, false);
             a.end();
         });
@@ -2235,14 +2256,14 @@ mod tests {
         let edge = |b: Bounds<gpui_kit::Pixels>| point(b.left() + px(2.), b.top() + px(15.));
 
         // click-select
-        s.pointer_down("left", local(edge(rect)));
+        s.pointer_down("left", local(edge(rect)), false);
         s.pointer_up("left", local(edge(rect)), false);
         assert!(s.annotations().selected().is_some());
 
         // press again and DRAG: the selected shape moves
         let delta = point(px(30.), px(10.));
         let moved_origin = rect.origin + delta;
-        s.pointer_down("left", local(edge(rect)));
+        s.pointer_down("left", local(edge(rect)), false);
         s.pointer_move("left", local(edge(rect) + delta), false);
         s.pointer_up("left", local(edge(rect) + delta), false);
         let now = s.annotations().selected().unwrap().bounds;
@@ -2257,10 +2278,10 @@ mod tests {
 
         // Escape mid-move restores the press-time snapshot. Undo/redo
         // dropped the selection — click to reselect first.
-        s.pointer_down("left", local(edge(rect) + delta));
+        s.pointer_down("left", local(edge(rect) + delta), false);
         s.pointer_up("left", local(edge(rect) + delta), false);
         assert!(s.annotations().selected().is_some());
-        s.pointer_down("left", local(edge(rect) + delta));
+        s.pointer_down("left", local(edge(rect) + delta), false);
         s.pointer_move(
             "left",
             local(edge(rect) + delta + point(px(50.), px(0.))),
@@ -2283,7 +2304,7 @@ mod tests {
         // a line; endpoints may be snapped — read them back
         s.edit_annotations(|a| {
             a.toggle(ShapeKind::Line);
-            a.begin(point(px(10.), px(10.)), sel);
+            a.begin(point(px(10.), px(10.)), sel, false);
             a.drag_to(point(px(60.), px(60.)), sel, false);
             a.end();
         });
@@ -2294,12 +2315,12 @@ mod tests {
             (line.points[0].x + line.points[1].x) / 2.,
             (line.points[0].y + line.points[1].y) / 2.,
         );
-        s.pointer_down("left", local(mid));
+        s.pointer_down("left", local(mid), false);
         s.pointer_up("left", local(mid), false);
         assert!(s.annotations().selected().is_some());
 
         let target = point(px(80.), px(20.));
-        s.pointer_down("left", local(line.points[1]));
+        s.pointer_down("left", local(line.points[1]), false);
         s.pointer_move("left", local(target), false);
         s.pointer_up("left", local(target), false);
         let edited = s.annotations().committed()[0].clone();
@@ -2312,18 +2333,18 @@ mod tests {
         // corner — bounds re-normalize like drawing did
         s.edit_annotations(|a| {
             a.toggle(ShapeKind::Rectangle);
-            a.begin(point(px(0.), px(10.)), sel);
+            a.begin(point(px(0.), px(10.)), sel, false);
             a.drag_to(point(px(40.), px(50.)), sel, false);
             a.end();
         });
-        s.pointer_down("left", local(point(px(2.), px(25.))));
+        s.pointer_down("left", local(point(px(2.), px(25.))), false);
         s.pointer_up("left", local(point(px(2.), px(25.))), false);
         let br = {
             let b = s.annotations().selected().unwrap().bounds;
             point(b.right() - px(2.), b.bottom() - px(2.))
         };
         let through = point(px(-20.), px(-10.));
-        s.pointer_down("left", local(br));
+        s.pointer_down("left", local(br), false);
         s.pointer_move("left", local(through), false);
         s.pointer_up("left", local(through), false);
         let after = s.annotations().selected().unwrap().bounds;
@@ -2334,7 +2355,7 @@ mod tests {
 
         // Escape mid-handle-drag restores the press-time snapshot
         let br = point(after.right() - px(2.), after.bottom() - px(2.));
-        s.pointer_down("left", local(br));
+        s.pointer_down("left", local(br), false);
         s.pointer_move("left", local(point(px(60.), px(70.))), false);
         assert!(s.handle_drag_anchor().is_some());
         s.cancel_annotation();
@@ -2362,7 +2383,7 @@ mod tests {
                 // hit-priority selection (issue #5) would swallow presses
                 // landing on earlier strokes
                 s.edit_annotations(|a| {
-                    a.begin(point(px((i % 40) as f32 - 90.), px(50.)), sel);
+                    a.begin(point(px((i % 40) as f32 - 90.), px(50.)), sel, false);
                     a.drag_to(point(px(25.), px(60.)), sel, false);
                     a.end();
                 });
@@ -2401,7 +2422,7 @@ mod tests {
             s.edit_annotations(|a| a.toggle(kind));
             // begin past the pointer layer: hit-priority selection would
             // grab the earlier rectangle instead of starting this stroke
-            s.edit_annotations(|a| a.begin(point(px(-30.), px(45.)), sel));
+            s.edit_annotations(|a| a.begin(point(px(-30.), px(45.)), sel, false));
             for x in [5., 15., 30.] {
                 s.pointer_move("right", point(px(x), px(60.)), false);
                 assert_preview_matches_export(&s);
@@ -2410,7 +2431,7 @@ mod tests {
             assert_preview_matches_export(&s);
         }
         let completed = s.crop("left").unwrap().2;
-        s.edit_annotations(|a| a.begin(point(px(-25.), px(50.)), sel));
+        s.edit_annotations(|a| a.begin(point(px(-25.), px(50.)), sel, false));
         s.pointer_move("right", point(px(45.), px(70.)), false);
         assert_preview_matches_export(&s);
         s.cancel_annotation();
@@ -2442,7 +2463,7 @@ mod tests {
         let mut s = ScreenshotSession::new(vec![Arc::new(cap)], Vec::new());
         s.select_all();
         s.edit_annotations(|a| a.toggle(ShapeKind::Pencil));
-        s.pointer_down("left", point(px(10.), px(10.)));
+        s.pointer_down("left", point(px(10.), px(10.)), false);
         for i in 1..=20000 {
             s.pointer_move(
                 "left",
@@ -2492,7 +2513,7 @@ mod tests {
         s.filtered_preview("left").unwrap();
         let start = std::time::Instant::now();
         for i in 0..30 {
-            s.pointer_down("left", point(px(10.), px(10.)));
+            s.pointer_down("left", point(px(10.), px(10.)), false);
             s.pointer_move("left", point(px(50. + i as f32), px(50.)), false);
             s.filtered_preview("left").unwrap();
             s.pointer_up("left", point(px(50. + i as f32), px(50.)), false);
@@ -2517,12 +2538,12 @@ mod tests {
         s.select_all();
         s.edit_annotations(|a| a.toggle(ShapeKind::Blur));
         for _ in 0..6 {
-            s.pointer_down("left", point(px(0.), px(0.)));
+            s.pointer_down("left", point(px(0.), px(0.)), false);
             s.pointer_up("left", point(px(1280.), px(720.)), false);
         }
         s.filtered_preview("left").unwrap();
         s.edit_annotations(|a| a.toggle(ShapeKind::Pencil));
-        s.pointer_down("left", point(px(100.), px(100.)));
+        s.pointer_down("left", point(px(100.), px(100.)), false);
         let mut full = std::time::Duration::ZERO;
         let mut cached = std::time::Duration::ZERO;
         for i in 1..=30 {
@@ -2553,7 +2574,7 @@ mod tests {
             s.begin("left", point(px(80.), px(20.)));
             s.end("right", point(px(40.), px(90.)));
             s.edit_annotations(|a| a.toggle(ShapeKind::Rectangle));
-            s.pointer_down("left", point(px(82.), px(25.)));
+            s.pointer_down("left", point(px(82.), px(25.)), false);
             s.pointer_up("right", point(px(38.), px(60.)), false);
             let marked = s.crop("left").unwrap().2;
             s.edit_annotations(|a| a.toggle(kind));
@@ -2561,7 +2582,7 @@ mod tests {
             // rectangle's edge band, which selects on press now
             let sel = s.selection.bounds().unwrap();
             s.edit_annotations(|a| {
-                a.begin(point(px(-19.), px(42.)), sel);
+                a.begin(point(px(-19.), px(42.)), sel, false);
                 a.drag_to(point(px(39.), px(70.)), sel, false);
                 a.end();
             });
@@ -2596,7 +2617,7 @@ mod tests {
             s.end("right", point(px(20.), px(60.)));
             let original = s.crop_original("left").unwrap().2;
             s.edit_annotations(|a| a.toggle(kind));
-            s.pointer_down("right", point(px(18.), px(58.)));
+            s.pointer_down("right", point(px(18.), px(58.)), false);
             s.pointer_up("left", point(px(82.), px(22.)), false);
             let (w, h, pixels) = s.crop("left").unwrap();
             assert_ne!(pixels, original);
@@ -2628,7 +2649,7 @@ mod tests {
             assert_eq!(s.crop("left").unwrap().2, original);
             s.edit_annotations(|a| a.redo());
             assert_eq!(s.crop("left").unwrap().2, pixels);
-            s.pointer_down("left", point(px(82.), px(22.)));
+            s.pointer_down("left", point(px(82.), px(22.)), false);
             s.pointer_move("right", point(px(5.), px(55.)), false);
             let (_, draft) = s.filtered_preview("left").unwrap();
             assert!(!Arc::ptr_eq(&left, &draft));
@@ -2643,7 +2664,7 @@ mod tests {
         s.begin("left", point(px(80.), px(20.)));
         s.end("right", point(px(20.), px(60.)));
         s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Highlighter));
-        s.pointer_down("left", point(px(90.), px(30.)));
+        s.pointer_down("left", point(px(90.), px(30.)), false);
         s.pointer_up("right", point(px(10.), px(50.)), false);
         assert_eq!(
             s.local_annotations("right")[0].points[0],
@@ -2679,9 +2700,9 @@ mod tests {
             a.toggle(crate::annotation::ShapeKind::Number);
             a.set_color(4);
         });
-        s.pointer_down("left", point(px(98.), px(20.)));
+        s.pointer_down("left", point(px(98.), px(20.)), false);
         s.pointer_up("left", point(px(98.), px(20.)), false);
-        s.pointer_down("right", point(px(2.), px(75.)));
+        s.pointer_down("right", point(px(2.), px(75.)), false);
         s.pointer_up("right", point(px(2.), px(75.)), false);
         assert_eq!(
             s.annotations()
@@ -2715,7 +2736,7 @@ mod tests {
         s.begin("left", point(px(0.), px(0.)));
         s.end("left", point(px(100.), px(100.)));
         s.edit_annotations(|a| a.toggle(crate::annotation::ShapeKind::Number));
-        s.pointer_down("left", point(px(50.), px(50.)));
+        s.pointer_down("left", point(px(50.), px(50.)), false);
         s.pointer_up("left", point(px(50.), px(50.)), false);
         assert_eq!(s.annotations().visible().count(), 1);
         let orig_pos = s.annotations().visible().next().unwrap().bounds.origin;
@@ -2727,7 +2748,7 @@ mod tests {
         assert!(!s.annotations().enabled());
         assert!(s.annotations().selected().is_none());
 
-        s.pointer_down("left", point(px(50.), px(50.)));
+        s.pointer_down("left", point(px(50.), px(50.)), false);
         s.pointer_up("left", point(px(50.), px(50.)), false);
         assert_eq!(s.annotations().selected_index(), Some(0));
 
@@ -2737,7 +2758,7 @@ mod tests {
             crate::ui::theme::c().annotation_colors[1]
         );
 
-        s.pointer_down("left", point(px(50.), px(50.)));
+        s.pointer_down("left", point(px(50.), px(50.)), false);
         s.pointer_move("left", point(px(60.), px(65.)), false);
         s.pointer_up("left", point(px(60.), px(65.)), false);
         let moved_pos = s.annotations().visible().next().unwrap().bounds.origin;
@@ -2764,7 +2785,7 @@ mod tests {
             selection.bottom_right() + point(px(100.), px(100.)),
         ] {
             let before = s.annotations().committed()[0].bounds;
-            s.pointer_down("left", before.center() - origin);
+            s.pointer_down("left", before.center() - origin, false);
             s.pointer_move("left", target - origin, false);
             s.pointer_up("left", target - origin, false);
             let after = s.annotations().committed()[0].bounds;
